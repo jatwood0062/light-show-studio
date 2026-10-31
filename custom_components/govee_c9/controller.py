@@ -158,7 +158,7 @@ class C9Controller:
     @callback
     def show_external(self, rgb: bytes) -> None:
         now = time.monotonic()
-        if now - self._ext_sent < 1 / EXTERNAL_MAX_FPS:
+        if now - self._ext_sent < 0.8 / EXTERNAL_MAX_FPS:  # slack for jitter, or 25 ms shows lose every other frame
             return
         if now - self._ext_sent > 2:  # a new show (or the first frame after a pause)
             self._stop_animation()

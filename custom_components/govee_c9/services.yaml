@@ -13,3 +13,33 @@ set_pixels:
       default: true
       selector:
         boolean:
+
+play_sequence:
+  fields:
+    file:
+      required: true
+      example: halloween.fseq
+      selector:
+        text:
+    loop:
+      default: false
+      selector:
+        boolean:
+    media_player:
+      selector:
+        entity:
+          domain: media_player
+    audio:
+      example: library://track/123
+      selector:
+        text:
+    audio_offset:
+      default: 0
+      selector:
+        number:
+          min: -5
+          max: 5
+          step: 0.05
+          unit_of_measurement: s
+
+stop_sequence:

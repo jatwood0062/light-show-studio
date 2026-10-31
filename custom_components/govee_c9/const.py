@@ -1,4 +1,5 @@
 DOMAIN = "govee_c9"
+PLAYER = f"{DOMAIN}_player"  # hass.data key of the .fseq SequencePlayer
 
 CONF_BULBS = "bulbs"
 CONF_BULB_ENTITIES = "bulb_entities"

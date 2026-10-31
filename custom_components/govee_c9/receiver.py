@@ -66,8 +66,13 @@ class PixelReceiver:
         self._transports: list[asyncio.DatagramTransport] = []
 
     def push(self) -> None:
+        self.show(self.buf)
+
+    def show(self, data: bytes | bytearray) -> None:
+        """Give every string its slice of a full channel buffer (channel 1 = byte 0)."""
         for start, size, cb in list(self._subs.values()):
-            cb(bytes(self.buf[start : start + size]))
+            chunk = bytes(data[start : start + size])
+            cb(chunk if len(chunk) == size else chunk.ljust(size, b"\0"))
 
     async def subscribe(self, key: object, start_pixel: int, bulbs: int, cb: Callable[[bytes], None]) -> None:
         self._subs[key] = ((start_pixel - 1) * 3, bulbs * 3, cb)

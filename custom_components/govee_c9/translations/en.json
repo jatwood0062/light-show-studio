@@ -42,6 +42,36 @@
           "description": "Repeat the list along the whole string."
         }
       }
+    },
+    "play_sequence": {
+      "name": "Play sequence",
+      "description": "Play an xLights .fseq file on every string, without xLights running.",
+      "fields": {
+        "file": {
+          "name": "Sequence file",
+          "description": "Path to the .fseq file. Relative names are looked up in /media/xlights, then /config/www/xlights."
+        },
+        "loop": {
+          "name": "Loop",
+          "description": "Start again from the beginning when the sequence ends. With a speaker, the speaker's repeat setting decides instead."
+        },
+        "media_player": {
+          "name": "Speaker",
+          "description": "Media player (e.g. a Music Assistant player) to play the music on. The lights follow its playback position, pause when it pauses and stop when it stops or changes song."
+        },
+        "audio": {
+          "name": "Audio",
+          "description": "What to play on the speaker: any media content ID it accepts, e.g. a Music Assistant URI (library://track/…, spotify://track/…), a URL or a media-source:// ID."
+        },
+        "audio_offset": {
+          "name": "Offset",
+          "description": "Seconds to shift the lights later (positive) or earlier (negative), to fine-tune for speaker lag. Without a speaker, a delay before the lights start."
+        }
+      }
+    },
+    "stop_sequence": {
+      "name": "Stop sequence",
+      "description": "Stop the playing sequence and turn the bulbs dark."
     }
   }
 }

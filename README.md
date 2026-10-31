@@ -6,6 +6,7 @@ Local, per-bulb control of Govee C9 string lights (H6860 / reports as R6861) for
 - One light per bulb, and a `govee_c9.set_pixels` action
 - **xLights / Light-O-Rama receiver**: the string shows up to a sequencer as a 50-pixel controller,
   so you can sequence it to music
+- **Sequence playback**: play an exported xLights `.fseq` show straight from Home Assistant
 
 Everything stays on your LAN (Govee LAN API, UDP 4003). In the Govee Home app, turn on
 **LAN Control** for the light first.
@@ -35,3 +36,61 @@ Light-O-Rama S6: add E1.31 universe 1 (510 channels covers three strings), unica
 
 While frames arrive the string follows the sequencer; normal Home Assistant control takes
 over again when you pick a colour or effect.
+
+## Playing a sequence without xLights
+
+Once a show is sequenced, Home Assistant can play it on its own, so xLights doesn't need to
+be running.
+
+1. **Export**: in xLights, save the sequence (or **Render and Save**). xLights writes a
+   `.fseq` file next to the sequence in your show folder. Uncompressed and zstd/zlib
+   compressed files both work; if one won't load, set Preferences → Output → FSEQ
+   compression to None and save again.
+2. **Copy** the `.fseq` (and the song, if you want music) into `/media/xlights/` on Home
+   Assistant, e.g. with the Samba share or File editor app. `/config/www/xlights/` works
+   too.
+3. Call **`govee_c9.play_sequence`**. The channels are read the same way as from xLights over
+   the network, so a string with First pixel 51 plays channels 151–300 of the file.
+
+| Field | |
+|---|---|
+| `file` | `.fseq` file; a bare name is looked up in `/media/xlights`, then `/config/www/xlights` |
+| `loop` | start again when it ends (default off; with a speaker, its repeat setting decides) |
+| `media_player`, `audio` | speaker and song to play with the lights; `audio` is any media content ID the player accepts |
+| `audio_offset` | seconds to shift the lights later (positive) or earlier (negative); default 0 |
+
+### Keeping in time with the music
+
+With `media_player` and `audio`, the action starts the song with `media_player.play_media`, waits
+(up to 15 s) for the player to report *playing*, then runs the lights from the player's own
+position, not a fixed delay, so slow starts (Music Assistant and Sonos often take 1–3 s) don't
+matter. Whenever the player updates its position the lights re-sync: small drift (over 80 ms)
+is eased out by running the lights up to 25% fast or slow, a jump over 1 s (a seek, or repeat)
+is followed straight away. The lights pause with the player, and stop when it stops, goes idle
+or moves on to a different song.
+
+`audio` works with Music Assistant players: use a library or provider URI such as
+`library://track/123` or `spotify://track/…`, a URL, or a `media-source://` ID such as
+`media-source://media_source/local/xlights/halloween.mp3`. If a player never reports a position, the lights
+just start when it reports *playing*. Use `audio_offset` only to fine-tune: if the lights are
+ahead of what you hear, try `0.1`–`0.3`.
+
+`govee_c9.stop_sequence` stops the show and turns the bulbs dark.
+
+```yaml
+automation:
+  - alias: Halloween show
+    triggers:
+      - trigger: time
+        at: "19:00:00"
+    conditions:
+      - condition: template
+        value_template: "{{ now().month == 10 and now().day == 31 }}"
+    actions:
+      - action: govee_c9.play_sequence
+        data:
+          file: halloween.fseq
+          media_player: media_player.porch_sonos
+          audio: library://track/123  # the song in Music Assistant
+          audio_offset: 0.15
+```
