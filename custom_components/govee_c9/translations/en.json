@@ -8,7 +8,8 @@
           "host": "IP address",
           "name": "Name",
           "bulbs": "Number of bulbs",
-          "bulb_entities": "Create a light for every bulb"
+          "bulb_entities": "Create a light for every bulb",
+          "start_pixel": "First pixel in xLights / E1.31 output"
         }
       }
     },
@@ -21,7 +22,8 @@
       "init": {
         "data": {
           "bulbs": "Number of bulbs",
-          "bulb_entities": "Create a light for every bulb"
+          "bulb_entities": "Create a light for every bulb",
+          "start_pixel": "First pixel in xLights / E1.31 output"
         }
       }
     }

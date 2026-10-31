@@ -8,7 +8,9 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.const import CONF_HOST, CONF_NAME
 from homeassistant.core import callback
 
-from .const import CONF_BULB_ENTITIES, CONF_BULBS, DEFAULT_BULBS, DOMAIN
+from .const import CONF_BULB_ENTITIES, CONF_BULBS, CONF_START_PIXEL, DEFAULT_BULBS, DOMAIN
+
+PIXEL = vol.All(int, vol.Range(min=1, max=1020))
 
 
 class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -25,7 +27,16 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_NAME, default="Govee C9"): str,
             vol.Required(CONF_BULBS, default=DEFAULT_BULBS): vol.All(int, vol.Range(min=1, max=255)),
             vol.Required(CONF_BULB_ENTITIES, default=True): bool,
+            vol.Required(CONF_START_PIXEL, default=self._next_pixel()): PIXEL,
         }))
+
+    def _next_pixel(self) -> int:
+        """First pixel after the strings already set up, so each gets its own slice."""
+        end = 0
+        for e in self._async_current_entries():
+            o = {**e.data, **e.options}
+            end = max(end, o.get(CONF_START_PIXEL, 1) - 1 + o.get(CONF_BULBS, DEFAULT_BULBS))
+        return end + 1
 
     @staticmethod
     @callback
@@ -41,4 +52,5 @@ class C9OptionsFlow(OptionsFlow):
         return self.async_show_form(step_id="init", data_schema=vol.Schema({
             vol.Required(CONF_BULBS, default=cur.get(CONF_BULBS, DEFAULT_BULBS)): vol.All(int, vol.Range(min=1, max=255)),
             vol.Required(CONF_BULB_ENTITIES, default=cur.get(CONF_BULB_ENTITIES, True)): bool,
+            vol.Required(CONF_START_PIXEL, default=cur.get(CONF_START_PIXEL, 1)): PIXEL,
         }))
