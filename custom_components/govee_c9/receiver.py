@@ -64,6 +64,7 @@ class PixelReceiver:
         self.buf = bytearray(MAX_PIXELS * 3)
         self._subs: dict[object, tuple[int, int, Callable[[bytes], None]]] = {}
         self._transports: list[asyncio.DatagramTransport] = []
+        self._listening = False  # set before binding: strings set up concurrently must not bind twice
 
     def push(self) -> None:
         self.show(self.buf)
@@ -76,7 +77,8 @@ class PixelReceiver:
 
     async def subscribe(self, key: object, start_pixel: int, bulbs: int, cb: Callable[[bytes], None]) -> None:
         self._subs[key] = ((start_pixel - 1) * 3, bulbs * 3, cb)
-        if not self._transports:
+        if not self._listening:
+            self._listening = True
             await self._start()
 
     def unsubscribe(self, key: object) -> None:
@@ -85,6 +87,7 @@ class PixelReceiver:
             for t in self._transports:
                 t.close()
             self._transports.clear()
+            self._listening = False
 
     async def _start(self) -> None:
         loop = asyncio.get_running_loop()
