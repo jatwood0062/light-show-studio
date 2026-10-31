@@ -1,0 +1,45 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Govee C9 string lights",
+        "description": "Enable LAN Control for the lights in the Govee Home app first.",
+        "data": {
+          "host": "IP address",
+          "name": "Name",
+          "bulbs": "Number of bulbs",
+          "bulb_entities": "Create a light for every bulb"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "These lights are already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "bulbs": "Number of bulbs",
+          "bulb_entities": "Create a light for every bulb"
+        }
+      }
+    }
+  },
+  "services": {
+    "set_pixels": {
+      "name": "Set bulb colours",
+      "description": "Colour every bulb at once, starting at the plug.",
+      "fields": {
+        "colors": {
+          "name": "Colours",
+          "description": "List of colours, one per bulb, as \"#rrggbb\" or [r, g, b]."
+        },
+        "repeat": {
+          "name": "Repeat",
+          "description": "Repeat the list along the whole string."
+        }
+      }
+    }
+  }
+}

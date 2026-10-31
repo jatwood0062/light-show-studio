@@ -1,0 +1,15 @@
+set_pixels:
+  target:
+    entity:
+      integration: govee_c9
+      domain: light
+  fields:
+    colors:
+      required: true
+      example: '["#ff0000", "#00ff00", [0, 0, 255]]'
+      selector:
+        object:
+    repeat:
+      default: true
+      selector:
+        boolean:
