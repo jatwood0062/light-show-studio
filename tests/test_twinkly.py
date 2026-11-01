@@ -6,7 +6,7 @@ import sys
 import types
 from pathlib import Path
 
-PKG = Path(__file__).resolve().parent.parent / "custom_components" / "govee_light_show"
+PKG = Path(__file__).resolve().parent.parent / "custom_components" / "light_show_studio"
 
 
 def _stub(name: str, **attrs) -> None:
@@ -25,16 +25,16 @@ def _load_twinkly():
     _stub("homeassistant.core", HomeAssistant=object, callback=lambda f: f)
     _stub("homeassistant.helpers")
     _stub("homeassistant.helpers.aiohttp_client", async_get_clientsession=lambda hass: None)
-    pkg = sys.modules.setdefault("govee_light_show_tw", types.ModuleType("govee_light_show_tw"))
+    pkg = sys.modules.setdefault("light_show_studio_tw", types.ModuleType("light_show_studio_tw"))
     pkg.__path__ = [str(PKG)]
     for name in ("const", "effects", "protocol", "controller", "twinkly"):
-        full = f"govee_light_show_tw.{name}"
+        full = f"light_show_studio_tw.{name}"
         if full not in sys.modules:
             spec = importlib.util.spec_from_file_location(full, PKG / f"{name}.py")
             mod = importlib.util.module_from_spec(spec)
             sys.modules[full] = mod
             spec.loader.exec_module(mod)
-    return sys.modules["govee_light_show_tw.twinkly"]
+    return sys.modules["light_show_studio_tw.twinkly"]
 
 
 tw = _load_twinkly()

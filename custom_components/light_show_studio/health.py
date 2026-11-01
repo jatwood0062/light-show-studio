@@ -9,10 +9,11 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
 
-from .const import CONF_DEVICE_ID, CONF_TYPE, DOMAIN, TYPE_PLAYER, TYPE_TWINKLY
+from .const import CONF_DEVICE_ID, CONF_TYPE, DOMAIN, TYPE_PLAYER, TYPE_TWINKLY, TYPE_WLED
 from .controller import C9Controller
 from .protocol import async_probe, async_scan
 from .twinkly import TwinklyController, async_discover, async_gestalt
+from .wled import async_info
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ INTERVAL = 60
 FIRST_RUN = 10
 GOVEE_MISSES = 3
 TWINKLY_MISSES = 2
+WLED_MISSES = 2
 
 
 class HealthMonitor:
@@ -27,7 +29,6 @@ class HealthMonitor:
         self.hass = hass
         self._cancel: CALLBACK_TYPE | None = None
         self._stopped = False
-        self._scan_ever_worked = False  # multicast may be blocked: then a silent scan proves nothing
 
     def start(self) -> None:
         self._stopped = False
@@ -50,34 +51,32 @@ class HealthMonitor:
     async def async_check(self) -> None:
         govee: list[ConfigEntry] = []
         twinkly: list[ConfigEntry] = []
+        wled: list[ConfigEntry] = []
         for entry in self.hass.config_entries.async_loaded_entries(DOMAIN):
             if entry.data.get(CONF_TYPE) == TYPE_PLAYER or not isinstance(
                     getattr(entry, "runtime_data", None), C9Controller):
                 continue
-            (twinkly if entry.data.get(CONF_TYPE) == TYPE_TWINKLY else govee).append(entry)
+            kind = entry.data.get(CONF_TYPE)
+            (twinkly if kind == TYPE_TWINKLY else wled if kind == TYPE_WLED else govee).append(entry)
         if govee:
             await self._check_govee(govee)
         if twinkly:
             await self._check_twinkly(twinkly)
+        if wled:
+            await self._check_wled(wled)
 
     def _move(self, entry: ConfigEntry, new_host: str) -> None:
         _LOGGER.info("%s moved from %s to %s", entry.title, entry.data.get(CONF_HOST), new_host)
         self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_HOST: new_host})
 
     async def _check_govee(self, entries: list[ConfigEntry]) -> None:
-        found = await async_scan(2.0)
+        # the scan's replies can go to another listener on the same port (e.g. Govee light local),
+        # so a light it doesn't hear is checked directly before it counts as missing
+        found = await async_scan(2.0) or {}
         _LOGGER.debug("Govee scan: %s", found)
-        if found is None:  # couldn't scan (port held, e.g. by Govee light local): check each light directly
-            seen = await async_probe([e.data[CONF_HOST] for e in entries])
-            _LOGGER.debug("Govee probe: %s", seen)
-            for entry in entries if seen is not None else []:
-                if seen.get(entry.data[CONF_HOST]):
-                    entry.runtime_data.mark_seen()
-                else:
-                    entry.runtime_data.mark_missed(GOVEE_MISSES)
-            return
-        if found:
-            self._scan_ever_worked = True
+        unheard = [e for e in entries if e.data[CONF_HOST] not in found]
+        probed = await async_probe([e.data[CONF_HOST] for e in unheard]) if unheard else {}
+        _LOGGER.debug("Govee probe: %s", probed)
         for entry in entries:
             ctl: C9Controller = entry.runtime_data
             host, device = entry.data[CONF_HOST], entry.data.get(CONF_DEVICE_ID)
@@ -86,13 +85,26 @@ class HealthMonitor:
                 if not device and (dev := found[host].get("device")):
                     self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_DEVICE_ID: dev})
                 continue
-            if not self._scan_ever_worked:
-                continue
             new = next((ip for ip, d in found.items() if device and d.get("device") == device), None)
             if new:
                 self._move(entry, new)
+            elif probed is None:  # no way to tell (no ARP table): leave it as it is
+                continue
+            elif probed.get(host):
+                ctl.mark_seen()
             else:
                 ctl.mark_missed(GOVEE_MISSES)
+
+    async def _check_wled(self, entries: list[ConfigEntry]) -> None:
+        session = async_get_clientsession(self.hass)
+        for entry in entries:
+            try:
+                await async_info(session, entry.data[CONF_HOST])
+            except Exception as err:  # unreachable, or a reply we don't understand
+                _LOGGER.debug("WLED %s not reachable: %s", entry.data[CONF_HOST], err)
+                entry.runtime_data.mark_missed(WLED_MISSES)
+            else:
+                entry.runtime_data.mark_seen()
 
     async def _check_twinkly(self, entries: list[ConfigEntry]) -> None:
         session = async_get_clientsession(self.hass)

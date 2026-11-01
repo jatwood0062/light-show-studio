@@ -21,6 +21,7 @@ from .const import (
     DOMAIN,
     TYPE_PLAYER,
     TYPE_TWINKLY,
+    TYPE_WLED,
 )
 from .controller import C9Controller
 from .receiver import DDP_PORT, E131_PORT, MAX_PIXELS
@@ -50,7 +51,7 @@ def _hex(c: tuple[int, int, int]) -> str:
 
 
 @websocket_api.websocket_command({
-    vol.Required("type"): "govee_light_show/subscribe",
+    vol.Required("type"): "light_show_studio/subscribe",
     vol.Required("entity_id"): cv.entity_id,
 })
 @callback
@@ -58,7 +59,7 @@ def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection
                  msg: dict[str, Any]) -> None:
     ctl = _controller(hass, msg["entity_id"])
     if ctl is None:
-        connection.send_error(msg["id"], "not_found", f"{msg['entity_id']} is not a Govee C9 light")
+        connection.send_error(msg["id"], "not_found", f"{msg['entity_id']} is not a Light Show Studio light")
         return
     pending = None
     first = True
@@ -102,7 +103,7 @@ def _colour(value: str | None) -> tuple[int, int, int] | None:
 
 
 @websocket_api.websocket_command({
-    vol.Required("type"): "govee_light_show/set_bulbs",
+    vol.Required("type"): "light_show_studio/set_bulbs",
     vol.Required("entity_id"): cv.entity_id,
     # bulb number (1-based) -> "#rrggbb", or null to turn that bulb off
     vol.Required("bulbs"): {vol.Coerce(int): vol.Any(None, vol.Match(r"^#?[0-9a-fA-F]{6}$"))},
@@ -112,7 +113,7 @@ async def ws_set_bulbs(hass: HomeAssistant, connection: websocket_api.ActiveConn
                        msg: dict[str, Any]) -> None:
     ctl = _controller(hass, msg["entity_id"])
     if ctl is None:
-        connection.send_error(msg["id"], "not_found", f"{msg['entity_id']} is not a Govee C9 light")
+        connection.send_error(msg["id"], "not_found", f"{msg['entity_id']} is not a Light Show Studio light")
         return
     for n, value in msg["bulbs"].items():
         if 1 <= n <= ctl.bulbs:
@@ -132,7 +133,7 @@ def _loaded_controller(entry: ConfigEntry) -> C9Controller | None:
     return ctl if isinstance(ctl, C9Controller) else None
 
 
-@websocket_api.websocket_command({vol.Required("type"): "govee_light_show/strands"})
+@websocket_api.websocket_command({vol.Required("type"): "light_show_studio/strands"})
 @callback
 def ws_strands(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     ents = er.async_get(hass)
@@ -145,7 +146,7 @@ def ws_strands(hass: HomeAssistant, connection: websocket_api.ActiveConnection, 
         strands.append({
             "entry_id": entry.entry_id,
             "title": entry.title,
-            "kind": "twinkly" if o.get(CONF_TYPE) == TYPE_TWINKLY else "govee",
+            "kind": {TYPE_TWINKLY: "twinkly", TYPE_WLED: "wled"}.get(o.get(CONF_TYPE), "govee"),
             "host": entry.data[CONF_HOST],
             "model": o.get(CONF_SKU) or "",
             "start_pixel": o.get(CONF_START_PIXEL, 1),
@@ -160,7 +161,7 @@ def ws_strands(hass: HomeAssistant, connection: websocket_api.ActiveConnection, 
 
 
 @websocket_api.websocket_command({
-    vol.Required("type"): "govee_light_show/identify",
+    vol.Required("type"): "light_show_studio/identify",
     vol.Required("entry_id"): str,
 })
 @callback
@@ -175,7 +176,7 @@ def ws_identify(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
 
 
 @websocket_api.websocket_command({
-    vol.Required("type"): "govee_light_show/strand/update",
+    vol.Required("type"): "light_show_studio/strand/update",
     vol.Required("entry_id"): str,
     vol.Optional("title"): vol.All(str, vol.Length(min=1, max=100)),
     vol.Optional("start_pixel"): vol.All(int, vol.Range(min=1, max=MAX_PIXELS)),
@@ -194,7 +195,7 @@ def ws_strand_update(hass: HomeAssistant, connection: websocket_api.ActiveConnec
     if start + bulbs - 1 > MAX_PIXELS:
         connection.send_error(msg["id"], "invalid_format", f"Pixels run past {MAX_PIXELS}")
         return
-    if o.get(CONF_TYPE) != TYPE_TWINKLY and bulbs > 255:
+    if o.get(CONF_TYPE) not in (TYPE_TWINKLY, TYPE_WLED) and bulbs > 255:
         connection.send_error(msg["id"], "invalid_format", "A Govee light takes at most 255 bulbs")
         return
     options = {**entry.options}

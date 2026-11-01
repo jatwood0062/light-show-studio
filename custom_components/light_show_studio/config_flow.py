@@ -27,9 +27,11 @@ from .const import (
     DOMAIN,
     TYPE_PLAYER,
     TYPE_TWINKLY,
+    TYPE_WLED,
 )
 from .protocol import async_scan
 from .twinkly import async_discover, async_gestalt
+from .wled import async_info, format_mac
 
 PIXEL = vol.All(int, vol.Range(min=1, max=2040))
 MANUAL = "manual"
@@ -43,10 +45,10 @@ def _model(sku: str):
     return lookup(sku) if sku else None
 
 
-def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False) -> vol.Schema:
+def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, name: str = "Twinkly") -> vol.Schema:
     fields: dict = {}
     if with_name:
-        fields[vol.Required(CONF_NAME, default=cur.get(CONF_NAME, "Twinkly" if twinkly else "Govee lights"))] = str
+        fields[vol.Required(CONF_NAME, default=cur.get(CONF_NAME, name if twinkly else "Govee lights"))] = str
     fields[vol.Required(CONF_BULBS, default=cur.get(CONF_BULBS, DEFAULT_BULBS))] = vol.All(
         int, vol.Range(min=1, max=1020 if twinkly else 255))
     if not twinkly:
@@ -71,11 +73,12 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._found: dict[str, dict] = {}
         self._tw_found: dict[str, str] = {}
+        self._wled_found: dict[str, str] = {}
         self._light: dict[str, Any] = {}
         self._defaults: dict[str, Any] = {}
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        menu = ["light", "twinkly"]
+        menu = ["light", "twinkly", "wled"]
         if not any(e.data.get(CONF_TYPE) == TYPE_PLAYER for e in self._async_current_entries()):
             menu.append("player")
         return self.async_show_menu(step_id="user", menu_options=menu)
@@ -210,6 +213,74 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
                                     description_placeholders={"host": self._light[CONF_HOST],
                                                               "sku": self._light[CONF_SKU] or "Twinkly"})
 
+    # --- a WLED light ------------------------------------------------------
+    async def async_step_wled(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Pick a WLED that Home Assistant's own WLED integration knows, or type its IP."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            host = user_input[CONF_HOST]
+            if host == MANUAL:
+                return await self.async_step_wled_manual()
+            if (result := await self._start_wled(host)) is not None:
+                return result
+            errors["base"] = "cannot_connect"
+        else:
+            known = {e.data.get(CONF_HOST) for e in self._async_current_entries()}
+            self._wled_found = {e.data[CONF_HOST]: e.title for e in self.hass.config_entries.async_entries("wled")
+                                if e.data.get(CONF_HOST) and e.data[CONF_HOST] not in known}
+            if not self._wled_found:
+                return await self.async_step_wled_manual()
+        options = [selector.SelectOptionDict(value=ip, label=f"{name} at {ip}")
+                   for ip, name in sorted(self._wled_found.items())]
+        options.append(selector.SelectOptionDict(value=MANUAL, label="Enter an IP address"))
+        return self.async_show_form(step_id="wled", errors=errors, data_schema=vol.Schema({
+            vol.Required(CONF_HOST): selector.SelectSelector(selector.SelectSelectorConfig(options=options)),
+        }))
+
+    async def async_step_wled_manual(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            host = user_input[CONF_HOST].strip()
+            try:
+                ipaddress.IPv4Address(host)
+            except ValueError:
+                errors[CONF_HOST] = "invalid_host"
+            else:
+                if (result := await self._start_wled(host)) is not None:
+                    return result
+                errors["base"] = "cannot_connect"
+        return self.async_show_form(step_id="wled_manual", data_schema=vol.Schema({vol.Required(CONF_HOST): str}),
+                                    errors=errors)
+
+    async def _start_wled(self, host: str) -> ConfigFlowResult | None:
+        """Ask the light about itself; None if it doesn't answer."""
+        try:
+            info = await async_info(async_get_clientsession(self.hass), host)
+            mac = format_mac(info["mac"])
+            count = int(info["leds"]["count"])
+        except Exception:  # unreachable, or not a WLED
+            return None
+        await self.async_set_unique_id(mac)
+        self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+        self._light = {CONF_HOST: host, CONF_TYPE: TYPE_WLED, CONF_SKU: info.get("arch") or "WLED",
+                       CONF_DEVICE_ID: mac}
+        self._defaults = {
+            CONF_NAME: info.get("name") or "WLED",
+            CONF_BULBS: max(1, min(count, 1020)),
+            CONF_BULB_ENTITIES: False,
+            CONF_START_PIXEL: self._next_pixel(),
+        }
+        return await self.async_step_wled_details()
+
+    async def async_step_wled_details(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        if user_input is not None:
+            name = user_input.pop(CONF_NAME)
+            return self.async_create_entry(title=name, data={**self._light, **user_input})
+        return self.async_show_form(step_id="wled_details",
+                                    data_schema=_light_schema(self._defaults, True, True, "WLED"),
+                                    description_placeholders={"host": self._light[CONF_HOST],
+                                                              "sku": self._light[CONF_SKU]})
+
     def _next_pixel(self) -> int:
         """First pixel after the lights already set up, so each gets its own slice."""
         end = 0
@@ -241,6 +312,6 @@ class C9OptionsFlow(OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(data=user_input)
         cur = {**self.config_entry.data, **self.config_entry.options}
-        twinkly = self.config_entry.data.get(CONF_TYPE) == TYPE_TWINKLY
+        twinkly = self.config_entry.data.get(CONF_TYPE) in (TYPE_TWINKLY, TYPE_WLED)
         schema = _player_schema(cur) if player else _light_schema(cur, False, twinkly)
         return self.async_show_form(step_id="init", data_schema=schema)

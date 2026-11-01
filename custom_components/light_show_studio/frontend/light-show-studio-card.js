@@ -1,7 +1,7 @@
-// Govee C9 card: every bulb of a string, live, and paintable. Ships with the govee_light_show integration.
+// Light card: every bulb or LED of a light, live, and paintable. Ships with the light_show_studio integration.
 //
-//   type: custom:govee-light-show-card
-//   entity: light.govee_light_show          # the whole-string light
+//   type: custom:light-show-studio-card
+//   entity: light.light_show_studio          # the whole-string light
 //   title: Porch                    # optional
 //   columns: 25                     # optional: wrap into rows of this many bulbs (default: one row that wraps to fit)
 //   layout: [[0, 0], [10, 0], ...]  # optional: x, y of each bulb (any units), e.g. your xLights positions
@@ -29,7 +29,7 @@ const PATTERNS = {
   Rainbow: ["#ff0000", "#ff5000", "#ffc800", "#00ff00", "#0040ff", "#8200ff"],
 };
 
-class GoveeC9Card extends HTMLElement {
+class LightShowStudioCard extends HTMLElement {
   _pending = {}; // bulb number -> colour, waiting to be sent
   _overlay = {}; // optimistic paints shown until a live frame confirms them
 
@@ -44,7 +44,7 @@ class GoveeC9Card extends HTMLElement {
   static getConfigForm() {
     return {
       schema: [
-        { name: "entity", required: true, selector: { entity: { domain: "light", integration: "govee_light_show" } } },
+        { name: "entity", required: true, selector: { entity: { domain: "light", integration: "light_show_studio" } } },
         { name: "title", selector: { text: {} } },
         { name: "columns", selector: { number: { min: 0, max: 255, mode: "box" } } },
         { name: "layout", selector: { object: {} } },
@@ -55,7 +55,7 @@ class GoveeC9Card extends HTMLElement {
   }
 
   setConfig(config) {
-    if (!config.entity) throw new Error("Pick a Govee C9 string light");
+    if (!config.entity) throw new Error("Pick a Light Show Studio light");
     const old = this._config;
     this._config = { columns: 0, ...config };
     this._brush = this._brush === undefined ? this._colors()[0] : this._brush;
@@ -102,7 +102,7 @@ class GoveeC9Card extends HTMLElement {
     const entity = this._config.entity;
     try {
       const unsub = await this._hass.connection.subscribeMessage((m) => this._onFrame(m), {
-        type: "govee_light_show/subscribe",
+        type: "light_show_studio/subscribe",
         entity_id: entity,
       });
       if (!this.isConnected || this._config?.entity !== entity) unsub(); // gone or re-pointed while we waited
@@ -197,7 +197,7 @@ class GoveeC9Card extends HTMLElement {
     const keys = Object.keys(b);
     if (!keys.length) return;
     try {
-      await this._hass.callWS({ type: "govee_light_show/set_bulbs", entity_id: this._config.entity, bulbs: b });
+      await this._hass.callWS({ type: "light_show_studio/set_bulbs", entity_id: this._config.entity, bulbs: b });
       const now = Date.now();
       keys.forEach((k) => this._overlay[k] && !(k in this._pending) && (this._overlay[k].doneAt = now));
     } catch (err) {
@@ -510,11 +510,11 @@ class GoveeC9Card extends HTMLElement {
   }
 }
 
-customElements.define("govee-light-show-card", GoveeC9Card);
+customElements.define("light-show-studio-card", LightShowStudioCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
-  type: "govee-light-show-card",
-  name: "Govee C9 string",
-  description: "Every bulb of a Govee C9 string, live, with tap or drag to paint.",
+  type: "light-show-studio-card",
+  name: "Light Show Studio light",
+  description: "Every bulb or LED of a light, live, with tap or drag to paint.",
   preview: true,
 });

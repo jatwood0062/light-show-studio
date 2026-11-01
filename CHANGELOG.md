@@ -1,10 +1,11 @@
 # Changelog
 
-Changes to Govee Light Show, newest first.
+Changes to Light Show Studio, newest first.
 
-## [1.1.0] - 2026-11-01
+## [2.0.0] - 2026-11-01
 
 ### Added
+- WLED lights: realtime frames over DDP; add them via Add entry → Add a WLED light.
 - Twinkly lights: local realtime control. The card layout uses the Twinkly app's camera mapping.
 - Strands list in the Light Shows app's Lights tab: IP, model, pixel and channel ranges, online
   status, Identify, Edit, overlap warnings, and a copyable xLights setup.
@@ -14,6 +15,7 @@ Changes to Govee Light Show, newest first.
 - MAC address on the Twinkly device page.
 
 ### Changed
+- **Breaking:** renamed to Light Show Studio (domain light_show_studio). Remove the old Govee Light Show entries and add the lights again.
 - Pixel space up to 2040 pixels (12 E1.31 universes).
 
 ### Fixed

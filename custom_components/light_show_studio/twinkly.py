@@ -182,7 +182,7 @@ class TwinklyController(C9Controller):
         self._keepalive: asyncio.TimerHandle | None = None
         self._closed = False
         self._mode_lock = asyncio.Lock()  # an "off" and a quick "rt" must land in order
-        hass.async_create_background_task(self._fetch_layout(), "govee_light_show twinkly layout")
+        hass.async_create_background_task(self._fetch_layout(), "light_show_studio twinkly layout")
 
     def _make_link(self, host: str) -> None:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -196,7 +196,7 @@ class TwinklyController(C9Controller):
         if on:
             return  # the first frame switches realtime mode on
         self._disarm()
-        self.hass.async_create_background_task(self._set_mode("off"), "govee_light_show twinkly off")
+        self.hass.async_create_background_task(self._set_mode("off"), "light_show_studio twinkly off")
 
     def _hw_frame(self, frame: list[Colour]) -> None:
         if self._closed:
@@ -257,7 +257,7 @@ class TwinklyController(C9Controller):
     def _start_arm(self) -> None:
         if self._closed or self._arm_task or time.monotonic() < self._arm_after:
             return
-        self._arm_task = self.hass.async_create_background_task(self._arm(), "govee_light_show twinkly arm")
+        self._arm_task = self.hass.async_create_background_task(self._arm(), "light_show_studio twinkly arm")
 
     async def _arm(self) -> None:
         try:

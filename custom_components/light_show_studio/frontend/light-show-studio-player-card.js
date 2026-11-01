@@ -1,6 +1,6 @@
-// Govee light show player card: drop xLights .fseq shows (and songs) on it, press play. Ships with govee_light_show.
+// Light Show Studio player card: drop xLights .fseq shows (and songs) on it, press play. Ships with light_show_studio.
 //
-//   type: custom:govee-light-show-player-card
+//   type: custom:light-show-studio-player-card
 //   entity: media_player.light_show_player   # optional: autodetected (the media_player with a "queue" attribute)
 //   title: Light shows                       # optional
 //   mode: player | upload                    # optional: "player" hides the add-shows area, "upload" shows only it
@@ -34,7 +34,7 @@ const fmt = (s) => {
 
 const MAX_BYTES = 300 * 1024 * 1024;
 
-class GoveeC9PlayerCard extends HTMLElement {
+class LightShowStudioPlayerCard extends HTMLElement {
   static getStubConfig(hass) {
     const entity = Object.keys(hass.states).find(
       (id) => id.startsWith("media_player.") && hass.states[id].attributes.queue !== undefined
@@ -45,7 +45,7 @@ class GoveeC9PlayerCard extends HTMLElement {
   static getConfigForm() {
     return {
       schema: [
-        { name: "entity", selector: { entity: { domain: "media_player", integration: "govee_light_show" } } },
+        { name: "entity", selector: { entity: { domain: "media_player", integration: "light_show_studio" } } },
         { name: "title", selector: { text: {} } },
         { name: "mode", selector: { select: { mode: "dropdown", options: [
           { value: "", label: "Everything" }, { value: "player", label: "Player only" }, { value: "upload", label: "Add shows only" }] } } },
@@ -123,7 +123,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     this._subscribing = true;
     try {
       const unsub = await this._hass.connection.subscribeMessage((m) => this._onEvent(m), {
-        type: "govee_light_show/player/subscribe",
+        type: "light_show_studio/player/subscribe",
       });
       if (!this.isConnected) unsub(); // removed from the page while we waited: don't leak the subscription
       else {
@@ -176,7 +176,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     do {
       this._reload = false;
       try {
-        const r = await this._hass.callWS({ type: "govee_light_show/shows/list" });
+        const r = await this._hass.callWS({ type: "light_show_studio/shows/list" });
         this._shows = r.shows || [];
         this._clearError("shows");
       } catch (err) {
@@ -248,7 +248,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     if (this._state) this._state = { ...this._state, queue: list };
     this._renderList();
     try {
-      await this._hass.callWS({ type: "govee_light_show/shows/reorder", order: list });
+      await this._hass.callWS({ type: "light_show_studio/shows/reorder", order: list });
     } catch (err) {
       this._error(this._msg(err, "Couldn't reorder"));
       this._loadShows();
@@ -258,7 +258,7 @@ class GoveeC9PlayerCard extends HTMLElement {
   async _delete(show) {
     this._confirming = null;
     try {
-      await this._hass.callWS({ type: "govee_light_show/shows/delete", show_id: show.id });
+      await this._hass.callWS({ type: "light_show_studio/shows/delete", show_id: show.id });
       this._shows = (this._shows || []).filter((s) => s.id !== show.id);
       this._renderList();
       this._loadShows();
@@ -348,7 +348,7 @@ class GoveeC9PlayerCard extends HTMLElement {
       form.append("show", file.name.replace(/\.[^.]+$/, ""));
       form.append("file", file, file.name);
       const fail = (message, status) => reject(Object.assign(new Error(message), { status }));
-      xhr.open("POST", "/api/govee_light_show/shows/upload");
+      xhr.open("POST", "/api/light_show_studio/shows/upload");
       xhr.timeout = 30 * 60 * 1000;
       xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       xhr.upload.onprogress = (e) => {
@@ -686,7 +686,7 @@ class GoveeC9PlayerCard extends HTMLElement {
       </style>
       <ha-card>
         <div class="head"><span class="title"></span><span class="count"></span></div>
-        <div class="setup" hidden>No Light Show Player yet.<br><b>Set up the Light Show Player: Settings → Devices &amp; services → Add integration → Govee Light Show → Add the Light Show Player.</b></div>
+        <div class="setup" hidden>No Light Show Player yet.<br><b>Set up the Light Show Player: Settings → Devices &amp; services → Add integration → Light Show Studio → Add the Light Show Player.</b></div>
         <div class="playpart">
           <div class="np">
             <div class="np-title">Nothing playing</div>
@@ -789,11 +789,11 @@ class GoveeC9PlayerCard extends HTMLElement {
   }
 }
 
-customElements.define("govee-light-show-player-card", GoveeC9PlayerCard);
+customElements.define("light-show-studio-player-card", LightShowStudioPlayerCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
-  type: "govee-light-show-player-card",
-  name: "Govee light show player",
+  type: "light-show-studio-player-card",
+  name: "Light Show Studio player",
   description: "EZPlayer-style light show player: add xLights shows, press play.",
   preview: true,
 });

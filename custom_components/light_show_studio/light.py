@@ -21,7 +21,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import C9ConfigEntry
-from .const import CONF_BULB_ENTITIES, CONF_DEVICE_ID, CONF_SKU, CONF_START_PIXEL, CONF_TYPE, DOMAIN, TYPE_TWINKLY
+from .const import CONF_BULB_ENTITIES, CONF_DEVICE_ID, CONF_SKU, CONF_START_PIXEL, CONF_TYPE, DOMAIN, TYPE_TWINKLY, TYPE_WLED
 from .controller import SHOW, C9Controller
 from .effects import EFFECT_LIST, EFFECTS
 from .protocol import Colour
@@ -48,14 +48,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry,
                             async_add_entities: AddEntitiesCallback) -> None:
     ctl = entry.runtime_data
     twinkly = entry.data.get(CONF_TYPE) == TYPE_TWINKLY
+    wled = entry.data.get(CONF_TYPE) == TYPE_WLED
     uid = entry.unique_id or entry.data[CONF_HOST]  # stays put when the IP changes
     device = DeviceInfo(identifiers={(DOMAIN, uid)}, name=entry.title,
-                        manufacturer="Twinkly" if twinkly else "Govee",
-                        model=entry.data.get(CONF_SKU) or ("Twinkly light" if twinkly else "LAN light"))
-    if twinkly and entry.data.get(CONF_DEVICE_ID):  # a MAC: lets Home Assistant match the device
+                        manufacturer="Twinkly" if twinkly else "WLED" if wled else "Govee",
+                        model=entry.data.get(CONF_SKU) or ("Twinkly light" if twinkly else "WLED" if wled else "LAN light"))
+    if (twinkly or wled) and entry.data.get(CONF_DEVICE_ID):  # a MAC: lets Home Assistant match the device
         device["connections"] = {(CONNECTION_NETWORK_MAC, format_mac(entry.data[CONF_DEVICE_ID]))}
     entities: list[LightEntity] = [C9StringLight(ctl, entry, device, uid)]
-    if entry.options.get(CONF_BULB_ENTITIES, entry.data.get(CONF_BULB_ENTITIES, not twinkly)):
+    if entry.options.get(CONF_BULB_ENTITIES, entry.data.get(CONF_BULB_ENTITIES, not (twinkly or wled))):
         entities += [C9BulbLight(ctl, device, uid, i) for i in range(ctl.bulbs)]
     async_add_entities(entities)
 

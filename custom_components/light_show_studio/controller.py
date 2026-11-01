@@ -158,7 +158,7 @@ class C9Controller:
         if not self.is_on or self.show_mode:
             return  # in show mode the sequencer's frames are the picture
         if self.effect in ANIMATED:
-            self._task = self.hass.async_create_background_task(self._animate(), "govee_light_show effect")
+            self._task = self.hass.async_create_background_task(self._animate(), "light_show_studio effect")
         else:
             self._send_frame(self._base_frame(0))
 
@@ -302,7 +302,7 @@ class C9Controller:
     def start_identify(self) -> None:
         if not self._identifying:
             self._identify_task = self.hass.async_create_background_task(
-                self.async_identify(), "govee_light_show identify")
+                self.async_identify(), "light_show_studio identify")
 
     async def async_identify(self) -> None:
         """Flash the whole light white three times, then put it back as it was."""

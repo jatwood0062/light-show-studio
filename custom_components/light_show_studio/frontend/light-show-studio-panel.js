@@ -1,6 +1,6 @@
-// Govee Light Show sidebar app: Play / Lights / Add shows / Setup in one page. Ships with govee_light_show.
-// Reuses the two cards, so govee-light-show-card.js and govee-light-show-player-card.js must be loaded too.
-// Custom element: govee-light-show-panel (HA sets hass, narrow, route, panel on it).
+// Light Show Studio sidebar app: Play / Lights / Add shows / Setup in one page. Ships with light_show_studio.
+// Reuses the two cards, so light-show-studio-card.js and light-show-studio-player-card.js must be loaded too.
+// Custom element: light-show-studio-panel (HA sets hass, narrow, route, panel on it).
 
 const TABS = [
   ["play", "Play", "M8 5v14l11-7z"],
@@ -8,8 +8,8 @@ const TABS = [
   ["add", "Add shows", "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"],
   ["setup", "Setup", "M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"],
 ];
-const INTEGRATION_PATH = "/config/integrations/integration/govee_light_show";
-const STORE_KEY = "govee_light_show_panel_tab";
+const INTEGRATION_PATH = "/config/integrations/integration/light_show_studio";
+const STORE_KEY = "light_show_studio_panel_tab";
 
 const svg = (d, size = 24) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path fill="currentColor" d="${d}"/></svg>`;
@@ -31,12 +31,12 @@ const stored = {
   },
 };
 
-class GoveeLightShowPanel extends HTMLElement {
+class LightShowStudioPanel extends HTMLElement {
   constructor() {
     super();
     this._tab = null;
     this._cards = new Map(); // entity id -> light card
-    this._strands = null; // from govee_light_show/strands
+    this._strands = null; // from light_show_studio/strands
     this._editing = null; // entry id whose inline editor is open
   }
 
@@ -229,9 +229,9 @@ class GoveeLightShowPanel extends HTMLElement {
     this._dot.setAttribute("aria-label", "Setup isn't finished");
     this._tabBtns.setup.append(this._dot);
 
-    this._player = this._card("govee-light-show-player-card", { mode: "player" });
+    this._player = this._card("light-show-studio-player-card", { mode: "player" });
     this._sections.play.append(this._player);
-    this._adder = this._card("govee-light-show-player-card", { mode: "upload" });
+    this._adder = this._card("light-show-studio-player-card", { mode: "upload" });
     this._sections.add.append(this._adder);
     this._sections.lights.innerHTML = `
       <div class="box strands" role="list" aria-label="Light strands" hidden></div>
@@ -291,7 +291,7 @@ class GoveeLightShowPanel extends HTMLElement {
     if (this._loading || !this._hass) return;
     this._loading = true;
     try {
-      const r = await this._hass.callWS({ type: "govee_light_show/strands" });
+      const r = await this._hass.callWS({ type: "light_show_studio/strands" });
       this._strands = Array.isArray(r?.strands) ? r.strands : [];
       this._info = { ddp: r?.ddp_port || 4048, max: r?.max_pixels || 2040 };
       this._strandsError = "";
@@ -312,11 +312,11 @@ class GoveeLightShowPanel extends HTMLElement {
   }
 
   _overlaps(s) {
-    const [a0, a1] = GoveeLightShowPanel._range(s);
+    const [a0, a1] = LightShowStudioPanel._range(s);
     const out = [];
     for (const o of this._strands) {
       if (o === s) continue;
-      const [b0, b1] = GoveeLightShowPanel._range(o);
+      const [b0, b1] = LightShowStudioPanel._range(o);
       const lo = Math.max(a0, b0), hi = Math.min(a1, b1);
       if (lo <= hi) out.push(`Overlaps ${o.title}: pixels ${lo}\u2013${hi}`);
     }
@@ -325,7 +325,7 @@ class GoveeLightShowPanel extends HTMLElement {
 
   _nextFree(except) {
     let end = 0;
-    for (const o of this._strands) if (o !== except) end = Math.max(end, GoveeLightShowPanel._range(o)[1]);
+    for (const o of this._strands) if (o !== except) end = Math.max(end, LightShowStudioPanel._range(o)[1]);
     return end + 1;
   }
 
@@ -370,9 +370,9 @@ class GoveeLightShowPanel extends HTMLElement {
   _strandRow(s) {
     const row = this._el("div", "strand");
     row.setAttribute("role", "listitem");
-    const [p0, p1] = GoveeLightShowPanel._range(s);
+    const [p0, p1] = LightShowStudioPanel._range(s);
     const state = !s.loaded ? ["", "Not loaded"] : s.online === true ? ["on", "Online"]
-      : s.online === false ? ["off", "Offline" + (s.last_seen ? ` \u00b7 last seen ${GoveeLightShowPanel._ago(s.last_seen)}` : " \u00b7 never seen")]
+      : s.online === false ? ["off", "Offline" + (s.last_seen ? ` \u00b7 last seen ${LightShowStudioPanel._ago(s.last_seen)}` : " \u00b7 never seen")]
       : ["", "checking\u2026"];
     const info = this._el("div", "info");
     const name = this._el("div", "name");
@@ -381,7 +381,7 @@ class GoveeLightShowPanel extends HTMLElement {
     dot.setAttribute("aria-label", state[1]);
     name.append(dot, this._el("span", "n", s.title), this._el("span", "state " + state[0], state[1]));
     const meta = this._el("div", "meta");
-    const kind = `${s.kind === "twinkly" ? "Twinkly" : "Govee"}${s.model ? " " + s.model : ""}`;
+    const kind = `${{ twinkly: "Twinkly", wled: "WLED" }[s.kind] || "Govee"}${s.model ? " " + s.model : ""}`;
     const ip = this._el("button", "ip", s.host || "");
     ip.title = "Tap to copy";
     ip.onclick = () => this._copy(s.host, ip, s.host);
@@ -411,7 +411,7 @@ class GoveeLightShowPanel extends HTMLElement {
     btn.textContent = "Flashing\u2026";
     row.querySelector(".serr")?.remove();
     try {
-      await this._hass.callWS({ type: "govee_light_show/identify", entry_id: s.entry_id });
+      await this._hass.callWS({ type: "light_show_studio/identify", entry_id: s.entry_id });
     } catch (err) {
       row.append(this._el("div", "serr", (typeof err === "string" ? err : err?.message) || "Couldn't identify this light."));
     }
@@ -466,7 +466,7 @@ class GoveeLightShowPanel extends HTMLElement {
       if (!Number.isInteger(bulbs) || bulbs < 1) msgs.push("Bulbs must be 1 or more.");
       if (!msgs.length && start + bulbs - 1 > this._info.max) msgs.push(`The last pixel can't go past ${this._info.max}.`);
       if (msgs.length) return msg(msgs[0]);
-      const data = { type: "govee_light_show/strand/update", entry_id: s.entry_id };
+      const data = { type: "light_show_studio/strand/update", entry_id: s.entry_id };
       if (title !== s.title) data.title = title;
       if (start !== s.start_pixel) data.start_pixel = start;
       if (bulbs !== s.bulbs) data.bulbs = bulbs;
@@ -489,7 +489,7 @@ class GoveeLightShowPanel extends HTMLElement {
   _renderXl(sorted) {
     const box = this._xlBox;
     const port = this._info.ddp;
-    const total = sorted.reduce((m, s) => Math.max(m, GoveeLightShowPanel._range(s)[1]), 0);
+    const total = sorted.reduce((m, s) => Math.max(m, LightShowStudioPanel._range(s)[1]), 0);
     box.hidden = !sorted.length;
     box.textContent = "";
     const line = `DDP \u00b7 ${location.hostname}:${port} \u00b7 ${total} pixels (${total * 3} channels)`;
@@ -501,7 +501,7 @@ class GoveeLightShowPanel extends HTMLElement {
       `Total channels: ${total * 3}`,
       "",
       ...sorted.map((s) => {
-        const [p0, p1] = GoveeLightShowPanel._range(s);
+        const [p0, p1] = LightShowStudioPanel._range(s);
         return `${s.title}: channels ${(p0 - 1) * 3 + 1}\u2013${p1 * 3} (pixels ${p0}\u2013${p1})`;
       }),
     ].join("\n");
@@ -565,14 +565,14 @@ class GoveeLightShowPanel extends HTMLElement {
       this._lightKey = key;
       for (const [id, el] of this._cards) if (!ids.includes(id)) (el.remove(), this._cards.delete(id));
       for (const id of ids) {
-        if (!this._cards.has(id)) this._cards.set(id, this._card("govee-light-show-card", { entity: id }));
+        if (!this._cards.has(id)) this._cards.set(id, this._card("light-show-studio-card", { entity: id }));
         this._lightsGrid.append(this._cards.get(id)); // keeps entity order
       }
       this._emptyLights?.remove();
       this._emptyLights = null;
       if (!ids.length) {
         this._emptyLights = Object.assign(document.createElement("div"), { className: "box empty" });
-        this._emptyLights.innerHTML = `No Govee string lights yet.<br>`;
+        this._emptyLights.innerHTML = `No lights yet.<br>`;
         const b = Object.assign(document.createElement("button"), { className: "btn", textContent: "Add a light" });
         b.onclick = () => this._navigate(INTEGRATION_PATH);
         this._emptyLights.append(b);
@@ -596,7 +596,7 @@ class GoveeLightShowPanel extends HTMLElement {
 
   _renderSetup(status, shows) {
     const rows = [
-      ["lights", "Lights added", status.lights ? "" : "Add a Govee string light", status.lights ? "Add another light" : "Add a light",
+      ["lights", "Lights added", status.lights ? "" : "Add a light", status.lights ? "Add another light" : "Add a light",
         () => this._navigate(INTEGRATION_PATH)],
       ["player", "Show player set up", status.player ? "" : "Add the Light Show Player", status.player ? "Open integration" : "Set up the player",
         () => this._navigate(INTEGRATION_PATH)],
@@ -628,4 +628,4 @@ class GoveeLightShowPanel extends HTMLElement {
   }
 }
 
-customElements.define("govee-light-show-panel", GoveeLightShowPanel);
+customElements.define("light-show-studio-panel", LightShowStudioPanel);

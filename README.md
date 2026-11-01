@@ -1,6 +1,6 @@
-# Govee Light Show
+# Light Show Studio
 
-Local light shows for Govee and Twinkly lights in Home Assistant: play xLights / Light-O-Rama / Vixen / FPP
+Local light shows for Govee, Twinkly and WLED lights in Home Assistant: play xLights / Light-O-Rama / Vixen / FPP
 `.fseq` shows to music, paint single bulbs, and run effects for every season. Built on Govee
 C9 string lights (H6860, which reports as R6861) and works with any Govee light that has
 **LAN Control**. Twinkly strings are supported too (see [Twinkly lights](#twinkly-lights)).
@@ -12,16 +12,16 @@ C9 string lights (H6860, which reports as R6861) and works with any Govee light 
   See [docs/DEVICES.md](docs/DEVICES.md).
 - **Live from a sequencer**: Home Assistant looks like a pixel controller (DDP and E1.31), so
   xLights, EZPlayer, Light-O-Rama, Falcon Player or Vixen can drive the lights live.
-- Effects for every season, one light per bulb, and a `govee_light_show.set_pixels` action.
+- Effects for every season, one light per bulb, and a `light_show_studio.set_pixels` action.
 
 Everything stays on your LAN (Govee LAN API on UDP 4003, and Twinkly's local API).
 
 ## Quick start
 
 1. **Install**: in HACS → ⋮ → **Custom repositories**, add this repository's URL as type
-   **Integration**. Download **Govee Light Show**, then restart Home Assistant.
+   **Integration**. Download **Light Show Studio**, then restart Home Assistant.
 2. **Add your lights**: in the Govee Home app, turn on **LAN Control** for each light first.
-   Then go to Settings → Devices & services → **Add integration** → Govee Light Show and choose:
+   Then go to Settings → Devices & services → **Add integration** → Light Show Studio and choose:
    - **Add a Govee light**: lights on your network are listed (or type the IP). Repeat per light.
    - **Add a Twinkly light**: see [Twinkly lights](#twinkly-lights).
    - **Add the Light Show Player**: pick the speaker for the music (optional).
@@ -54,13 +54,23 @@ gives the setup text for xLights.
 
 Twinkly strings are added the same way as Govee lights, and show live in the Lights tab.
 
-1. Go to Settings → Devices & services → Govee Light Show → **Add entry** → **Add a Twinkly light**.
+1. Go to Settings → Devices & services → Light Show Studio → **Add entry** → **Add a Twinkly light**.
 2. Pick the light from the list, or type its IP address.
 
 - The light must be on the same network as Home Assistant.
 - The card layout comes from the mapping in the Twinkly app, so map the light there first.
 - While a show or colour from Home Assistant is active, the Twinkly app can't drive the light.
   Turn the light off in Home Assistant to give it back.
+
+## WLED lights
+
+WLED strips are added the same way, and show live in the Lights tab. Frames go out over DDP (UDP 4048).
+
+1. Go to Settings → Devices & services → Light Show Studio → **Add entry** → **Add a WLED light**.
+2. Pick the light from the list of WLED devices Home Assistant already knows, or type its IP address.
+
+- WLED returns to its own state about 2.5 seconds after Home Assistant stops sending frames.
+- Leave the built-in WLED integration installed for WLED's own controls (effects, presets, settings).
 
 ## Adding shows
 
@@ -102,15 +112,15 @@ setting left in the Govee app can't dim them.
 You don't need these: the Light Shows app does everything they do. They're for anyone who wants
 the controls on a dashboard, and they appear in the card picker after a restart.
 
-- **Govee C9 string** (`custom:govee-light-show-card`): shows every bulb live, including during
+- **Govee C9 string** (`custom:light-show-studio-card`): shows every bulb live, including during
   effects and shows. Pick a colour and tap or drag to paint bulbs. **Paint all**, **Holiday
   patterns…**, **off** and **Let the show control it** work as in the Lights tab.
-- **Light Show Player** (`custom:govee-light-show-player-card`): the Play tab on a dashboard.
+- **Light Show Player** (`custom:light-show-studio-player-card`): the Play tab on a dashboard.
   Drop the `.fseq` and the song onto it, and press Play.
 
 ```yaml
-type: custom:govee-light-show-card
-entity: light.govee_light_show
+type: custom:light-show-studio-card
+entity: light.light_show_studio
 title: Porch          # optional
 columns: 25           # optional: rows of this many bulbs
 layout:               # optional: x, y of each bulb in order (y grows downward), e.g. your roofline
@@ -134,7 +144,7 @@ be running.
 2. **Copy** the `.fseq` (and the song, if you want music) into `/media/xlights/` on Home
    Assistant, e.g. with the Samba share or File editor app. `/config/www/xlights/` works
    too.
-3. Call **`govee_light_show.play_sequence`**. The channels are read the same way as from xLights over
+3. Call **`light_show_studio.play_sequence`**. The channels are read the same way as from xLights over
    the network, so a string with First pixel 51 plays channels 151–300 of the file.
 
 | Field | |
@@ -160,7 +170,7 @@ to a different song.
 the lights just start when it reports *playing*. Use `audio_offset` only to fine-tune: if the
 lights are ahead of what you hear, try `0.1`–`0.3`.
 
-`govee_light_show.stop_sequence` stops the show and turns the bulbs dark.
+`light_show_studio.stop_sequence` stops the show and turns the bulbs dark.
 
 ```yaml
 automation:
@@ -172,7 +182,7 @@ automation:
       - condition: template
         value_template: "{{ now().month == 10 and now().day == 31 }}"
     actions:
-      - action: govee_light_show.play_sequence
+      - action: light_show_studio.play_sequence
         data:
           file: halloween.fseq
           media_player: media_player.porch_sonos

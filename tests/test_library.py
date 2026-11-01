@@ -11,14 +11,14 @@ from pathlib import Path
 
 import pytest
 
-PKG = Path(__file__).resolve().parent.parent / "custom_components" / "govee_light_show"
+PKG = Path(__file__).resolve().parent.parent / "custom_components" / "light_show_studio"
 
 
 def _load(name: str):
     """Import a module of the integration without running its __init__ (which needs Home Assistant)."""
-    pkg = sys.modules.setdefault("govee_light_show_under_test", types.ModuleType("govee_light_show_under_test"))
+    pkg = sys.modules.setdefault("light_show_studio_under_test", types.ModuleType("light_show_studio_under_test"))
     pkg.__path__ = [str(PKG)]
-    full = f"govee_light_show_under_test.{name}"
+    full = f"light_show_studio_under_test.{name}"
     if full not in sys.modules:
         spec = importlib.util.spec_from_file_location(full, PKG / f"{name}.py")
         mod = importlib.util.module_from_spec(spec)

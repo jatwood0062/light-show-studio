@@ -1,12 +1,12 @@
 {
-  "domain": "govee_light_show",
-  "name": "Govee Light Show",
+  "domain": "light_show_studio",
+  "name": "Light Show Studio",
   "codeowners": ["@jatwood0062"],
   "config_flow": true,
   "dependencies": ["frontend", "http", "media_player", "media_source", "panel_custom", "websocket_api"],
-  "documentation": "https://github.com/jatwood0062/govee-light-show",
+  "documentation": "https://github.com/jatwood0062/light-show-studio",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/jatwood0062/govee-light-show/issues",
+  "issue_tracker": "https://github.com/jatwood0062/light-show-studio/issues",
   "requirements": ["zstandard>=0.21"],
-  "version": "1.1.0"
+  "version": "2.0.0"
 }

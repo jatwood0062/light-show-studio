@@ -68,7 +68,7 @@ class ShowPlayer:
         if player is None:
             receiver: PixelReceiver = self.hass.data.setdefault(DOMAIN, PixelReceiver())
             player = self.hass.data[PLAYER] = SequencePlayer(
-                receiver.show, lambda coro: self.hass.async_create_background_task(coro, "govee_light_show sequence"))
+                receiver.show, lambda coro: self.hass.async_create_background_task(coro, "light_show_studio sequence"))
         return player
 
     async def async_refresh(self) -> None:
@@ -159,7 +159,7 @@ class ShowPlayer:
         self._index = index
         self.show = self.shows[self.queue[index]]
         self.state = PLAYING
-        self._runner = self.hass.async_create_background_task(self._run(index), "govee_light_show show queue")
+        self._runner = self.hass.async_create_background_task(self._run(index), "light_show_studio show queue")
         self._changed()
 
     def _cancel_runner(self) -> None:

@@ -1,4 +1,4 @@
-"""Govee C9: per-bulb local control of Govee string lights."""
+"""Light Show Studio: per-pixel light shows on Govee, Twinkly and WLED lights, locally."""
 from __future__ import annotations
 
 import os
@@ -29,6 +29,7 @@ from .const import (
     PLAYER,
     TYPE_PLAYER,
     TYPE_TWINKLY,
+    TYPE_WLED,
 )
 from .controller import C9Controller
 from .follow import play_with_speaker
@@ -40,12 +41,13 @@ from . import upload, websocket, ws_shows
 from .receiver import PixelReceiver
 from .showplayer import async_setup_player, async_unload_player
 from .twinkly import TwinklyController, async_gestalt
+from .wled import WledController, async_info
 
 PLATFORMS = [Platform.LIGHT]
 PLAYER_PLATFORMS = [Platform.MEDIA_PLAYER]
-FRONTEND_URL = "/govee_light_show"
-CARDS = ("govee-light-show-card.js", "govee-light-show-player-card.js")
-PANEL = "govee-light-show-panel"  # the "Light Shows" sidebar app
+FRONTEND_URL = "/light_show_studio"
+CARDS = ("light-show-studio-card.js", "light-show-studio-player-card.js")
+PANEL = "light-show-studio-panel"  # the "Light Shows" sidebar app
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 C9ConfigEntry = ConfigEntry[C9Controller]
@@ -82,7 +84,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def play(call: ServiceCall) -> None:
         receiver: PixelReceiver | None = hass.data.get(DOMAIN)
         if receiver is None:
-            raise ServiceValidationError("No Govee C9 strings are set up")
+            raise ServiceValidationError("No lights are set up")
         path = await hass.async_add_executor_job(_resolve, hass, call.data["file"])
         try:
             seq: FseqFile = await hass.async_add_executor_job(load, path)
@@ -92,7 +94,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         player: SequencePlayer | None = hass.data.get(PLAYER)
         if player is None:
             player = hass.data[PLAYER] = SequencePlayer(
-                receiver.show, lambda coro: hass.async_create_background_task(coro, "govee_light_show sequence"))
+                receiver.show, lambda coro: hass.async_create_background_task(coro, "light_show_studio sequence"))
         for entry in hass.config_entries.async_loaded_entries(DOMAIN):
             if isinstance(getattr(entry, "runtime_data", None), C9Controller):
                 entry.runtime_data.enable_show()
@@ -147,6 +149,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
             raise ConfigEntryNotReady(f"Twinkly at {entry.data[CONF_HOST]} is not reachable: {err}") from err
         ctl = entry.runtime_data = TwinklyController(hass, entry.data[CONF_HOST], bulbs,
                                                      entry.data.get(CONF_LED_PROFILE, "RGB"), info.get("frame_rate"))
+        ctl.mark_seen()
+    elif entry.data.get(CONF_TYPE) == TYPE_WLED:
+        try:
+            info = await async_info(async_get_clientsession(hass), entry.data[CONF_HOST])
+        except Exception as err:  # unreachable now; Home Assistant retries
+            raise ConfigEntryNotReady(f"WLED at {entry.data[CONF_HOST]} is not reachable: {err}") from err
+        ctl = entry.runtime_data = WledController(hass, entry.data[CONF_HOST], bulbs,
+                                                  bool(info.get("leds", {}).get("rgbw")))
         ctl.mark_seen()
     else:
         ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], bulbs, _opt(entry, CONF_SEGMENTED, True))

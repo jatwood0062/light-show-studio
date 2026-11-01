@@ -24,7 +24,7 @@ from .const import DOMAIN
 from .library import SHOW_PLAYER_KEY
 from .showplayer import IDLE, PAUSED, REPEAT_ALL, REPEAT_OFF, REPEAT_ONE, ShowPlayer
 
-SHOW_PREFIX = "govee_light_show_show://"
+SHOW_PREFIX = "light_show_studio_show://"
 REPEAT_TO_HA = {REPEAT_OFF: RepeatMode.OFF, REPEAT_ALL: RepeatMode.ALL, REPEAT_ONE: RepeatMode.ONE}
 HA_TO_REPEAT = {v: k for k, v in REPEAT_TO_HA.items()}
 
@@ -37,7 +37,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 class ShowPlayerEntity(MediaPlayerEntity):
     _attr_should_poll = False
     _attr_name = "Light Show Player"
-    _attr_unique_id = "govee_light_show_show_player"
+    _attr_unique_id = "light_show_studio_show_player"
     _attr_media_content_type = MediaType.MUSIC
     _attr_supported_features = (
         MediaPlayerEntityFeature.PLAY
@@ -56,7 +56,7 @@ class ShowPlayerEntity(MediaPlayerEntity):
     def __init__(self, player: ShowPlayer) -> None:
         self._player = player
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, "show_player")}, name="Light Show Player",
-                                            manufacturer="Govee Light Show")
+                                            manufacturer="Light Show Studio")
         self._updated_at: datetime = dt_util.utcnow()
 
     async def async_added_to_hass(self) -> None:

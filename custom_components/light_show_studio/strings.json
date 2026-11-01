@@ -2,10 +2,11 @@
   "config": {
     "step": {
       "user": {
-        "title": "Govee lights",
+        "title": "Light Show Studio",
         "menu_options": {
           "light": "Add a Govee light",
           "twinkly": "Add a Twinkly light",
+          "wled": "Add a WLED light",
           "player": "Add the Light Show Player"
         }
       },
@@ -37,6 +38,20 @@
           "host": "IP address"
         }
       },
+      "wled": {
+        "title": "Pick your WLED",
+        "description": "WLED lights already set up in Home Assistant's WLED integration.",
+        "data": {
+          "host": "Light"
+        }
+      },
+      "wled_manual": {
+        "title": "WLED's IP address",
+        "description": "Find it in the WLED app or on your router.",
+        "data": {
+          "host": "IP address"
+        }
+      },
       "details": {
         "title": "Set up {sku} at {host}",
         "data": {
@@ -56,9 +71,18 @@
           "start_pixel": "First pixel in xLights / Light-O-Rama output"
         }
       },
+      "wled_details": {
+        "title": "Set up {sku} at {host}",
+        "data": {
+          "name": "Name",
+          "bulbs": "Number of LEDs",
+          "bulb_entities": "Create a light for every LED",
+          "start_pixel": "First pixel in xLights / Light-O-Rama output"
+        }
+      },
       "player": {
         "title": "Light Show Player",
-        "description": "Plays your xLights / Light-O-Rama .fseq shows on every Govee light, with the music on a speaker.",
+        "description": "Plays your xLights / Light-O-Rama .fseq shows on all your lights, with the music on a speaker.",
         "data": {
           "speaker": "Speaker for the music (optional)",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
@@ -71,7 +95,7 @@
     },
     "error": {
       "invalid_host": "Enter the light's IPv4 address, like 192.168.1.50.",
-      "cannot_connect": "Can't reach a Twinkly light at that address."
+      "cannot_connect": "Can't reach a Twinkly or WLED light at that address."
     }
   },
   "options": {

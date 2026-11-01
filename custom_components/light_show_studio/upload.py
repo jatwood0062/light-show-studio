@@ -1,4 +1,4 @@
-"""POST /api/govee_light_show/shows/upload: add .fseq and song files to the show library."""
+"""POST /api/light_show_studio/shows/upload: add .fseq and song files to the show library."""
 from __future__ import annotations
 
 import os
@@ -21,8 +21,8 @@ def async_register(hass: HomeAssistant) -> None:
 
 
 class ShowUploadView(HomeAssistantView):
-    url = "/api/govee_light_show/shows/upload"
-    name = "api:govee_light_show:shows:upload"
+    url = "/api/light_show_studio/shows/upload"
+    name = "api:light_show_studio:shows:upload"
     requires_auth = True
 
     async def post(self, request: web.Request) -> web.Response:
