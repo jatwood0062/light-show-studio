@@ -2,6 +2,23 @@
 
 Changes to Govee Light Show, newest first.
 
+## [1.1.0] - 2026-11-01
+
+### Added
+- Twinkly lights: local realtime control. The card layout uses the Twinkly app's camera mapping.
+- Strands list in the Light Shows app's Lights tab: IP, model, pixel and channel ranges, online
+  status, Identify, Edit, overlap warnings, and a copyable xLights setup.
+- Online and offline detection: lights go unavailable when they stop answering.
+- Automatic follow-up when a light's IP address changes.
+- IP, pixel and channel attributes on lights.
+- MAC address on the Twinkly device page.
+
+### Changed
+- Pixel space up to 2040 pixels (12 E1.31 universes).
+
+### Fixed
+- Lights that went offline no longer show as on.
+
 ## [1.0.0] - 2026-11-01 (unreleased)
 
 ### Added

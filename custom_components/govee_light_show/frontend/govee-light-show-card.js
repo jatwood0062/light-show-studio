@@ -60,7 +60,10 @@ class GoveeC9Card extends HTMLElement {
     this._config = { columns: 0, ...config };
     this._brush = this._brush === undefined ? this._colors()[0] : this._brush;
     this._retryAt = 0;
-    if (old && old.entity !== config.entity) this._unsubscribe();
+    if (old && old.entity !== config.entity) {
+      this._unsubscribe();
+      this._autoLayout = null;
+    }
     this._built = false;
     if (this._hass) this._build();
   }
@@ -131,10 +134,17 @@ class GoveeC9Card extends HTMLElement {
   }
 
   _onFrame(m) {
+    // a controller that knows its own geometry (Twinkly) sends it once; used only when the config has no layout
+    let rebuild = false;
+    if (!this._config.layout && !this._autoLayout && Array.isArray(m.layout) && m.layout.length) {
+      this._autoLayout = m.layout;
+      rebuild = true;
+    }
     if (m.bulbs !== this._count) {
       this._count = m.bulbs;
-      this._buildBulbs();
+      rebuild = true;
     }
+    if (rebuild) this._buildBulbs();
     this._live = m;
     // optimistic paint stays until a live frame after the server confirmed it
     const now = Date.now();
@@ -429,7 +439,8 @@ class GoveeC9Card extends HTMLElement {
     if (!strip) return;
     strip.innerHTML = "";
     this._bulbs = [];
-    const { columns, layout } = this._config;
+    const { columns } = this._config;
+    const layout = this._config.layout || this._autoLayout;
     const points = Array.isArray(layout) && layout.length ? layout : null;
     strip.className = "strip " + (points ? "points" : columns > 0 ? "grid" : "flow");
     strip.style.gridTemplateColumns = columns > 0 && !points ? `repeat(${columns}, minmax(0, 1fr))` : "";
@@ -476,7 +487,7 @@ class GoveeC9Card extends HTMLElement {
     const s = this._hass.states[this._config.entity];
     const gone = !s || s.state === "unavailable" || s.state === "unknown";
     if (!s) st.textContent = "Not found";
-    else if (gone) st.textContent = "Unavailable";
+    else if (gone) st.textContent = "Offline";
     else if (s.state !== "on") st.textContent = "Off";
     else st.textContent = s.attributes.effect || (s.attributes.per_bulb ? "Painted" : "Colour");
     st.classList.toggle("bad", gone);

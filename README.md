@@ -1,9 +1,9 @@
 # Govee Light Show
 
-Local light shows for Govee lights in Home Assistant: play xLights / Light-O-Rama / Vixen / FPP
+Local light shows for Govee and Twinkly lights in Home Assistant: play xLights / Light-O-Rama / Vixen / FPP
 `.fseq` shows to music, paint single bulbs, and run effects for every season. Built on Govee
 C9 string lights (H6860, which reports as R6861) and works with any Govee light that has
-**LAN Control**.
+**LAN Control**. Twinkly strings are supported too (see [Twinkly lights](#twinkly-lights)).
 
 - **Light Shows app**: a page in the Home Assistant sidebar to play shows with their music, paint
   bulbs, and add shows. No dashboard setup needed.
@@ -14,7 +14,7 @@ C9 string lights (H6860, which reports as R6861) and works with any Govee light 
   xLights, EZPlayer, Light-O-Rama, Falcon Player or Vixen can drive the lights live.
 - Effects for every season, one light per bulb, and a `govee_light_show.set_pixels` action.
 
-Everything stays on your LAN (Govee LAN API, UDP 4003).
+Everything stays on your LAN (Govee LAN API on UDP 4003, and Twinkly's local API).
 
 ## Quick start
 
@@ -23,6 +23,7 @@ Everything stays on your LAN (Govee LAN API, UDP 4003).
 2. **Add your lights**: in the Govee Home app, turn on **LAN Control** for each light first.
    Then go to Settings → Devices & services → **Add integration** → Govee Light Show and choose:
    - **Add a Govee light**: lights on your network are listed (or type the IP). Repeat per light.
+   - **Add a Twinkly light**: see [Twinkly lights](#twinkly-lights).
    - **Add the Light Show Player**: pick the speaker for the music (optional).
 3. **Add a show**: open **Light Shows** in the sidebar → **Add shows** → drop in your `.fseq`
    and its song → **Play**. New users land on **Setup** until everything is ready.
@@ -43,6 +44,24 @@ Open **Light Shows** in the sidebar. It has four tabs:
 - **Setup**: a checklist (lights added, Light Show Player set up, shows added) with a button
   for each step.
 
+**Strands** are listed at the top of the Lights tab, one row per light. Each row shows its
+status (online, offline, or checking), name, model, IP address, and the pixels and channels it
+uses. **Identify** flashes the light so you can find it. Admins can **Edit** the name, start
+pixel or bulb count. Two strands with overlapping pixels show a warning. **Copy** in the footer
+gives the setup text for xLights.
+
+## Twinkly lights
+
+Twinkly strings are added the same way as Govee lights, and show live in the Lights tab.
+
+1. Go to Settings → Devices & services → Govee Light Show → **Add entry** → **Add a Twinkly light**.
+2. Pick the light from the list, or type its IP address.
+
+- The light must be on the same network as Home Assistant.
+- The card layout comes from the mapping in the Twinkly app, so map the light there first.
+- While a show or colour from Home Assistant is active, the Twinkly app can't drive the light.
+  Turn the light off in Home Assistant to give it back.
+
 ## Adding shows
 
 1. In xLights, save/render your sequence; the `.fseq` is next to the `.xsq` in your show folder.
@@ -59,7 +78,8 @@ Automations: `media_player.media_play` on `media_player.light_show_player` start
 Home Assistant listens for pixel data on **DDP (UDP 4048)** and **E1.31/sACN (UDP 5568,
 510 channels per universe from universe 1)**, and looks like one pixel controller to xLights.
 Each string takes its own slice, set by **First pixel** (Configure on the integration):
-the first string is pixels 1–50, a second one defaults to 51–100, and so on.
+the first string is pixels 1–50, a second one defaults to 51–100, and so on. Up to 2040 pixels
+in total (12 E1.31 universes).
 
 1. In xLights → **Controllers** → **Add Ethernet**:
    - Protocol **DDP**, IP address = your Home Assistant IP

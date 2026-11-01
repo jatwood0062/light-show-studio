@@ -16,12 +16,12 @@ from homeassistant.components.light import (
 from homeassistant.const import CONF_HOST, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv, entity_platform
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo, format_mac
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import C9ConfigEntry
-from .const import CONF_BULB_ENTITIES, CONF_SKU, DOMAIN
+from .const import CONF_BULB_ENTITIES, CONF_DEVICE_ID, CONF_SKU, CONF_START_PIXEL, CONF_TYPE, DOMAIN, TYPE_TWINKLY
 from .controller import SHOW, C9Controller
 from .effects import EFFECT_LIST, EFFECTS
 from .protocol import Colour
@@ -47,11 +47,16 @@ SET_PIXELS_SCHEMA = {
 async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry,
                             async_add_entities: AddEntitiesCallback) -> None:
     ctl = entry.runtime_data
-    device = DeviceInfo(identifiers={(DOMAIN, entry.data[CONF_HOST])}, name=entry.title,
-                        manufacturer="Govee", model=entry.data.get(CONF_SKU) or "LAN light")
-    entities: list[LightEntity] = [C9StringLight(ctl, entry, device)]
-    if entry.options.get(CONF_BULB_ENTITIES, entry.data.get(CONF_BULB_ENTITIES, True)):
-        entities += [C9BulbLight(ctl, entry, device, i) for i in range(ctl.bulbs)]
+    twinkly = entry.data.get(CONF_TYPE) == TYPE_TWINKLY
+    uid = entry.unique_id or entry.data[CONF_HOST]  # stays put when the IP changes
+    device = DeviceInfo(identifiers={(DOMAIN, uid)}, name=entry.title,
+                        manufacturer="Twinkly" if twinkly else "Govee",
+                        model=entry.data.get(CONF_SKU) or ("Twinkly light" if twinkly else "LAN light"))
+    if twinkly and entry.data.get(CONF_DEVICE_ID):  # a MAC: lets Home Assistant match the device
+        device["connections"] = {(CONNECTION_NETWORK_MAC, format_mac(entry.data[CONF_DEVICE_ID]))}
+    entities: list[LightEntity] = [C9StringLight(ctl, entry, device, uid)]
+    if entry.options.get(CONF_BULB_ENTITIES, entry.data.get(CONF_BULB_ENTITIES, not twinkly)):
+        entities += [C9BulbLight(ctl, device, uid, i) for i in range(ctl.bulbs)]
     async_add_entities(entities)
 
     entity_platform.async_get_current_platform().async_register_entity_service(
@@ -70,6 +75,10 @@ class _Base(LightEntity):
         self.ctl = ctl
         self._attr_device_info = device
 
+    @property
+    def available(self) -> bool:
+        return self.ctl.online is not False
+
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(self.ctl.add_listener(self.async_write_ha_state))
 
@@ -79,9 +88,10 @@ class C9StringLight(_Base, RestoreEntity):
     _attr_supported_features = LightEntityFeature.EFFECT
     _attr_effect_list = [SHOW, *EFFECT_LIST]
 
-    def __init__(self, ctl, entry, device) -> None:
+    def __init__(self, ctl, entry, device, uid: str) -> None:
         super().__init__(ctl, device)
-        self._attr_unique_id = f"{entry.data[CONF_HOST]}_string"
+        self._attr_unique_id = f"{uid}_string"
+        self._start = entry.options.get(CONF_START_PIXEL, entry.data.get(CONF_START_PIXEL, 1))
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -118,7 +128,9 @@ class C9StringLight(_Base, RestoreEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"per_bulb": self.ctl.custom, "bulbs": self.ctl.bulbs}
+        first, n = self._start, self.ctl.bulbs
+        return {"per_bulb": self.ctl.custom, "bulbs": n, "ip_address": self.ctl.host, "start_pixel": first,
+                "pixels": f"{first}-{first + n - 1}", "channels": f"{(first - 1) * 3 + 1}-{(first + n - 1) * 3}"}
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.ctl.async_turn_on(kwargs.get(ATTR_BRIGHTNESS), kwargs.get(ATTR_RGB_COLOR),
@@ -132,10 +144,10 @@ class C9StringLight(_Base, RestoreEntity):
 
 
 class C9BulbLight(_Base):
-    def __init__(self, ctl, entry, device, index: int) -> None:
+    def __init__(self, ctl, device, uid: str, index: int) -> None:
         super().__init__(ctl, device)
         self.index = index
-        self._attr_unique_id = f"{entry.data[CONF_HOST]}_bulb_{index + 1}"
+        self._attr_unique_id = f"{uid}_bulb_{index + 1}"
         self._attr_name = f"Bulb {index + 1}"
 
     @property

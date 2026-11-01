@@ -3,6 +3,11 @@
 Which Govee lights take the LAN API (UDP 4003) and the undocumented `razer` per-segment realtime
 frame (`BB .. B0 <mode> <count> <rgb...> <xor>`, see `protocol.py`). `unknown` means no source says.
 
+## Twinkly
+
+Tested on a Twinkly TWS400STV (400 RGB LEDs, firmware 2.9.1, Gen II). RGBW models are supported
+but untested. Twinkly lights use their own local API, not the Govee LAN API.
+
 ## Key findings
 
 - **Real SKU of the Govee C9 string lights: H6860** (50 bulbs, 49 ft) and H6861 (100 bulbs, 98 ft),

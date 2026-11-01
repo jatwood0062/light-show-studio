@@ -81,8 +81,9 @@ class GoveeLan:
         self._sock.close()
 
 
-async def async_scan(timeout: float = 2.5) -> dict[str, dict]:
+async def async_scan(timeout: float = 2.5) -> dict[str, dict] | None:
     """Ask every Govee light with LAN Control on to report itself: {ip: {"sku", "device"}}.
+    None when the scan couldn't run at all (port held, no network), as opposed to finding nothing.
 
     Replies go to UDP 4002, which Home Assistant's own Govee integration may hold; the port is
     shared where the OS allows it, otherwise this finds nothing and the IP is typed in."""
@@ -111,7 +112,7 @@ async def async_scan(timeout: float = 2.5) -> dict[str, dict]:
             except (ValueError, KeyError, TypeError):
                 continue
     except OSError:
-        pass
+        return None
     finally:
         sock.close()
     return found

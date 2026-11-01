@@ -25,7 +25,8 @@ def _split(c: Colour) -> tuple[Colour, int]:
 class C9Controller:
     def __init__(self, hass: HomeAssistant, host: str, bulbs: int, segmented: bool = True) -> None:
         self.hass = hass
-        self.lan = GoveeLan(host)
+        self.host = host
+        self.lan = self._make_link(host)
         self.bulbs = bulbs
         self.segmented = segmented  # False: the light takes one colour, the frame's average
         self._whole: tuple[Colour, int] | None = None
@@ -48,6 +49,45 @@ class C9Controller:
         self._frame_listeners: list[Callable[[], None]] = []
         self._ext_sent = 0.0
         self._ext_seen = 0.0  # last sequencer frame received, used or not
+        self.online: bool | None = None  # None = not checked yet
+        self.last_seen: float | None = None  # wall clock
+        self._misses = 0
+        self._identifying = False
+        self._identify_task: asyncio.Task | None = None
+
+    # --- hardware hooks (a subclass for another brand overrides these) ----
+    def _make_link(self, host: str) -> GoveeLan | None:
+        return GoveeLan(host)
+
+    def _hw_power(self, on: bool) -> None:
+        self.lan.send(turn_msg(on))
+
+    def _hw_frame(self, frame: list[Colour]) -> None:
+        """Show a per-bulb frame that is already scaled by the brightness."""
+        if not self._realtime:
+            self.lan.send(brightness_msg(100))  # the string's own dimmer would dim every frame
+            self.lan.send(realtime_msg(True))
+            self._realtime = True
+        self.lan.send(colours_msg(frame))
+
+    def _hw_close(self) -> None:
+        self.lan.close()
+
+    async def _hw_wait(self) -> None:
+        """Wait until frames are accepted (a subclass that needs time to get ready)."""
+
+    # --- health ----------------------------------------------------------
+    def mark_seen(self) -> None:
+        changed = self.online is not True
+        self.online, self._misses, self.last_seen = True, 0, time.time()
+        if changed:
+            self._notify()
+
+    def mark_missed(self, threshold: int) -> None:
+        self._misses += 1
+        if self._misses >= threshold and self.online is not False:
+            self.online = False
+            self._notify()
 
     # --- listeners -------------------------------------------------------
     def add_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
@@ -80,13 +120,9 @@ class C9Controller:
         if not self.segmented:
             self._send_whole(frame)
             return
-        if not self._realtime:
-            self.lan.send(brightness_msg(100))  # the string's own dimmer would dim every frame
-            self.lan.send(realtime_msg(True))
-            self._realtime = True
         f = self.brightness / 255
         frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
-        self.lan.send(colours_msg(frame))
+        self._hw_frame(frame)
         self._set_frame(frame)
 
     def _send_whole(self, frame: list[Colour]) -> None:
@@ -161,7 +197,7 @@ class C9Controller:
     async def async_turn_on(self, brightness: int | None = None, colour: Colour | None = None,
                             effect: str | None = None) -> None:
         if not self.is_on:
-            self.lan.send(turn_msg(True))
+            self._hw_power(True)
             self._realtime = False  # the light may leave realtime mode while off
             self._whole = None
             self.is_on = True
@@ -186,7 +222,7 @@ class C9Controller:
         if self._whole_handle:
             self._whole_handle.cancel()
             self._whole_handle = None
-        self.lan.send(turn_msg(False))
+        self._hw_power(False)
         self.is_on = False
         self._realtime = False
         self._set_frame([(0, 0, 0)] * self.bulbs)
@@ -225,7 +261,7 @@ class C9Controller:
     def enable_show(self) -> None:
         self._stop_animation()
         if not self.is_on:
-            self.lan.send(turn_msg(True))
+            self._hw_power(True)
             self.is_on = True
             self._realtime = False
             self._whole = None
@@ -237,6 +273,8 @@ class C9Controller:
     def show_external(self, rgb: bytes) -> None:
         now = time.monotonic()
         self._ext_seen = now
+        if self._identifying:
+            return
         if not self.show_mode or not self.is_on:
             return  # an effect or colour was picked, or the light was turned off; ignore the sequencer
         if now - self._ext_sent < 0.8 / EXTERNAL_MAX_FPS:  # slack for jitter, or 25 ms shows lose every other frame
@@ -252,7 +290,61 @@ class C9Controller:
 
     def shutdown(self) -> None:
         self._stop_animation()
+        if self._identify_task:  # don't let a flash wake a light that's being removed
+            self._identify_task.cancel()
         for handle in (self._flush_handle, self._whole_handle):
             if handle:
                 handle.cancel()
-        self.lan.close()
+        self._hw_close()
+
+    # --- identify ----------------------------------------------------------
+    @callback
+    def start_identify(self) -> None:
+        if not self._identifying:
+            self._identify_task = self.hass.async_create_background_task(
+                self.async_identify(), "govee_light_show identify")
+
+    async def async_identify(self) -> None:
+        """Flash the whole light white three times, then put it back as it was."""
+        if self._identifying:
+            return
+        self._identifying = True
+        was_on, was_show, before = self.is_on, self.show_mode, list(self.frame)
+        try:
+            self._stop_animation()
+            if self._whole_handle:
+                self._whole_handle.cancel()
+                self._whole_handle = None
+            if not was_on:
+                self._hw_power(True)
+                self._realtime = False
+                await asyncio.sleep(0.3)
+            await self._hw_wait()
+            for _ in range(3):
+                self._flash((255, 255, 255))
+                await asyncio.sleep(0.4)
+                self._flash((0, 0, 0))
+                await asyncio.sleep(0.3)
+        finally:
+            self._whole = None
+            if not was_on:
+                self._hw_power(False)
+                self._realtime = False
+                self._set_frame([(0, 0, 0)] * self.bulbs)
+            elif was_show:
+                if self.segmented:
+                    self._hw_frame(before)
+                    self._set_frame(before)
+                else:
+                    self._send_whole(before)
+                self._ext_sent = 0.0
+            else:
+                self._render()
+            self._identifying = False
+
+    def _flash(self, colour: Colour) -> None:
+        if self.segmented:
+            self._hw_frame([colour] * self.bulbs)
+        else:
+            self.lan.send(brightness_msg(100))
+            self.lan.send(colour_msg(colour))

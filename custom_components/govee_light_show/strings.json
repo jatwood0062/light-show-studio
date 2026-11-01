@@ -5,6 +5,7 @@
         "title": "Govee lights",
         "menu_options": {
           "light": "Add a Govee light",
+          "twinkly": "Add a Twinkly light",
           "player": "Add the Light Show Player"
         }
       },
@@ -22,6 +23,20 @@
           "host": "IP address"
         }
       },
+      "twinkly": {
+        "title": "Pick your Twinkly",
+        "description": "Twinkly lights found on your network.",
+        "data": {
+          "host": "Light"
+        }
+      },
+      "twinkly_manual": {
+        "title": "Twinkly's IP address",
+        "description": "Find it in the Twinkly app under Settings, or on your router.",
+        "data": {
+          "host": "IP address"
+        }
+      },
       "details": {
         "title": "Set up {sku} at {host}",
         "data": {
@@ -29,6 +44,15 @@
           "bulbs": "Number of bulbs / segments",
           "segmented": "Per-bulb control (turn off if the light only takes one colour)",
           "bulb_entities": "Create a light for every bulb",
+          "start_pixel": "First pixel in xLights / Light-O-Rama output"
+        }
+      },
+      "twinkly_details": {
+        "title": "Set up {sku} at {host}",
+        "data": {
+          "name": "Name",
+          "bulbs": "Number of LEDs",
+          "bulb_entities": "Create a light for every LED",
           "start_pixel": "First pixel in xLights / Light-O-Rama output"
         }
       },
@@ -46,7 +70,8 @@
       "already_configured": "This is already set up."
     },
     "error": {
-      "invalid_host": "Enter the light's IPv4 address, like 192.168.1.50."
+      "invalid_host": "Enter the light's IPv4 address, like 192.168.1.50.",
+      "cannot_connect": "Can't reach a Twinkly light at that address."
     }
   },
   "options": {

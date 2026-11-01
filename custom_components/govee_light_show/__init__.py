@@ -9,15 +9,18 @@ from homeassistant.components import panel_custom
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, Platform
+from homeassistant.const import CONF_HOST, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_BULBS,
+    CONF_DEVICE_ID,
+    CONF_LED_PROFILE,
     CONF_SEGMENTED,
     CONF_START_PIXEL,
     CONF_TYPE,
@@ -25,15 +28,18 @@ from .const import (
     DOMAIN,
     PLAYER,
     TYPE_PLAYER,
+    TYPE_TWINKLY,
 )
 from .controller import C9Controller
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
+from .health import HealthMonitor
 from .library import SHOW_PLAYER_KEY
 from .playback import SequencePlayer
 from . import upload, websocket, ws_shows
 from .receiver import PixelReceiver
 from .showplayer import async_setup_player, async_unload_player
+from .twinkly import TwinklyController, async_gestalt
 
 PLATFORMS = [Platform.LIGHT]
 PLAYER_PLATFORMS = [Platform.MEDIA_PLAYER]
@@ -43,6 +49,7 @@ PANEL = "govee-light-show-panel"  # the "Light Shows" sidebar app
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 C9ConfigEntry = ConfigEntry[C9Controller]
+HEALTH = f"{DOMAIN}_health"  # hass.data key of the HealthMonitor
 
 PLAY_SCHEMA = vol.Schema({
     vol.Required("file"): cv.string,
@@ -68,6 +75,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     websocket.async_register(hass)
     ws_shows.async_register(hass)
     upload.async_register(hass)
+    health = hass.data[HEALTH] = HealthMonitor(hass)
+    health.start()
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: health.stop())
 
     async def play(call: ServiceCall) -> None:
         receiver: PixelReceiver | None = hass.data.get(DOMAIN)
@@ -129,14 +139,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
         await hass.config_entries.async_forward_entry_setups(entry, PLAYER_PLATFORMS)
         entry.async_on_unload(entry.add_update_listener(_reload))
         return True
-    ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], _opt(entry, CONF_BULBS, DEFAULT_BULBS),
-                                            _opt(entry, CONF_SEGMENTED, True))
+    bulbs = _opt(entry, CONF_BULBS, DEFAULT_BULBS)
+    if entry.data.get(CONF_TYPE) == TYPE_TWINKLY:
+        try:
+            await async_gestalt(async_get_clientsession(hass), entry.data[CONF_HOST])
+        except Exception as err:  # unreachable now; Home Assistant retries
+            raise ConfigEntryNotReady(f"Twinkly at {entry.data[CONF_HOST]} is not reachable: {err}") from err
+        ctl = entry.runtime_data = TwinklyController(hass, entry.data[CONF_HOST], bulbs,
+                                                     entry.data.get(CONF_LED_PROFILE, "RGB"))
+        ctl.mark_seen()
+    else:
+        ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], bulbs, _opt(entry, CONF_SEGMENTED, True))
     receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver())
     await receiver.subscribe(entry.entry_id, _opt(entry, CONF_START_PIXEL, 1), ctl.bulbs, ctl.show_external)
     entry.async_on_unload(lambda: receiver.unsubscribe(entry.entry_id))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(_reload))
+    entry.async_on_unload(entry.add_update_listener(_reload_on_change(entry)))
     return True
+
+
+def _snapshot(entry: ConfigEntry) -> tuple:
+    return ({k: v for k, v in entry.data.items() if k != CONF_DEVICE_ID}, dict(entry.options), entry.title)
+
+
+def _reload_on_change(entry: ConfigEntry):
+    """Update listener that reloads, except when only the remembered device id was filled in."""
+    last = _snapshot(entry)
+
+    async def listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+        nonlocal last
+        if (now := _snapshot(entry)) != last:
+            last = now
+            await _reload(hass, entry)
+
+    return listener
 
 
 async def _reload(hass: HomeAssistant, entry: C9ConfigEntry) -> None:

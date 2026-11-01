@@ -17,3 +17,6 @@ CONF_SPEAKER = "speaker"
 CONF_AUDIO_OFFSET = "audio_offset"
 CONF_GAP = "gap"  # where this string's slice begins in the xLights output
 FLUSH_DELAY = 0.05  # coalesce many bulb changes (e.g. a scene) into one frame
+TYPE_TWINKLY = "twinkly"
+CONF_DEVICE_ID = "device_id"  # Govee device id / Twinkly MAC: finds the light again when its IP changes
+CONF_LED_PROFILE = "led_profile"  # Twinkly: "RGB" or "RGBW"
