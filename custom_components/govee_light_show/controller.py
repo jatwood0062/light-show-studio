@@ -121,7 +121,7 @@ class C9Controller:
         if not self.is_on or self.show_mode:
             return  # in show mode the sequencer's frames are the picture
         if self.effect in ANIMATED:
-            self._task = self.hass.async_create_background_task(self._animate(), "govee_c9 effect")
+            self._task = self.hass.async_create_background_task(self._animate(), "govee_light_show effect")
         else:
             self._send_frame(self._base_frame(0))
 

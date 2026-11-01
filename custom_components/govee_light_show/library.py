@@ -13,7 +13,7 @@ from .fseq import FseqFile
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
-SHOW_PLAYER_KEY = "govee_c9_show_player"  # hass.data key of the ShowPlayer
+SHOW_PLAYER_KEY = "govee_light_show_show_player"  # hass.data key of the ShowPlayer
 AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac")
 FSEQ_EXT = ".fseq"
 PLAYLIST = "playlist.json"

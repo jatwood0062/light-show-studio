@@ -1,7 +1,7 @@
 # Build spec: Light Show Player + any-Govee support
 
-Repo: `govee-c9/` (Home Assistant custom integration, domain `govee_c9`, HA 2026.10).
-Integration code: `custom_components/govee_c9/`. Read `README.md`, `playback.py`, `follow.py`,
+Repo: `govee-c9/` (Home Assistant custom integration, domain `govee_light_show`, HA 2026.10).
+Integration code: `custom_components/govee_light_show/`. Read `README.md`, `playback.py`, `follow.py`,
 `fseq.py`, `__init__.py` and `websocket.py` before starting.
 
 Goal: an EZPlayer-like experience inside Home Assistant. Users export `.fseq` shows from xLights
@@ -13,9 +13,9 @@ a dashboard card, and press Play. Works with any Govee light the integration con
 | Owner | Files |
 |---|---|
 | Player backend agent | NEW `library.py`, `showplayer.py`, `media_player.py`, `upload.py`, `ws_shows.py`, `tests/test_library.py` |
-| Player card agent | NEW `frontend/govee-c9-player-card.js` |
+| Player card agent | NEW `frontend/govee-light-show-player-card.js` |
 | Device research agent | NEW `models.py`, `docs/DEVICES.md` |
-| Parent (lead) | everything else: `__init__.py`, `config_flow.py`, `controller.py`, `protocol.py`, `light.py`, `websocket.py`, `const.py`, `manifest.json`, `strings.json`, `translations/`, `README.md`, `frontend/govee-c9-card.js` |
+| Parent (lead) | everything else: `__init__.py`, `config_flow.py`, `controller.py`, `protocol.py`, `light.py`, `websocket.py`, `const.py`, `manifest.json`, `strings.json`, `translations/`, `README.md`, `frontend/govee-light-show-card.js` |
 
 Don't commit or push; the lead integrates and commits. Don't touch Home Assistant or ~/Documents.
 
@@ -39,7 +39,7 @@ Don't commit or push; the lead integrates and commits. Don't touch Home Assistan
 
 ## Player (`showplayer.py` + `media_player.py`)
 
-- `class ShowPlayer` (one per HA, `hass.data["govee_c9_show_player"]`) wraps the existing
+- `class ShowPlayer` (one per HA, `hass.data["govee_light_show_show_player"]`) wraps the existing
   `SequencePlayer` (create it the same way `__init__.py` does, output = `receiver.show`, and
   reuse `hass.data[PLAYER]` if present so `play_sequence`/`stop_sequence` stay consistent).
 - Queue = library order (or shuffled). State: `idle | playing | paused`, current show, position
@@ -62,12 +62,12 @@ Don't commit or push; the lead integrates and commits. Don't touch Home Assistan
   entry whose `entry.data["type"] == "player"`. Options on that entry: `speaker` (entity_id or
   absent), `audio_offset` (float s, default 0), `gap` (float s, default 3).
 - `media_player.py`: platform with ONE `MediaPlayerEntity` "Light Show Player"
-  (unique_id `govee_c9_show_player`) for the player entry. Features: PLAY, PAUSE, STOP,
+  (unique_id `govee_light_show_show_player`) for the player entry. Features: PLAY, PAUSE, STOP,
   NEXT_TRACK, PREVIOUS_TRACK, SELECT_SOURCE (source = show name, source_list = queue),
   SHUFFLE_SET, REPEAT_SET, PLAY_MEDIA, BROWSE_MEDIA, SEEK (only lights-only playback; with a
   speaker forward `media_seek` to it). `media_content_type` music, `media_title` show name,
   `media_duration`, `media_position` + `media_position_updated_at`, `media_image_url` none.
-  `browse_media` lists the shows (content id `govee_c9_show://<id>`); `play_media` accepts that
+  `browse_media` lists the shows (content id `govee_light_show_show://<id>`); `play_media` accepts that
   id or a bare show name. Extra attributes: `show_id`, `speaker`, `queue` (list of ids).
 
 ## Websocket API (`ws_shows.py`, register with `websocket_api.async_register_command`)
@@ -76,26 +76,26 @@ Expose `def async_register(hass)`; the lead calls it once.
 
 | type | params | result |
 |---|---|---|
-| `govee_c9/shows/list` | – | `{"shows": [{id, name, duration, has_audio, size, fseq, audio}]}` (file names only) |
-| `govee_c9/shows/delete` | `show_id` | `{}` (admin only) |
-| `govee_c9/shows/reorder` | `order: [id]` | `{}` (admin only) |
-| `govee_c9/player/subscribe` | – | event messages `{state, show_id, position, position_updated_at (ISO), duration, shuffle, repeat, speaker, queue: [id], entity_id}` on every change and every 1 s while playing |
+| `govee_light_show/shows/list` | – | `{"shows": [{id, name, duration, has_audio, size, fseq, audio}]}` (file names only) |
+| `govee_light_show/shows/delete` | `show_id` | `{}` (admin only) |
+| `govee_light_show/shows/reorder` | `order: [id]` | `{}` (admin only) |
+| `govee_light_show/player/subscribe` | – | event messages `{state, show_id, position, position_updated_at (ISO), duration, shuffle, repeat, speaker, queue: [id], entity_id}` on every change and every 1 s while playing |
 
 Controls go through the entity's normal `media_player.*` services.
 
 ## Upload (`upload.py`)
 
-`HomeAssistantView` at `POST /api/govee_c9/shows/upload`, `requires_auth = True`, admin only
+`HomeAssistantView` at `POST /api/govee_light_show/shows/upload`, `requires_auth = True`, admin only
 (`request["hass_user"].is_admin`, else 401). Multipart: one or more `file` parts, optional `show`
 text part (target show name; default = file basename). Allowed extensions: `.fseq` + the audio
 ones above; 300 MB max per file; stream to a temp file in the target folder in chunks (write in
 the executor), then `os.replace`. Returns `{"shows": [ids touched]}`. Expose
 `def async_register(hass)`; the lead calls it.
 
-## Player card (`frontend/govee-c9-player-card.js`)
+## Player card (`frontend/govee-light-show-player-card.js`)
 
-Vanilla JS custom element `govee-c9-player-card` (no build step, no external imports; match the
-style of `frontend/govee-c9-card.js`: shadow DOM, HA theme CSS variables, `getStubConfig`,
+Vanilla JS custom element `govee-light-show-player-card` (no build step, no external imports; match the
+style of `frontend/govee-light-show-card.js`: shadow DOM, HA theme CSS variables, `getStubConfig`,
 `getConfigForm`, `window.customCards` entry). Config: `entity` (the player media_player;
 autodetect `media_player.*` with attribute `queue` when omitted), `title`.
 
@@ -107,10 +107,10 @@ autodetect `media_player.*` with attribute `queue` when omitted), `title`.
   the playing one.
 - **Add shows**: a drop zone ("Drop .fseq and song files here") plus an "Add files" button
   (`<input type=file multiple accept=".fseq,audio/*">`). Upload with `XMLHttpRequest` to
-  `/api/govee_c9/shows/upload`, header `Authorization: Bearer ${hass.auth.data.access_token}`,
+  `/api/govee_light_show/shows/upload`, header `Authorization: Bearer ${hass.auth.data.access_token}`,
   showing per-file progress; refresh the list after.
-- Data: `hass.connection.subscribeMessage(..., {type: "govee_c9/player/subscribe"})` and
-  `hass.callWS({type: "govee_c9/shows/list"})`; controls via `hass.callService("media_player", ...)`.
+- Data: `hass.connection.subscribeMessage(..., {type: "govee_light_show/player/subscribe"})` and
+  `hass.callWS({type: "govee_light_show/shows/list"})`; controls via `hass.callService("media_player", ...)`.
 - Empty state explains: "Export your sequence from xLights (File → Export / the .fseq next to
   your .xsq) and drop it here with the song."
 - Must look right from 320 px phone width to desktop; no horizontal scroll.

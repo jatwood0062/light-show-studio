@@ -15,7 +15,7 @@ C9 string lights (H6860, which reports as R6861) and works with any Govee light 
 - **Live from a sequencer**: Home Assistant looks like a pixel controller (DDP and E1.31), so
   xLights, EZPlayer, Light-O-Rama, Falcon Player or Vixen can drive the lights live.
 - Effects for every season, a dashboard card that shows and paints every bulb live, one light
-  per bulb, and a `govee_c9.set_pixels` action.
+  per bulb, and a `govee_light_show.set_pixels` action.
 
 Everything stays on your LAN (Govee LAN API, UDP 4003). In the Govee Home app, turn on
 **LAN Control** for each light first.
@@ -73,8 +73,8 @@ July 4th, Halloween, Thanksgiving, Hanukkah, …), **off** turns bulbs off, and 
 the string back to the sequencer.
 
 ```yaml
-type: custom:govee-c9-card
-entity: light.govee_c9
+type: custom:govee-light-show-card
+entity: light.govee_light_show
 title: Porch          # optional
 columns: 25           # optional: rows of this many bulbs
 layout:               # optional: x, y of each bulb in order (y grows downward), e.g. your roofline
@@ -98,7 +98,7 @@ be running.
 2. **Copy** the `.fseq` (and the song, if you want music) into `/media/xlights/` on Home
    Assistant, e.g. with the Samba share or File editor app. `/config/www/xlights/` works
    too.
-3. Call **`govee_c9.play_sequence`**. The channels are read the same way as from xLights over
+3. Call **`govee_light_show.play_sequence`**. The channels are read the same way as from xLights over
    the network, so a string with First pixel 51 plays channels 151–300 of the file.
 
 | Field | |
@@ -124,7 +124,7 @@ or moves on to a different song.
 just start when it reports *playing*. Use `audio_offset` only to fine-tune: if the lights are
 ahead of what you hear, try `0.1`–`0.3`.
 
-`govee_c9.stop_sequence` stops the show and turns the bulbs dark.
+`govee_light_show.stop_sequence` stops the show and turns the bulbs dark.
 
 ```yaml
 automation:
@@ -136,7 +136,7 @@ automation:
       - condition: template
         value_template: "{{ now().month == 10 and now().day == 31 }}"
     actions:
-      - action: govee_c9.play_sequence
+      - action: govee_light_show.play_sequence
         data:
           file: halloween.fseq
           media_player: media_player.porch_sonos

@@ -1,4 +1,4 @@
-DOMAIN = "govee_c9"
+DOMAIN = "govee_light_show"
 PLAYER = f"{DOMAIN}_player"  # hass.data key of the .fseq SequencePlayer
 
 CONF_BULBS = "bulbs"

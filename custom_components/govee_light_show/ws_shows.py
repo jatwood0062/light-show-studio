@@ -36,7 +36,7 @@ async def _refresh(hass: HomeAssistant) -> None:
         await player.async_refresh()
 
 
-@websocket_api.websocket_command({vol.Required("type"): "govee_c9/shows/list"})
+@websocket_api.websocket_command({vol.Required("type"): "govee_light_show/shows/list"})
 @websocket_api.async_response
 async def ws_list(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
                   msg: dict[str, Any]) -> None:
@@ -44,7 +44,7 @@ async def ws_list(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
     connection.send_result(msg["id"], {"shows": [_row(s) for s in shows]})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "govee_c9/shows/delete", vol.Required("show_id"): str})
+@websocket_api.websocket_command({vol.Required("type"): "govee_light_show/shows/delete", vol.Required("show_id"): str})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
@@ -65,7 +65,7 @@ async def ws_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnect
 
 
 @websocket_api.websocket_command({
-    vol.Required("type"): "govee_c9/shows/reorder",
+    vol.Required("type"): "govee_light_show/shows/reorder",
     vol.Required("order"): [str],
 })
 @websocket_api.require_admin
@@ -81,7 +81,7 @@ async def ws_reorder(hass: HomeAssistant, connection: websocket_api.ActiveConnec
     connection.send_result(msg["id"], {})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "govee_c9/player/subscribe"})
+@websocket_api.websocket_command({vol.Required("type"): "govee_light_show/player/subscribe"})
 @callback
 def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
                  msg: dict[str, Any]) -> None:

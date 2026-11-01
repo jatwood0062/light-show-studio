@@ -34,7 +34,7 @@ def _hex(c: tuple[int, int, int]) -> str:
 
 
 @websocket_api.websocket_command({
-    vol.Required("type"): "govee_c9/subscribe",
+    vol.Required("type"): "govee_light_show/subscribe",
     vol.Required("entity_id"): cv.entity_id,
 })
 @callback
@@ -83,7 +83,7 @@ def _colour(value: str | None) -> tuple[int, int, int] | None:
 
 
 @websocket_api.websocket_command({
-    vol.Required("type"): "govee_c9/set_bulbs",
+    vol.Required("type"): "govee_light_show/set_bulbs",
     vol.Required("entity_id"): cv.entity_id,
     # bulb number (1-based) -> "#rrggbb", or null to turn that bulb off
     vol.Required("bulbs"): {vol.Coerce(int): vol.Any(None, vol.Match(r"^#?[0-9a-fA-F]{6}$"))},

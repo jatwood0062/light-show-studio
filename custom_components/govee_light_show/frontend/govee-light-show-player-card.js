@@ -1,6 +1,6 @@
-// Govee light show player card: drop xLights .fseq shows (and songs) on it, press play. Ships with govee_c9.
+// Govee light show player card: drop xLights .fseq shows (and songs) on it, press play. Ships with govee_light_show.
 //
-//   type: custom:govee-c9-player-card
+//   type: custom:govee-light-show-player-card
 //   entity: media_player.light_show_player   # optional: autodetected (the media_player with a "queue" attribute)
 //   title: Light shows                       # optional
 
@@ -44,7 +44,7 @@ class GoveeC9PlayerCard extends HTMLElement {
   static getConfigForm() {
     return {
       schema: [
-        { name: "entity", selector: { entity: { domain: "media_player", integration: "govee_c9" } } },
+        { name: "entity", selector: { entity: { domain: "media_player", integration: "govee_light_show" } } },
         { name: "title", selector: { text: {} } },
       ],
     };
@@ -106,7 +106,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     this._subscribing = true;
     try {
       this._unsub = await this._hass.connection.subscribeMessage((m) => this._onEvent(m), {
-        type: "govee_c9/player/subscribe",
+        type: "govee_light_show/player/subscribe",
       });
       this._error("");
     } catch (err) {
@@ -134,7 +134,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     if (this._loading || !this._hass) return;
     this._loading = true;
     try {
-      const r = await this._hass.callWS({ type: "govee_c9/shows/list" });
+      const r = await this._hass.callWS({ type: "govee_light_show/shows/list" });
       this._shows = r.shows || [];
       this._error("");
     } catch (err) {
@@ -205,7 +205,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     if (this._state) this._state = { ...this._state, queue: list };
     this._renderList();
     try {
-      await this._hass.callWS({ type: "govee_c9/shows/reorder", order: list });
+      await this._hass.callWS({ type: "govee_light_show/shows/reorder", order: list });
     } catch (err) {
       this._error(err?.message || "Couldn't reorder");
       this._loadShows();
@@ -215,7 +215,7 @@ class GoveeC9PlayerCard extends HTMLElement {
   async _delete(show) {
     this._confirming = null;
     try {
-      await this._hass.callWS({ type: "govee_c9/shows/delete", show_id: show.id });
+      await this._hass.callWS({ type: "govee_light_show/shows/delete", show_id: show.id });
       this._shows = (this._shows || []).filter((s) => s.id !== show.id);
       this._renderList();
       this._loadShows();
@@ -286,7 +286,7 @@ class GoveeC9PlayerCard extends HTMLElement {
       const form = new FormData();
       form.append("show", file.name.replace(/\.[^.]+$/, ""));
       form.append("file", file, file.name);
-      xhr.open("POST", "/api/govee_c9/shows/upload");
+      xhr.open("POST", "/api/govee_light_show/shows/upload");
       xhr.setRequestHeader("Authorization", `Bearer ${this._hass.auth.data.access_token}`);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
@@ -641,10 +641,10 @@ class GoveeC9PlayerCard extends HTMLElement {
   }
 }
 
-customElements.define("govee-c9-player-card", GoveeC9PlayerCard);
+customElements.define("govee-light-show-player-card", GoveeC9PlayerCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
-  type: "govee-c9-player-card",
+  type: "govee-light-show-player-card",
   name: "Govee light show player",
   description: "EZPlayer-style light show player: add xLights shows, press play.",
   preview: true,

@@ -35,8 +35,8 @@ from .showplayer import async_setup_player, async_unload_player
 
 PLATFORMS = [Platform.LIGHT]
 PLAYER_PLATFORMS = [Platform.MEDIA_PLAYER]
-FRONTEND_URL = "/govee_c9"
-CARDS = ("govee-c9-card.js", "govee-c9-player-card.js")
+FRONTEND_URL = "/govee_light_show"
+CARDS = ("govee-light-show-card.js", "govee-light-show-player-card.js")
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 C9ConfigEntry = ConfigEntry[C9Controller]
@@ -75,7 +75,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         player: SequencePlayer | None = hass.data.get(PLAYER)
         if player is None:
             player = hass.data[PLAYER] = SequencePlayer(
-                receiver.show, lambda coro: hass.async_create_background_task(coro, "govee_c9 sequence"))
+                receiver.show, lambda coro: hass.async_create_background_task(coro, "govee_light_show sequence"))
         for entry in hass.config_entries.async_loaded_entries(DOMAIN):
             if isinstance(getattr(entry, "runtime_data", None), C9Controller):
                 entry.runtime_data.enable_show()

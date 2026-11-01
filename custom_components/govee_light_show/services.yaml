@@ -1,7 +1,7 @@
 set_pixels:
   target:
     entity:
-      integration: govee_c9
+      integration: govee_light_show
       domain: light
   fields:
     colors:

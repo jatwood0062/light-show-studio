@@ -1,7 +1,7 @@
-// Govee C9 card: every bulb of a string, live, and paintable. Ships with the govee_c9 integration.
+// Govee C9 card: every bulb of a string, live, and paintable. Ships with the govee_light_show integration.
 //
-//   type: custom:govee-c9-card
-//   entity: light.govee_c9          # the whole-string light
+//   type: custom:govee-light-show-card
+//   entity: light.govee_light_show          # the whole-string light
 //   title: Porch                    # optional
 //   columns: 25                     # optional: wrap into rows of this many bulbs (default: one row that wraps to fit)
 //   layout: [[0, 0], [10, 0], ...]  # optional: x, y of each bulb (any units), e.g. your xLights positions
@@ -41,7 +41,7 @@ class GoveeC9Card extends HTMLElement {
   static getConfigForm() {
     return {
       schema: [
-        { name: "entity", required: true, selector: { entity: { domain: "light", integration: "govee_c9" } } },
+        { name: "entity", required: true, selector: { entity: { domain: "light", integration: "govee_light_show" } } },
         { name: "title", selector: { text: {} } },
         { name: "columns", selector: { number: { min: 0, max: 255, mode: "box" } } },
         { name: "layout", selector: { object: {} } },
@@ -90,7 +90,7 @@ class GoveeC9Card extends HTMLElement {
     this._subscribing = true;
     try {
       this._unsub = await this._hass.connection.subscribeMessage((m) => this._onFrame(m), {
-        type: "govee_c9/subscribe",
+        type: "govee_light_show/subscribe",
         entity_id: this._config.entity,
       });
       this._error("");
@@ -147,7 +147,7 @@ class GoveeC9Card extends HTMLElement {
     const bulbs = this._pending;
     if (!bulbs) return;
     try {
-      await this._hass.callWS({ type: "govee_c9/set_bulbs", entity_id: this._config.entity, bulbs });
+      await this._hass.callWS({ type: "govee_light_show/set_bulbs", entity_id: this._config.entity, bulbs });
     } catch (err) {
       this._error(err.message);
     }
@@ -358,10 +358,10 @@ class GoveeC9Card extends HTMLElement {
   }
 }
 
-customElements.define("govee-c9-card", GoveeC9Card);
+customElements.define("govee-light-show-card", GoveeC9Card);
 window.customCards = window.customCards || [];
 window.customCards.push({
-  type: "govee-c9-card",
+  type: "govee-light-show-card",
   name: "Govee C9 string",
   description: "Every bulb of a Govee C9 string, live, with tap or drag to paint.",
   preview: true,
