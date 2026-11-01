@@ -2,28 +2,66 @@
   "config": {
     "step": {
       "user": {
-        "title": "Govee C9 string lights",
-        "description": "Enable LAN Control for the lights in the Govee Home app first.",
+        "title": "Govee lights",
+        "menu_options": {
+          "light": "Add a Govee light",
+          "player": "Add the Light Show Player"
+        }
+      },
+      "light": {
+        "title": "Pick your light",
+        "description": "Lights with LAN Control turned on in the Govee Home app.",
         "data": {
-          "host": "IP address",
+          "host": "Light"
+        }
+      },
+      "manual": {
+        "title": "Light's IP address",
+        "description": "Turn on LAN Control for the light in the Govee Home app first.",
+        "data": {
+          "host": "IP address"
+        }
+      },
+      "details": {
+        "title": "Set up {sku} at {host}",
+        "data": {
           "name": "Name",
-          "bulbs": "Number of bulbs",
+          "bulbs": "Number of bulbs / segments",
+          "segmented": "Per-bulb control (turn off if the light only takes one colour)",
           "bulb_entities": "Create a light for every bulb",
-          "start_pixel": "First pixel in xLights / E1.31 output"
+          "start_pixel": "First pixel in xLights / Light-O-Rama output"
+        }
+      },
+      "player": {
+        "title": "Light Show Player",
+        "description": "Plays your xLights / Light-O-Rama .fseq shows on every Govee light, with the music on a speaker.",
+        "data": {
+          "speaker": "Speaker for the music (optional)",
+          "audio_offset": "Light delay in seconds (+ later, - earlier)",
+          "gap": "Pause between shows (seconds)"
         }
       }
     },
     "abort": {
-      "already_configured": "These lights are already set up."
+      "already_configured": "This is already set up."
     }
   },
   "options": {
     "step": {
       "init": {
         "data": {
-          "bulbs": "Number of bulbs",
+          "bulbs": "Number of bulbs / segments",
+          "segmented": "Per-bulb control (turn off if the light only takes one colour)",
           "bulb_entities": "Create a light for every bulb",
-          "start_pixel": "First pixel in xLights / E1.31 output"
+          "start_pixel": "First pixel in xLights / Light-O-Rama output"
+        }
+      },
+      "player": {
+        "title": "Light Show Player",
+        "data": {
+          "speaker": "Speaker for the music (optional)",
+          "audio_offset": "Light delay in seconds (+ later, - earlier)",
+          "gap": "Pause between shows (seconds)"
         }
       }
     }

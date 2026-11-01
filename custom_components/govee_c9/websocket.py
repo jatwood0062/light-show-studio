@@ -25,7 +25,8 @@ def _controller(hass: HomeAssistant, entity_id: str) -> C9Controller | None:
     if ent is None or ent.platform != DOMAIN or ent.config_entry_id is None:
         return None
     entry = hass.config_entries.async_get_entry(ent.config_entry_id)
-    return getattr(entry, "runtime_data", None) if entry else None
+    ctl = getattr(entry, "runtime_data", None) if entry else None
+    return ctl if isinstance(ctl, C9Controller) else None
 
 
 def _hex(c: tuple[int, int, int]) -> str:

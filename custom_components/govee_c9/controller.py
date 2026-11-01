@@ -7,9 +7,9 @@ from collections.abc import Callable
 
 from homeassistant.core import HomeAssistant, callback
 
-from .const import EXTERNAL_MAX_FPS, FLUSH_DELAY, FPS
+from .const import EXTERNAL_MAX_FPS, FLUSH_DELAY, FPS, WHOLE_LIGHT_FPS
 from .effects import ANIMATED, EFFECTS
-from .protocol import Colour, GoveeLan, brightness_msg, colours_msg, realtime_msg, turn_msg
+from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
 
 SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive the string
 
@@ -23,10 +23,15 @@ def _split(c: Colour) -> tuple[Colour, int]:
 
 
 class C9Controller:
-    def __init__(self, hass: HomeAssistant, host: str, bulbs: int) -> None:
+    def __init__(self, hass: HomeAssistant, host: str, bulbs: int, segmented: bool = True) -> None:
         self.hass = hass
         self.lan = GoveeLan(host)
         self.bulbs = bulbs
+        self.segmented = segmented  # False: the light takes one colour, the frame's average
+        self._whole: tuple[Colour, int] | None = None
+        self._whole_sent = 0.0
+        self._whole_latest: list[Colour] = []
+        self._whole_handle: asyncio.TimerHandle | None = None
         self.is_on = False
         self.brightness = 255
         self.colour: Colour = (255, 150, 40)
@@ -71,6 +76,9 @@ class C9Controller:
         return [self.colour] * self.bulbs
 
     def _send_frame(self, frame: list[Colour]) -> None:
+        if not self.segmented:
+            self._send_whole(frame)
+            return
         if not self._realtime:
             self.lan.send(brightness_msg(100))  # the string's own dimmer would dim every frame
             self.lan.send(realtime_msg(True))
@@ -79,6 +87,34 @@ class C9Controller:
         frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
         self.lan.send(colours_msg(frame))
         self._set_frame(frame)
+
+    def _send_whole(self, frame: list[Colour]) -> None:
+        """One colour for the whole light: the average of the frame, at most WHOLE_LIGHT_FPS."""
+        now = time.monotonic()
+        wait = 1 / WHOLE_LIGHT_FPS - (now - self._whole_sent)
+        if wait > 0:  # too soon: send the latest frame when allowed, so a still colour isn't lost
+            self._whole_latest = frame
+            if self._whole_handle is None:
+                self._whole_handle = self.hass.loop.call_later(wait, self._send_whole_latest)
+            return
+        f = self.brightness / 255
+        avg = tuple(int(sum(c[k] for c in frame) / max(1, len(frame)) * f) for k in range(3))
+        colour, level = _split(avg)
+        if (colour, level) != self._whole:
+            if level == 0:
+                self.lan.send(brightness_msg(1))
+                self.lan.send(colour_msg((0, 0, 0)))
+            else:
+                if self._whole is None or self._whole[1] != level:
+                    self.lan.send(brightness_msg(round(level * 100 / 255)))
+                if self._whole is None or self._whole[0] != colour:
+                    self.lan.send(colour_msg(colour))
+            self._whole, self._whole_sent = (colour, level), now
+        self._set_frame([avg] * self.bulbs)
+
+    def _send_whole_latest(self) -> None:
+        self._whole_handle = None
+        self._send_whole(self._whole_latest)
 
     def _render(self) -> None:
         self._stop_animation()
@@ -126,6 +162,7 @@ class C9Controller:
         if not self.is_on:
             self.lan.send(turn_msg(True))
             self._realtime = False  # the light may leave realtime mode while off
+            self._whole = None
             self.is_on = True
             await asyncio.sleep(0.3)
         if brightness is not None:
@@ -196,6 +233,7 @@ class C9Controller:
                 self.lan.send(turn_msg(True))
                 self.is_on = True
             self._realtime = False  # re-arm realtime mode in case the string dropped it
+            self._whole = None
             self.effect, self.custom = None, False
             self._notify()
         self._ext_sent = now
@@ -203,6 +241,7 @@ class C9Controller:
 
     def shutdown(self) -> None:
         self._stop_animation()
-        if self._flush_handle:
-            self._flush_handle.cancel()
+        for handle in (self._flush_handle, self._whole_handle):
+            if handle:
+                handle.cancel()
         self.lan.close()

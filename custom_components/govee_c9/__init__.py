@@ -15,16 +15,28 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
-from .const import CONF_BULBS, CONF_START_PIXEL, DEFAULT_BULBS, DOMAIN, PLAYER
+from .const import (
+    CONF_BULBS,
+    CONF_SEGMENTED,
+    CONF_START_PIXEL,
+    CONF_TYPE,
+    DEFAULT_BULBS,
+    DOMAIN,
+    PLAYER,
+    TYPE_PLAYER,
+)
 from .controller import C9Controller
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
 from .playback import SequencePlayer
-from . import websocket
+from . import upload, websocket, ws_shows
 from .receiver import PixelReceiver
+from .showplayer import async_setup_player, async_unload_player
 
 PLATFORMS = [Platform.LIGHT]
-CARD_URL = "/govee_c9/govee-c9-card.js"
+PLAYER_PLATFORMS = [Platform.MEDIA_PLAYER]
+FRONTEND_URL = "/govee_c9"
+CARDS = ("govee-c9-card.js", "govee-c9-player-card.js")
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 C9ConfigEntry = ConfigEntry[C9Controller]
@@ -39,12 +51,16 @@ PLAY_SCHEMA = vol.Schema({
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    # the dashboard card ships with the integration: served from here and loaded on every dashboard
-    card = os.path.join(os.path.dirname(__file__), "frontend", "govee-c9-card.js")
-    await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, card, False)])
+    # the dashboard cards ship with the integration: served from here and loaded on every dashboard
+    frontend = os.path.join(os.path.dirname(__file__), "frontend")
+    await hass.http.async_register_static_paths([StaticPathConfig(FRONTEND_URL, frontend, False)])
     integration = await async_get_integration(hass, DOMAIN)
-    add_extra_js_url(hass, f"{CARD_URL}?v={integration.version}")  # new version, fresh browser copy
+    for card in CARDS:  # the version in the URL makes browsers fetch new copies after an update
+        add_extra_js_url(hass, f"{FRONTEND_URL}/{card}?v={integration.version}")
+    hass.data.setdefault(DOMAIN, PixelReceiver())  # before any entry, so the show player can use it
     websocket.async_register(hass)
+    ws_shows.async_register(hass)
+    upload.async_register(hass)
 
     async def play(call: ServiceCall) -> None:
         receiver: PixelReceiver | None = hass.data.get(DOMAIN)
@@ -61,7 +77,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             player = hass.data[PLAYER] = SequencePlayer(
                 receiver.show, lambda coro: hass.async_create_background_task(coro, "govee_c9 sequence"))
         for entry in hass.config_entries.async_loaded_entries(DOMAIN):
-            entry.runtime_data.enable_show()
+            if isinstance(getattr(entry, "runtime_data", None), C9Controller):
+                entry.runtime_data.enable_show()
         speaker, audio = call.data.get("media_player"), call.data.get("audio")
         if speaker and audio:
             await play_with_speaker(hass, player, seq, speaker, audio, call.data["audio_offset"])
@@ -98,7 +115,13 @@ def _opt(entry: ConfigEntry, key: str, default):
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
-    ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], _opt(entry, CONF_BULBS, DEFAULT_BULBS))
+    if entry.data.get(CONF_TYPE) == TYPE_PLAYER:
+        await async_setup_player(hass, entry)
+        await hass.config_entries.async_forward_entry_setups(entry, PLAYER_PLATFORMS)
+        entry.async_on_unload(entry.add_update_listener(_reload))
+        return True
+    ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], _opt(entry, CONF_BULBS, DEFAULT_BULBS),
+                                            _opt(entry, CONF_SEGMENTED, True))
     receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver())
     await receiver.subscribe(entry.entry_id, _opt(entry, CONF_START_PIXEL, 1), ctl.bulbs, ctl.show_external)
     entry.async_on_unload(lambda: receiver.unsubscribe(entry.entry_id))
@@ -112,6 +135,11 @@ async def _reload(hass: HomeAssistant, entry: C9ConfigEntry) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
+    if entry.data.get(CONF_TYPE) == TYPE_PLAYER:
+        ok = await hass.config_entries.async_unload_platforms(entry, PLAYER_PLATFORMS)
+        if ok:
+            await async_unload_player(hass, entry)
+        return ok
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
         entry.runtime_data.shutdown()

@@ -1,6 +1,6 @@
 {
   "domain": "govee_c9",
-  "name": "Govee C9 Pixels",
+  "name": "Govee Light Show",
   "codeowners": ["@jatwood0062"],
   "config_flow": true,
   "dependencies": ["frontend", "http", "websocket_api"],
@@ -8,5 +8,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/jatwood0062/govee-c9/issues",
   "requirements": ["zstandard>=0.21"],
-  "version": "0.7.0"
+  "version": "0.8.0"
 }

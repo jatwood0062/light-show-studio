@@ -1,23 +1,46 @@
-# Govee C9 Pixels
+# Govee Light Show
 
-Local, per-bulb control of Govee C9 string lights (H6860 / reports as R6861) for Home Assistant.
+Local light shows for Govee lights in Home Assistant: play xLights / Light-O-Rama / Vixen / FPP
+`.fseq` shows to music, paint single bulbs, and run effects for every season. Built on Govee
+C9 string lights (H6860, which reports as R6861) and works with any Govee light that has
+**LAN Control**.
 
-- One light for the whole string, with effects for every season (Christmas, Candy Cane Spin, Valentine's, St. Patrick's, Easter, July 4th, Fireworks, Halloween Chase, Thanksgiving, Hanukkah, …)
-- One light per bulb, and a `govee_c9.set_pixels` action
-- **xLights / Light-O-Rama receiver**: the string shows up to a sequencer as a 50-pixel controller,
-  so you can sequence it to music
-- **Sequence playback**: play an exported xLights `.fseq` show straight from Home Assistant
+- **Light Show Player**: an EZPlayer-style player inside Home Assistant. Drag `.fseq` files and
+  their songs onto the player card, press Play. Playlist, shuffle, repeat, next/previous, seek,
+  with the music on any Home Assistant speaker (Sonos, Music Assistant, …) and the lights kept in
+  sync with it. It's a normal media player, so automations and voice work too.
+- **Any Govee LAN light**: lights that take per-segment frames (DreamView / "razer" mode, e.g.
+  C9 strings, RGBIC strips) show every pixel; others get the show's blended colour.
+  See [docs/DEVICES.md](docs/DEVICES.md).
+- **Live from a sequencer**: Home Assistant looks like a pixel controller (DDP and E1.31), so
+  xLights, EZPlayer, Light-O-Rama, Falcon Player or Vixen can drive the lights live.
+- Effects for every season, a dashboard card that shows and paints every bulb live, one light
+  per bulb, and a `govee_c9.set_pixels` action.
 
 Everything stays on your LAN (Govee LAN API, UDP 4003). In the Govee Home app, turn on
-**LAN Control** for the light first.
+**LAN Control** for each light first.
 
 ## Install (HACS)
 
 1. HACS → ⋮ → **Custom repositories** → add this repository's URL, type **Integration**.
-2. Download **Govee C9 Pixels**, then restart Home Assistant.
-3. Settings → Devices & services → **Add integration** → Govee C9 Pixels → enter the light's IP.
+2. Download **Govee Light Show**, then restart Home Assistant.
+3. Settings → Devices & services → **Add integration** → Govee Light Show:
+   - **Add a Govee light**: lights on your network are listed (or type the IP). Repeat per light.
+   - **Add the Light Show Player**: pick the speaker for the music (optional).
 
-## Sequencing to music with xLights
+## Light Show Player
+
+1. In xLights, save/render your sequence; the `.fseq` is next to the `.xsq` in your show folder.
+2. Add the **Govee light show player** card to a dashboard and drop the `.fseq` and the song
+   onto it (same name, e.g. `Thriller.fseq` + `Thriller.m4a`). Files go to `/media/xlights/`;
+   a folder per show (`/media/xlights/Thriller/`) works too if you copy files in yourself.
+3. Press Play. Reorder with the arrows, shuffle/repeat from the card or the media player.
+
+Automations: `media_player.media_play` on `media_player.light_show_player` starts the playlist,
+`media_player.select_source` plays one show, `media_player.media_stop` stops.
+**Light delay** (player options) shifts the lights if the speaker lags.
+
+## Live from xLights / Light-O-Rama
 
 Home Assistant listens for pixel data on **DDP (UDP 4048)** and **E1.31/sACN (UDP 5568,
 510 channels per universe from universe 1)**, and looks like one pixel controller to xLights.

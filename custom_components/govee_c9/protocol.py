@@ -1,4 +1,4 @@
-"""Govee LAN protocol for per-bulb control.
+"""Govee LAN protocol: per-segment ("razer") control, whole-light colour and discovery.
 
 Official LAN API: JSON over UDP to port 4003 ({"msg": {"cmd": ..., "data": ...}}).
 Per-bulb colour uses the undocumented "razer" realtime command (what Govee's PC sync uses):
@@ -11,12 +11,15 @@ A frame stays on the lights after the stream stops, so a still pattern only need
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import socket
 import struct
 
 CMD_PORT = 4003
+SCAN_ADDR = ("239.255.255.250", 4001)
+REPLY_PORT = 4002
 CMD_COLORS = 0xB0
 CMD_ENABLE = 0xB1
 
@@ -41,6 +44,11 @@ def turn_msg(on: bool) -> bytes:
 
 def brightness_msg(percent: int) -> bytes:
     return _wrap("brightness", {"value": max(1, min(100, percent))})
+
+
+def colour_msg(c: Colour) -> bytes:
+    """Whole-light colour, for lights without per-segment control."""
+    return _wrap("colorwc", {"color": {"r": c[0], "g": c[1], "b": c[2]}, "colorTemInKelvin": 0})
 
 
 def realtime_msg(on: bool) -> bytes:
@@ -71,3 +79,39 @@ class GoveeLan:
 
     def close(self) -> None:
         self._sock.close()
+
+
+async def async_scan(timeout: float = 2.5) -> dict[str, dict]:
+    """Ask every Govee light with LAN Control on to report itself: {ip: {"sku", "device"}}.
+
+    Replies go to UDP 4002, which Home Assistant's own Govee integration may hold; the port is
+    shared where the OS allows it, otherwise this finds nothing and the IP is typed in."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    found: dict[str, dict] = {}
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        sock.bind(("", REPLY_PORT))
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        sock.sendto(_wrap("scan", {"account_topic": "reserve"}), SCAN_ADDR)
+        loop = asyncio.get_running_loop()
+        end = loop.time() + timeout
+        while (left := end - loop.time()) > 0:
+            try:
+                data, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 2048), left)
+            except TimeoutError:
+                break
+            try:
+                msg = json.loads(data)["msg"]
+                if msg.get("cmd") == "scan":
+                    d = msg["data"]
+                    found[d["ip"]] = {"sku": d.get("sku", ""), "device": d.get("device", "")}
+            except (ValueError, KeyError, TypeError):
+                continue
+    except OSError:
+        pass
+    finally:
+        sock.close()
+    return found

@@ -20,7 +20,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import C9ConfigEntry
-from .const import CONF_BULB_ENTITIES, DOMAIN
+from .const import CONF_BULB_ENTITIES, CONF_SKU, DOMAIN
 from .controller import SHOW, C9Controller
 from .effects import EFFECT_LIST
 from .protocol import Colour
@@ -47,7 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry,
                             async_add_entities: AddEntitiesCallback) -> None:
     ctl = entry.runtime_data
     device = DeviceInfo(identifiers={(DOMAIN, entry.data[CONF_HOST])}, name=entry.title,
-                        manufacturer="Govee", model="C9 string lights")
+                        manufacturer="Govee", model=entry.data.get(CONF_SKU) or "LAN light")
     entities: list[LightEntity] = [C9StringLight(ctl, entry, device)]
     if entry.options.get(CONF_BULB_ENTITIES, entry.data.get(CONF_BULB_ENTITIES, True)):
         entities += [C9BulbLight(ctl, entry, device, i) for i in range(ctl.bulbs)]
