@@ -100,7 +100,7 @@ class GoveeC9Card extends HTMLElement {
     if (!el) return;
     const lit = colour && colour !== "#000000";
     el.style.background = lit ? colour : "";
-    el.style.boxShadow = lit ? `0 0 10px 2px ${colour}` : "";
+    el.style.boxShadow = lit ? `0 0 calc(var(--b, 18px) * 0.55) calc(var(--b, 18px) * 0.1) ${colour}` : "";
     el.classList.toggle("off", !lit);
   }
 
@@ -157,14 +157,17 @@ class GoveeC9Card extends HTMLElement {
         .status { font-size: 12px; color: var(--secondary-text-color); }
         .strip { position: relative; touch-action: none; user-select: none; -webkit-user-select: none;
                  padding: 8px; border-radius: 12px; background: #0b0b10; }
-        .strip.grid { display: grid; gap: 6px; justify-items: center; }
-        .strip.flow { display: flex; flex-wrap: wrap; gap: 6px; }
-        .bulb { width: 18px; height: 18px; border-radius: 50%; cursor: pointer; box-sizing: border-box;
-                transition: background 0.08s; }
+        /* bulbs scale with the card: grid cells shrink to fit, capped at 22px */
+        .strip.grid, .strip.flow { display: grid; gap: 5px 2%; justify-items: center; align-items: center; }
+        .strip.flow { grid-template-columns: repeat(auto-fill, minmax(14px, 1fr)); gap: 5px; }
+        .bulb { width: min(100%, 22px); aspect-ratio: 1; border-radius: 50%; cursor: pointer; box-sizing: border-box;
+                transition: background 0.08s; --b: 18px; }
         .bulb.off { background: #26262e; box-shadow: inset 0 0 0 1px #3a3a44; }
-        .strip.points { padding: 16px; }
-        .area { position: relative; }
-        .strip.points .bulb { position: absolute; transform: translate(-50%, -50%); width: 14px; height: 14px; }
+        .strip.points { padding: 14px 12px; }
+        ha-card, .strip { min-width: 0; max-width: 100%; box-sizing: border-box; }
+        .area { position: relative; --b: 12px; }
+        .strip.points .bulb { position: absolute; transform: translate(-50%, -50%); width: var(--b); height: var(--b);
+                              --b: inherit; }
         .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
         .sw { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer;
               box-sizing: border-box; padding: 0; box-shadow: inset 0 0 0 1px #0003; }
@@ -255,17 +258,26 @@ class GoveeC9Card extends HTMLElement {
     const { columns, layout } = this._config;
     const points = Array.isArray(layout) && layout.length ? layout : null;
     strip.className = "strip " + (points ? "points" : columns > 0 ? "grid" : "flow");
-    if (columns > 0 && !points) strip.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+    strip.style.gridTemplateColumns = columns > 0 && !points ? `repeat(${columns}, minmax(0, 1fr))` : "";
     let place = null, parent = strip;
     if (points) {
-      // positions as % of an area with the layout's own aspect ratio (min 1:8 so flat rooflines stay tappable)
+      // positions as % of an area with the layout's own aspect ratio (a straight line still gets some height)
       const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
       const x0 = Math.min(...xs), y0 = Math.min(...ys);
       const w = Math.max(...xs) - x0 || 1, h = Math.max(...ys) - y0 || 0;
       parent = document.createElement("div");
       parent.className = "area";
-      parent.style.aspectRatio = `${w} / ${Math.max(h, w / 8)}`;
+      parent.style.aspectRatio = `${w} / ${Math.max(h, w / 30)}`;
       strip.append(parent);
+      // bulb size follows the card width: 60% of the typical gap between neighbouring bulbs, 5-16px
+      const near = points.map((p, i) => Math.min(...points.map((q, j) => (i === j ? Infinity : Math.hypot(p[0] - q[0], p[1] - q[1]) || Infinity))));
+      const gap = near.filter(isFinite).sort((a, b) => a - b)[Math.floor(near.length / 2)] || w / 10;
+      this._resize?.disconnect();
+      this._resize = new ResizeObserver(([e]) => {
+        const px = (gap * e.contentRect.width) / w;
+        parent.style.setProperty("--b", `${Math.max(5, Math.min(16, px * 0.6))}px`);
+      });
+      this._resize.observe(parent);
       place = (el, p) => {
         el.style.left = `${((p[0] - x0) / w) * 100}%`;
         el.style.top = h ? `${((p[1] - y0) / h) * 100}%` : "50%";
