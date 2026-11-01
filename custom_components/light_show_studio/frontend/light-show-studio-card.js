@@ -3,6 +3,8 @@
 //   type: custom:light-show-studio-card
 //   entity: light.light_show_studio          # the whole-string light
 //   title: Porch                    # optional
+//   size: 1.6                       # optional: bulb size multiplier (default 1)
+//   open_studio: true               # optional: tapping the title fires light-show-studio-open (the app opens its Studio tab)
 //   columns: 25                     # optional: wrap into rows of this many bulbs (default: one row that wraps to fit)
 //   layout: [[0, 0], [10, 0], ...]  # optional: x, y of each bulb (any units), e.g. your xLights positions
 //   colors: ["#ff0000", ...]        # optional: the paint swatches
@@ -46,6 +48,7 @@ class LightShowStudioCard extends HTMLElement {
       schema: [
         { name: "entity", required: true, selector: { entity: { domain: "light", integration: "light_show_studio" } } },
         { name: "title", selector: { text: {} } },
+        { name: "size", selector: { number: { min: 0.5, max: 3, step: 0.1, mode: "box" } } },
         { name: "columns", selector: { number: { min: 0, max: 255, mode: "box" } } },
         { name: "layout", selector: { object: {} } },
         { name: "colors", selector: { object: {} } },
@@ -251,6 +254,7 @@ class LightShowStudioCard extends HTMLElement {
         ha-card { padding: 12px 16px 16px; }
         .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
         .title { font-size: 16px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .title.link { cursor: pointer; text-decoration: underline dotted; }
         .status { font-size: 12px; color: var(--secondary-text-color); flex: none; }
         .status.bad { color: var(--error-color); font-weight: 500; }
         /* vertical swipes scroll the page; painting needs a press-and-hold (or Paint mode) on touch */
@@ -260,8 +264,8 @@ class LightShowStudioCard extends HTMLElement {
         .strip.dis { opacity: 0.5; }
         /* bulbs scale with the card: grid cells shrink to fit, capped at 22px */
         .strip.grid, .strip.flow { display: grid; gap: 5px 2%; justify-items: center; align-items: center; }
-        .strip.flow { grid-template-columns: repeat(auto-fill, minmax(14px, 1fr)); gap: 5px; }
-        .bulb { width: min(100%, 22px); aspect-ratio: 1; border-radius: 50%; cursor: pointer; box-sizing: border-box;
+        .strip.flow { grid-template-columns: repeat(auto-fill, minmax(calc(14px * var(--scale, 1)), 1fr)); gap: 5px; }
+        .bulb { width: min(100%, calc(22px * var(--scale, 1))); aspect-ratio: 1; border-radius: 50%; cursor: pointer; box-sizing: border-box;
                 transition: background 0.08s; --b: 18px; }
         .strip.dis .bulb { cursor: not-allowed; }
         .bulb.off { background: #26262e; box-shadow: inset 0 0 0 1px #3a3a44; }
@@ -309,6 +313,17 @@ class LightShowStudioCard extends HTMLElement {
     const root = this.shadowRoot;
     root.querySelector(".title").textContent =
       this._config.title || this._hass.states[this._config.entity]?.attributes.friendly_name || this._config.entity;
+    if (this._config.open_studio) {
+      const t = root.querySelector(".title");
+      const open = () => this.dispatchEvent(new CustomEvent("light-show-studio-open", {
+        detail: { entity: this._config.entity }, bubbles: true, composed: true }));
+      t.classList.add("link");
+      t.tabIndex = 0;
+      t.setAttribute("role", "button");
+      t.title = "Open in Studio";
+      t.onclick = open;
+      t.onkeydown = (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), open());
+    }
     this._strip = root.querySelector(".strip");
     this._buildTools(root.querySelector(".tools"));
     this._count = this._count || this._hass.states[this._config.entity]?.attributes.bulbs || 50;
@@ -434,9 +449,15 @@ class LightShowStudioCard extends HTMLElement {
     tools.append(mode, menu, fill, show);
   }
 
+  _scale() {
+    const n = Number(this._config?.size);
+    return n > 0 ? Math.min(3, n) : 1;
+  }
+
   _buildBulbs() {
     const strip = this._strip;
     if (!strip) return;
+    strip.style.setProperty("--scale", String(this._scale()));
     strip.innerHTML = "";
     this._bulbs = [];
     const { columns } = this._config;
@@ -454,13 +475,13 @@ class LightShowStudioCard extends HTMLElement {
       parent.className = "area";
       parent.style.aspectRatio = `${w} / ${Math.max(h, w / 30)}`;
       strip.append(parent);
-      // bulb size follows the card width: 60% of the typical gap between neighbouring bulbs, 5-16px
+      // bulb size follows the card width: 60% of the typical gap between neighbouring bulbs, 5-16px (times size)
       const near = points.map((p, i) => Math.min(...points.map((q, j) => (i === j ? Infinity : Math.hypot(p[0] - q[0], p[1] - q[1]) || Infinity))));
       const gap = near.filter(isFinite).sort((a, b) => a - b)[Math.floor(near.length / 2)] || w / 10;
       this._resize?.disconnect();
       this._resize = new ResizeObserver(([e]) => {
         const px = (gap * e.contentRect.width) / w;
-        parent.style.setProperty("--b", `${Math.max(5, Math.min(16, px * 0.6))}px`);
+        parent.style.setProperty("--b", `${Math.max(5, Math.min(16 * this._scale(), px * 0.6))}px`);
       });
       this._resize.observe(parent);
       place = (el, p) => {

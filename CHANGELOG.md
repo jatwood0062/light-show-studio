@@ -5,6 +5,12 @@ Changes to Light Show Studio, newest first.
 ## [2.0.0] - 2026-11-01
 
 ### Added
+- Studio tab in the Light Shows app: one light at a time, with a big live view, power, brightness, colour,
+  effect chips ("Follow the show" first), a show-mode line with a hand-back button, Identify, and admin
+  settings (name, IP address, start pixel, bulb count) with live pixel and channel ranges. Tap a strand
+  or a light card's title in the Lights tab to open it; `/light-shows?studio=<entity or entry id>` deep-links.
+- `strand/update` accepts `host` (IPv4); an address used by another light is rejected (`already_configured`).
+- `size` option on the light card (bulb size multiplier).
 - Audio output: play the music on one or several speakers (grouped in sync, the first leads and the lights
   follow it). Set in the player options or with the new Output picker (with volume) on the player card.
 - Transitions between shows: a "Between shows" setting on the Light Show Player (None, Fade,

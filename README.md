@@ -62,6 +62,11 @@ gives the setup text for xLights.
 
 ## Twinkly lights
 
+**Studio tab.** Pick one light (or tap its row or card title in the Lights tab) for a large live view,
+power, brightness, colour and effect controls, a status line showing whether it follows the show, and
+(for admins) its name, IP address, start pixel and bulb count with the pixel and xLights channel range
+shown as you type. Link straight to a light with `/light-shows?studio=<entity_id>`.
+
 Twinkly strings are added the same way as Govee lights, and show live in the Lights tab.
 
 1. Go to Settings → Devices & services → Light Show Studio → **Add entry** → **Add a Twinkly light**.

@@ -5,31 +5,39 @@
 const TABS = [
   ["play", "Play", "M8 5v14l11-7z"],
   ["lights", "Lights", "M12 2a7 7 0 0 0-4 12.7V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.3A7 7 0 0 0 12 2zM9 20h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1z"],
+  ["studio", "Studio", "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"],
   ["add", "Add shows", "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"],
   ["setup", "Setup", "M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"],
 ];
 const INTEGRATION_PATH = "/config/integrations/integration/light_show_studio";
 const STORE_KEY = "light_show_studio_panel_tab";
+const SEL_KEY = "light_show_studio_panel_light";
+const SWATCHES = ["#ff0000", "#ff5000", "#ffc800", "#00ff00", "#00ffc8", "#0040ff", "#8200ff", "#ff1478", "#ffb43c", "#ffffff"];
+const SEASONAL = /Christmas|Candy|Halloween|Valentine|Patrick|Easter|July 4th|Thanksgiving|Hanukkah|Witches|Classic Multicolour|Warm White/;
+const SHOW = "Light show";
+const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
 const svg = (d, size = 24) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path fill="currentColor" d="${d}"/></svg>`;
 
-const stored = {
+const store = (key) => ({
   get() {
     try {
-      return localStorage.getItem(STORE_KEY);
+      return localStorage.getItem(key);
     } catch (e) {
       return null;
     }
   },
   set(v) {
     try {
-      localStorage.setItem(STORE_KEY, v);
+      localStorage.setItem(key, v);
     } catch (e) {
-      /* storage blocked: tab just isn't remembered */
+      /* storage blocked: it just isn't remembered */
     }
   },
-};
+});
+const stored = store(STORE_KEY);
+const storedLight = store(SEL_KEY);
 
 class LightShowStudioPanel extends HTMLElement {
   constructor() {
@@ -38,6 +46,14 @@ class LightShowStudioPanel extends HTMLElement {
     this._cards = new Map(); // entity id -> light card
     this._strands = null; // from light_show_studio/strands
     this._editing = null; // entry id whose inline editor is open
+    this._studioSel = storedLight.get(); // entry id (or entity id from a deep link) shown in the Studio tab
+    try {
+      this._deepLink = new URLSearchParams(location.search).get("studio");
+    } catch (e) {
+      this._deepLink = null;
+    }
+    if (this._deepLink) this._studioSel = this._deepLink;
+    this._studioCards = new Map();
   }
 
   connectedCallback() {
@@ -175,6 +191,47 @@ class LightShowStudioPanel extends HTMLElement {
           .acts { margin-left: 0; flex: 1 0 100%; }
           .acts .btn { flex: 1; }
         }
+        .strand[data-open] { cursor: pointer; }
+        .strand[data-open]:hover .n { text-decoration: underline; }
+        /* studio tab */
+        .st-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+        .st-top label { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px;
+                        color: var(--secondary-text-color); }
+        select, .st input[type=text], .st input[type=number] { font: inherit; font-size: 14px; padding: 6px 8px; min-height: 40px;
+                 border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color, #fff);
+                 color: var(--primary-text-color); max-width: 100%; min-width: 0; }
+        .st-top select { width: 100%; }
+        .st-top .sdot { margin-top: 18px; }
+        .st-top .state { margin-top: 18px; }
+        .st-live { min-width: 0; }
+        .st-live > * { display: block; margin: 0; }
+        .st-ctl > * + *, .st-fx > * + * { margin-top: 14px; }
+        .st-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+        .st-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; justify-content: space-between; }
+        .st-mode .ml { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+        .pw { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; padding: 8px 16px;
+              min-height: 40px; border-radius: 20px; border: 1px solid var(--divider-color); }
+        .pw[aria-checked=true] { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+        .bri { flex: 1 1 200px; min-width: 0; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--secondary-text-color); }
+        .bri input { flex: 1; min-width: 0; height: 40px; accent-color: var(--primary-color); }
+        .bri .bv { width: 3.2em; text-align: right; }
+        .sws { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .sw { width: 36px; height: 36px; border-radius: 50%; border: 2px solid transparent; box-shadow: inset 0 0 0 1px #0003; }
+        .sw.sel { border-color: var(--primary-text-color); }
+        .st input[type=color] { width: 40px; height: 36px; padding: 0; border: 2px solid var(--divider-color); border-radius: 8px;
+                                background: none; cursor: pointer; }
+        .grp { margin-top: 12px; }
+        .grp h3 { font-size: 13px; font-weight: 500; margin: 0 0 6px; color: var(--secondary-text-color); }
+        .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+        .chip { font-size: 14px; padding: 6px 14px; min-height: 40px; border-radius: 20px; border: 1px solid var(--divider-color);
+                background: var(--card-background-color, #fff); max-width: 100%; overflow-wrap: anywhere; }
+        .chip[aria-pressed=true] { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+        .chip.show { font-weight: 500; }
+        .ctl-off { opacity: .5; pointer-events: none; }
+        .st-set .edit input { width: 120px; }
+        .st-set .edit label.ip input { width: 150px; }
+        .st-set .live { flex: 1 0 100%; font-size: 13px; color: var(--secondary-text-color); }
+        .st-set .btnrow { flex: 1 0 100%; display: flex; gap: 8px; flex-wrap: wrap; }
         /* phones: tabs become a bottom bar */
         .narrow nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--card-background-color, #fff);
                       color: var(--secondary-text-color); border-top: 1px solid var(--divider-color);
@@ -194,6 +251,7 @@ class LightShowStudioPanel extends HTMLElement {
         <main>
           <section id="p-play" role="tabpanel"></section>
           <section id="p-lights" role="tabpanel"></section>
+          <section id="p-studio" role="tabpanel" class="st"></section>
           <section id="p-add" role="tabpanel">
             <div class="box">
               <h2>Add a show</h2>
@@ -209,6 +267,10 @@ class LightShowStudioPanel extends HTMLElement {
       </div>`;
     this._root = root.querySelector(".root");
     this._root.classList.toggle("narrow", !!this._narrow);
+    this._root.addEventListener("light-show-studio-open", (e) => {
+      const hit = this._resolveStrand(e.detail?.entity);
+      if (hit) this._openStudio(hit);
+    });
     this._menu = root.querySelector(".menu");
     this._menu.hidden = !this._narrow;
     this._menu.onclick = () => this.dispatchEvent(new Event("hass-toggle-menu", { bubbles: true, composed: true }));
@@ -247,6 +309,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._addRow.append(add);
     this._lightsGrid = q(".grid");
     this._buildSetup();
+    this._buildStudio();
   }
 
   // a card element that works whether or not its script has loaded yet
@@ -275,7 +338,8 @@ class LightShowStudioPanel extends HTMLElement {
     for (const [t, s] of Object.entries(this._sections)) s.hidden = t !== id;
     for (const [t, b] of Object.entries(this._tabBtns)) b.setAttribute("aria-selected", String(t === id));
     if (user) stored.set(id);
-    if (id === "lights") this._loadStrands();
+    if (id === "lights" || id === "studio") this._loadStrands();
+    if (id === "studio") this._renderStudio();
   }
 
   // --- strands list --------------------------------------------------------
@@ -283,7 +347,8 @@ class LightShowStudioPanel extends HTMLElement {
     if (this._poll || !this._hass || !this.isConnected) return;
     this._loadStrands();
     this._poll = setInterval(() => {
-      if (this._tab === "lights" && !document.hidden && !this._editing) this._loadStrands();
+      if (document.hidden) return;
+      if ((this._tab === "lights" && !this._editing) || this._tab === "studio") this._loadStrands();
     }, 15000);
   }
 
@@ -299,7 +364,16 @@ class LightShowStudioPanel extends HTMLElement {
       this._strandsError = (typeof err === "string" ? err : err?.message) || "Couldn't load the strands.";
     }
     this._loading = false;
+    if (this._deepLink && this._strands) {
+      const hit = this._resolveStrand(this._deepLink);
+      this._deepLink = null;
+      if (hit) {
+        this._studioSel = hit.entry_id;
+        this._select("studio", false);
+      }
+    }
     this._renderStrands();
+    this._renderStudio();
     if (this._hass) this._update();
   }
 
@@ -315,7 +389,7 @@ class LightShowStudioPanel extends HTMLElement {
     const [a0, a1] = LightShowStudioPanel._range(s);
     const out = [];
     for (const o of this._strands) {
-      if (o === s) continue;
+      if (o.entry_id === s.entry_id) continue;
       const [b0, b1] = LightShowStudioPanel._range(o);
       const lo = Math.max(a0, b0), hi = Math.min(a1, b1);
       if (lo <= hi) out.push(`Overlaps ${o.title}: pixels ${lo}\u2013${hi}`);
@@ -370,6 +444,13 @@ class LightShowStudioPanel extends HTMLElement {
   _strandRow(s) {
     const row = this._el("div", "strand");
     row.setAttribute("role", "listitem");
+    row.dataset.open = "1";
+    row.tabIndex = 0;
+    row.title = "Open in Studio";
+    row.onclick = (e) => {
+      if (!e.target.closest("button, input, form, a, select")) this._openStudio(s);
+    };
+    row.onkeydown = (e) => e.target === row && e.key === "Enter" && this._openStudio(s);
     const [p0, p1] = LightShowStudioPanel._range(s);
     const state = !s.loaded ? ["", "Not loaded"] : s.online === true ? ["on", "Online"]
       : s.online === false ? ["off", "Offline" + (s.last_seen ? ` \u00b7 last seen ${LightShowStudioPanel._ago(s.last_seen)}` : " \u00b7 never seen")]
@@ -533,6 +614,342 @@ class LightShowStudioPanel extends HTMLElement {
     btn._t = setTimeout(() => (btn.textContent = restore), 1500);
   }
 
+  // --- studio tab ----------------------------------------------------------
+  _resolveStrand(key) {
+    if (!key) return null;
+    return (this._strands || []).find((s) => s.entry_id === key || s.entity_id === key) || null;
+  }
+
+  _openStudio(s) {
+    this._studioSel = s.entry_id;
+    storedLight.set(s.entry_id);
+    this._formKey = null; // reload the settings form for this light
+    this._select("studio", true);
+    this.scrollTo?.(0, 0);
+  }
+
+  _currentStrand() {
+    const list = this._strands || [];
+    return this._resolveStrand(this._studioSel) || list[0] || null;
+  }
+
+  _buildStudio() {
+    const sec = this._sections.studio;
+    sec.innerHTML = `
+      <div class="box empty st-empty" hidden></div>
+      <div class="st-body" hidden>
+        <div class="box st-top">
+          <label>Light<select class="pick" aria-label="Choose a light"></select></label>
+          <span class="sdot" role="img"></span><span class="state"></span>
+          <button class="btn alt sm idb" type="button">Identify</button>
+        </div>
+        <div class="st-live"></div>
+        <div class="box st-ctl">
+          <div class="st-mode"><span class="ml" role="status"></span>
+            <button class="btn sm back" type="button">Hand back to the show</button></div>
+          <div class="st-row">
+            <button class="pw" type="button" role="switch" aria-checked="false">${svg("M13 3h-2v10h2zm4.8 2.2-1.4 1.4A6 6 0 1 1 7.6 6.6L6.2 5.2a8 8 0 1 0 11.6 0z", 20)}<span>Power</span></button>
+            <label class="bri">Brightness<input class="brs" type="range" min="1" max="255" step="1" aria-label="Brightness"><span class="bv"></span></label>
+          </div>
+          <div class="sws" role="group" aria-label="Colour"></div>
+        </div>
+        <div class="box st-fx"><h2>Effects</h2><div class="groups"></div></div>
+        <form class="box st-set edit" novalidate>
+          <h2 style="flex:1 0 100%;margin:0">Settings</h2>
+          <label class="nm">Name<input class="f-nm" type="text" required maxlength="100"></label>
+          <label class="ip">IP address<input class="f-ip" type="text" inputmode="decimal" autocomplete="off" required></label>
+          <label>Start pixel<input class="f-st" type="number" step="1" required></label>
+          <label>Bulbs<input class="f-bl" type="number" step="1" required></label>
+          <div class="live" aria-live="polite"></div>
+          <div class="free">Next free start pixel: <button type="button" class="use"></button></div>
+          <div class="warns"></div>
+          <div class="serr" role="alert" hidden></div>
+          <div class="btnrow"><button class="btn sm save" type="submit">Save</button>
+            <button class="btn alt sm reset" type="button">Reset</button></div>
+          <div class="free note">Changing the IP address reloads the light.</div>
+        </form>
+        <div class="serr st-err" role="alert" hidden></div>
+      </div>`;
+    const q = (c) => sec.querySelector(c);
+    this._st = {
+      empty: q(".st-empty"), body: q(".st-body"), pick: q(".pick"), dot: q(".sdot"), state: q(".state"),
+      idb: q(".idb"), live: q(".st-live"), ml: q(".ml"), back: q(".back"), pw: q(".pw"), brs: q(".brs"), bv: q(".bv"),
+      sws: q(".sws"), groups: q(".groups"), fx: q(".st-fx"), ctl: q(".st-ctl"), form: q(".st-set"), err: q(".st-err"),
+      nm: q(".f-nm"), ip: q(".f-ip"), st: q(".f-st"), bl: q(".f-bl"), liveTxt: q(".st-set .live"),
+      use: q(".use"), warns: q(".warns"), ferr: q(".st-set .serr"), save: q(".save"), reset: q(".reset"),
+    };
+    const st = this._st;
+    st.pick.onchange = () => {
+      const s = this._resolveStrand(st.pick.value);
+      if (s) this._openStudio(s);
+    };
+    st.idb.onclick = () => {
+      const s = this._currentStrand();
+      if (s) this._studioIdentify(s);
+    };
+    st.back.onclick = () => this._svc("turn_on", { effect: SHOW });
+    st.pw.onclick = () => this._svc(this._entityState()?.state === "on" ? "turn_off" : "turn_on", {});
+    st.brs.oninput = () => {
+      st.bv.textContent = Math.round((st.brs.value / 255) * 100) + "%";
+      clearTimeout(this._briT);
+      this._briT = setTimeout(() => this._svc("turn_on", { brightness: Number(st.brs.value) }), 150);
+    };
+    st.brs.onchange = () => {
+      clearTimeout(this._briT);
+      this._svc("turn_on", { brightness: Number(st.brs.value) });
+    };
+    for (const c of SWATCHES) {
+      const b = this._el("button", "sw");
+      b.type = "button";
+      b.style.background = c;
+      b.title = c;
+      b.dataset.c = c;
+      b.setAttribute("aria-label", `Colour ${c}`);
+      b.onclick = () => this._setColour(c);
+      st.sws.append(b);
+    }
+    this._picker = Object.assign(document.createElement("input"), { type: "color", value: "#ff8c00", title: "Any colour" });
+    this._picker.setAttribute("aria-label", "Custom colour");
+    this._picker.onchange = () => this._setColour(this._picker.value);
+    st.sws.append(this._picker);
+    const onInput = () => {
+      this._formDirty = true;
+      this._renderFormLive();
+    };
+    for (const i of [st.nm, st.ip, st.st, st.bl]) i.oninput = onInput;
+    st.use.onclick = () => {
+      st.st.value = st.use.textContent;
+      onInput();
+    };
+    st.reset.onclick = () => {
+      this._formKey = null;
+      this._renderStudio();
+    };
+    st.form.onsubmit = (e) => {
+      e.preventDefault();
+      this._studioSave();
+    };
+  }
+
+  _entityState() {
+    const s = this._currentStrand();
+    return s?.entity_id ? this._hass?.states[s.entity_id] || null : null;
+  }
+
+  _studioError(text) {
+    this._st.err.textContent = text || "";
+    this._st.err.hidden = !text;
+  }
+
+  async _svc(service, data) {
+    const s = this._currentStrand();
+    if (!s?.entity_id || !this._hass) return;
+    try {
+      await this._hass.callService("light", service, { entity_id: s.entity_id, ...data });
+      this._studioError("");
+    } catch (err) {
+      this._studioError((typeof err === "string" ? err : err?.message) || "That didn't work.");
+    }
+  }
+
+  _setColour(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    this._svc("turn_on", { rgb_color: [(n >> 16) & 255, (n >> 8) & 255, n & 255] });
+  }
+
+  async _studioIdentify(s) {
+    const b = this._st.idb;
+    b.disabled = true;
+    b.textContent = "Flashing…";
+    try {
+      await this._hass.callWS({ type: "light_show_studio/identify", entry_id: s.entry_id });
+      this._studioError("");
+    } catch (err) {
+      this._studioError((typeof err === "string" ? err : err?.message) || "Couldn't identify this light.");
+    }
+    setTimeout(() => this._renderStudio(), 3000);
+  }
+
+  static _kind(s) {
+    return `${{ twinkly: "Twinkly", wled: "WLED" }[s.kind] || "Govee"}${s.model ? " " + s.model : ""}`;
+  }
+
+  // header, live card, form: what only changes with the strands list or the selection
+  _renderStudio() {
+    const st = this._st;
+    if (!st) return;
+    const list = this._strands;
+    const none = !!list && !list.length;
+    st.empty.hidden = !(none || (!list && this._strandsError));
+    st.body.hidden = !list || none;
+    if (!st.empty.hidden) {
+      st.empty.textContent = none ? "No lights yet." : this._strandsError;
+      if (none) {
+        st.empty.append(document.createElement("br"));
+        const b = Object.assign(document.createElement("button"), { className: "btn", textContent: "Add a light" });
+        b.onclick = () => this._navigate(INTEGRATION_PATH);
+        st.empty.append(b);
+      }
+    }
+    if (st.body.hidden) return;
+    const s = this._currentStrand();
+    this._studioSel = s.entry_id;
+    const online = (x) => (x.online === true ? "●" : x.online === false ? "○" : "◌");
+    const sig = JSON.stringify(list.map((x) => [x.entry_id, x.title, x.kind, x.model, x.host, x.online]));
+    if (sig !== this._pickSig) {
+      this._pickSig = sig;
+      st.pick.textContent = "";
+      for (const x of list) {
+        const o = Object.assign(document.createElement("option"), { value: x.entry_id });
+        o.textContent = `${online(x)} ${x.title} — ${LightShowStudioPanel._kind(x)} · ${x.host}`;
+        st.pick.append(o);
+      }
+    }
+    st.pick.value = s.entry_id;
+    const state = !s.loaded ? ["", "Not loaded"] : s.online === true ? ["on", "Online"] : s.online === false ? ["off", "Offline"] : ["", "checking…"];
+    st.dot.className = "sdot " + state[0];
+    st.dot.setAttribute("aria-label", state[1]);
+    st.state.className = "state " + state[0];
+    st.state.textContent = state[1];
+    st.idb.disabled = !s.loaded || s.online === false;
+    st.idb.textContent = "Identify";
+    // live card for this light only (one subscription at a time)
+    if (s.entity_id) {
+      if (!this._studioCards.has(s.entity_id))
+        this._studioCards.set(s.entity_id, this._card("light-show-studio-card", { entity: s.entity_id, size: 1.7 }));
+      const card = this._studioCards.get(s.entity_id);
+      if (st.live.firstChild !== card) st.live.replaceChildren(card);
+      this._feed(card);
+    } else {
+      st.live.replaceChildren(Object.assign(this._el("div", "box empty", "This light isn't loaded, so there's nothing to show yet.")));
+    }
+    // settings form
+    st.form.hidden = !this._isAdmin();
+    const key = s.entry_id;
+    if (this._formKey !== key || !this._formDirty) {
+      if (this._formKey !== key || !st.form.contains(this._root.getRootNode().activeElement)) {
+        this._formKey = key;
+        this._formDirty = false;
+        st.nm.value = s.title;
+        st.ip.value = s.host || "";
+        st.st.value = s.start_pixel;
+        st.bl.value = s.bulbs;
+        st.ferr.hidden = true;
+        st.save.disabled = false;
+      }
+    }
+    this._renderFormLive();
+    this._renderStudioControls();
+  }
+
+  _renderFormLive() {
+    const st = this._st;
+    const s = this._currentStrand();
+    if (!s) return;
+    const start = Number(st.st.value), bulbs = Number(st.bl.value);
+    const ok = Number.isInteger(start) && Number.isInteger(bulbs) && start >= 1 && bulbs >= 1;
+    st.liveTxt.textContent = ok
+      ? `Pixels ${start}–${start + bulbs - 1} · xLights channels ${(start - 1) * 3 + 1}–${(start + bulbs - 1) * 3}`
+      : "Enter a start pixel and bulb count.";
+    st.use.textContent = String(this._nextFree(s));
+    st.warns.textContent = "";
+    if (ok) for (const w of this._overlaps({ ...s, start_pixel: start, bulbs })) st.warns.append(this._el("div", "warn", "⚠ " + w));
+  }
+
+  async _studioSave() {
+    const st = this._st;
+    const s = this._currentStrand();
+    if (!s) return;
+    const max = this._info?.max || 2040;
+    const title = st.nm.value.trim(), host = st.ip.value.trim();
+    const start = Number(st.st.value), bulbs = Number(st.bl.value);
+    const fail = (t) => ((st.ferr.textContent = t), (st.ferr.hidden = !t));
+    let msg = "";
+    if (!title) msg = "Enter a name.";
+    else if (!IPV4.test(host)) msg = "Enter the IP address like 192.168.4.42.";
+    else if (!Number.isInteger(start) || start < 1) msg = "Start pixel must be 1 or more.";
+    else if (!Number.isInteger(bulbs) || bulbs < 1) msg = "Bulbs must be 1 or more.";
+    else if (start + bulbs - 1 > max) msg = `The last pixel can't go past ${max}.`;
+    if (msg) return fail(msg);
+    const data = { type: "light_show_studio/strand/update", entry_id: s.entry_id };
+    if (title !== s.title) data.title = title;
+    if (host !== s.host) data.host = host;
+    if (start !== s.start_pixel) data.start_pixel = start;
+    if (bulbs !== s.bulbs) data.bulbs = bulbs;
+    if (Object.keys(data).length <= 2) return fail("Nothing changed.");
+    st.save.disabled = true;
+    fail("");
+    try {
+      await this._hass.callWS(data);
+      this._formDirty = false;
+      this._formKey = null;
+      await this._loadStrands();
+      setTimeout(() => this._loadStrands(), 2000); // the entry reloads in the background
+    } catch (err) {
+      fail((typeof err === "string" ? err : err?.message) || "Couldn't save.");
+      st.save.disabled = false;
+    }
+  }
+
+  // everything that follows the light's state
+  _renderStudioControls() {
+    const st = this._st;
+    const s = this._currentStrand();
+    if (!st || !s || !this._hass) return;
+    const e = s.entity_id ? this._hass.states[s.entity_id] : null;
+    const usable = !!e && e.state !== "unavailable" && e.state !== "unknown";
+    const on = usable && e.state === "on";
+    const a = (usable && e.attributes) || {};
+    st.ctl.classList.toggle("ctl-off", !usable);
+    st.fx.classList.toggle("ctl-off", !usable);
+    st.pw.setAttribute("aria-checked", String(on));
+    const effect = on ? a.effect : null;
+    const following = on && effect === SHOW;
+    let line = "Offline";
+    if (!s.entity_id) line = "Not loaded";
+    else if (usable && !on) line = "Off";
+    else if (following) line = "Following the show";
+    else if (on) line = effect ? `Showing ${effect}` : a.per_bulb ? "Showing your painting" : "Showing a colour";
+    st.ml.textContent = line;
+    st.back.hidden = !on || following;
+    if (document.activeElement !== st.brs && this._root.getRootNode().activeElement !== st.brs && a.brightness != null) {
+      st.brs.value = a.brightness;
+    }
+    st.bv.textContent = Math.round(((a.brightness ?? Number(st.brs.value)) / 255) * 100) + "%";
+    const rgb = on && !effect && Array.isArray(a.rgb_color) ? a.rgb_color : null;
+    const hex = rgb ? "#" + rgb.map((v) => v.toString(16).padStart(2, "0")).join("") : "";
+    st.sws.querySelectorAll(".sw").forEach((b) => b.classList.toggle("sel", !!hex && b.dataset.c === hex));
+    if (hex && this._root.getRootNode().activeElement !== this._picker) this._picker.value = hex;
+    // effect chips
+    const list = Array.isArray(a.effect_list) ? a.effect_list : [];
+    const sig = list.join("|");
+    if (sig !== this._fxSig && (usable || !this._fxSig)) {
+      this._fxSig = sig;
+      st.groups.textContent = "";
+      const group = (title, names, first) => {
+        if (!names.length) return;
+        const g = this._el("div", "grp");
+        g.append(this._el("h3", "", title));
+        const row = this._el("div", "chips");
+        for (const n of names) {
+          const b = this._el("button", "chip" + (n === SHOW ? " show" : ""), n === SHOW ? "Follow the show" : n);
+          b.type = "button";
+          b.dataset.fx = n;
+          b.onclick = () => this._svc("turn_on", { effect: n });
+          row.append(b);
+        }
+        g.append(row);
+        st.groups.append(g);
+      };
+      group("Show", list.filter((n) => n === SHOW));
+      group("Seasonal", list.filter((n) => n !== SHOW && SEASONAL.test(n)));
+      group("More effects", list.filter((n) => n !== SHOW && !SEASONAL.test(n)));
+      if (!list.length) st.groups.append(this._el("div", "muted", "Effects show up when the light is online."));
+    }
+    st.groups.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(on && effect === b.dataset.fx)));
+    if (s.entity_id) this._feed(this._studioCards.get(s.entity_id));
+  }
+
   // --- live updates ------------------------------------------------------
   _update() {
     const lights = this._lights();
@@ -546,6 +963,7 @@ class LightShowStudioPanel extends HTMLElement {
     }
     this._dot.hidden = Object.values(status).every(Boolean);
     this._syncLights(lights);
+    if (this._tab === "studio") this._renderStudioControls();
     this._feed(this._player);
     this._feed(this._adder);
     this._renderSetup(status, shows);
@@ -565,7 +983,7 @@ class LightShowStudioPanel extends HTMLElement {
       this._lightKey = key;
       for (const [id, el] of this._cards) if (!ids.includes(id)) (el.remove(), this._cards.delete(id));
       for (const id of ids) {
-        if (!this._cards.has(id)) this._cards.set(id, this._card("light-show-studio-card", { entity: id }));
+        if (!this._cards.has(id)) this._cards.set(id, this._card("light-show-studio-card", { entity: id, open_studio: true }));
         this._lightsGrid.append(this._cards.get(id)); // keeps entity order
       }
       this._emptyLights?.remove();

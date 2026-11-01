@@ -24,6 +24,7 @@ from .const import (
     TYPE_WLED,
 )
 from .controller import C9Controller
+from .hosts import host_taken, valid_ipv4
 from .receiver import DDP_PORT, E131_PORT, MAX_PIXELS
 
 CARD_FPS = 10  # the card doesn't need every frame of a show
@@ -181,6 +182,7 @@ def ws_identify(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
     vol.Optional("title"): vol.All(str, vol.Length(min=1, max=100)),
     vol.Optional("start_pixel"): vol.All(int, vol.Range(min=1, max=MAX_PIXELS)),
     vol.Optional("bulbs"): vol.All(int, vol.Range(min=1, max=1020)),
+    vol.Optional("host"): vol.All(str, valid_ipv4),
 })
 @websocket_api.require_admin
 @callback
@@ -198,9 +200,16 @@ def ws_strand_update(hass: HomeAssistant, connection: websocket_api.ActiveConnec
     if o.get(CONF_TYPE) not in (TYPE_TWINKLY, TYPE_WLED) and bulbs > 255:
         connection.send_error(msg["id"], "invalid_format", "A Govee light takes at most 255 bulbs")
         return
+    data = entry.data
+    if (host := msg.get("host")) is not None and host != entry.data[CONF_HOST]:
+        others = [e.data.get(CONF_HOST) for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != entry.entry_id]
+        if host_taken(host, others):
+            connection.send_error(msg["id"], "already_configured", f"{host} is already used by another light")
+            return
+        data = {**entry.data, CONF_HOST: host}  # unique ids use entry.unique_id, so entities keep their ids
     options = {**entry.options}
     for key in (CONF_START_PIXEL, CONF_BULBS):
         if key in msg:
             options[key] = msg[key]
-    hass.config_entries.async_update_entry(entry, title=msg.get("title", entry.title), options=options)
+    hass.config_entries.async_update_entry(entry, title=msg.get("title", entry.title), data=data, options=options)
     connection.send_result(msg["id"], {})
