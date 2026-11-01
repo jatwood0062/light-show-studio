@@ -38,6 +38,11 @@ def _rainbow_flow(t, n, base):
     return [_hsv(i / n + t * 0.15) for i in range(n)]
 
 
+def _rainbow_chase(t, n, base):
+    """Two rainbows along the string, racing (a full lap every ~1.5 s)."""
+    return [_hsv(2 * i / n - t * 0.7) for i in range(n)]
+
+
 def _chase(cols: list[Colour], width: int, speed: float):
     def fx(t, n, base):
         shift = int(t * speed)
@@ -134,6 +139,7 @@ STILL = {
 
 ANIMATED = {
     "Rainbow Flow": _rainbow_flow,
+    "Rainbow Chase": _rainbow_chase,
     "Christmas Chase": _chase([RED, GREEN], 3, 4),
     "Candy Cane Chase": _chase([RED, WHITE], 2, 4),
     "Candy Cane Spin": _candy_spin,
