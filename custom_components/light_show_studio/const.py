@@ -21,3 +21,5 @@ TYPE_TWINKLY = "twinkly"
 TYPE_WLED = "wled"
 CONF_DEVICE_ID = "device_id"  # Govee device id / Twinkly or WLED MAC: finds the light again when its IP changes
 CONF_LED_PROFILE = "led_profile"  # Twinkly: "RGB" or "RGBW"
+CONF_TRANSITION = "transition"  # between shows: none, fade, crossfade or effect
+CONF_TRANSITION_EFFECT = "transition_effect"

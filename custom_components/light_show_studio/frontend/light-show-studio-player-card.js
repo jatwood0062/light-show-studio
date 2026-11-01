@@ -233,6 +233,17 @@ class LightShowStudioPlayerCard extends HTMLElement {
     this._service("repeat_set", { repeat: next });
   }
 
+  async _setTransition(value) {
+    try {
+      await this._hass.callWS({ type: "light_show_studio/player/set_transition", transition: value });
+      this._clearError("transition");
+      if (this._state) this._state.transition = value;
+    } catch (err) {
+      this._error(this._msg(err, "Couldn't change the transition"), "transition");
+      this._renderState();
+    }
+  }
+
   _playShow(show) {
     this._service("select_source", { source: show.name });
   }
@@ -448,6 +459,11 @@ class LightShowStudioPlayerCard extends HTMLElement {
     rp.classList.toggle("on", !!s.repeat && s.repeat !== "off");
     rp.title = `Repeat: ${s.repeat || "off"}`;
     rp.setAttribute("aria-label", rp.title);
+    const tr = r.querySelector(".trsel");
+    if (tr) {
+      if (this.shadowRoot.activeElement !== tr) tr.value = s.transition || "fade";
+      tr.disabled = !this._isAdmin();
+    }
     const bar = r.querySelector(".bar");
     bar.classList.toggle("idle", s.state === "idle");
     bar.tabIndex = s.state === "idle" ? -1 : 0;
@@ -629,6 +645,12 @@ class LightShowStudioPlayerCard extends HTMLElement {
         .pp { width: 68px; height: 68px; background: var(--primary-color); color: var(--text-primary-color, #fff);
               margin: 0 6px; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
         .pp:hover:not(:disabled) { background: var(--primary-color); filter: brightness(1.1); }
+        .tr { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 6px;
+              font-size: 12px; color: var(--secondary-text-color); }
+        .trsel { font: inherit; font-size: 13px; color: var(--primary-text-color); min-height: 36px; max-width: 100%;
+                 padding: 4px 8px; border-radius: 8px; border: 1px solid var(--divider-color, rgba(127,127,127,.4));
+                 background: var(--card-background-color, transparent); }
+        .trsel:disabled { opacity: 0.5; }
         .toggle { color: var(--secondary-text-color); }
         .toggle.on { color: var(--primary-color); background: rgba(127,127,127,.15); }
         .sec { display: flex; align-items: baseline; justify-content: space-between; margin: 18px 0 6px; }
@@ -701,6 +723,15 @@ class LightShowStudioPlayerCard extends HTMLElement {
               <button class="ib next" aria-label="Next" title="Next">${icon("next", 30)}</button>
               <button class="ib toggle rep" aria-label="Repeat: off" title="Repeat: off">${icon("repeat")}</button>
             </div>
+            <div class="tr">
+              <label for="trsel">Between shows</label>
+              <select id="trsel" class="trsel" aria-label="Between shows">
+                <option value="none">None</option>
+                <option value="fade">Fade</option>
+                <option value="crossfade">Crossfade</option>
+                <option value="effect">Effect</option>
+              </select>
+            </div>
           </div>
           <div class="sec"><span class="t">Shows</span></div>
           <div class="list"></div>
@@ -725,6 +756,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
     r.querySelector(".next").onclick = () => this._service("media_next_track");
     r.querySelector(".shuf").onclick = () => this._toggleShuffle();
     r.querySelector(".rep").onclick = () => this._cycleRepeat();
+    r.querySelector(".trsel").onchange = (e) => this._setTransition(e.target.value);
 
     const bar = r.querySelector(".bar");
     const barFill = () => r.querySelector(".fill");

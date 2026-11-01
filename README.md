@@ -83,6 +83,16 @@ WLED strips are added the same way, and show live in the Lights tab. Frames go o
 Automations: `media_player.media_play` on `media_player.light_show_player` starts the playlist,
 `media_player.select_source` plays one show, `media_player.media_stop` stops.
 
+### Transitions
+
+**Between shows** (player options, or the select on the Light Show Player card) sets what the
+lights do during the pause between shows, whose length is the **Pause between shows** option:
+*None* holds the last frame, *Fade* (the default) fades the finished show to black and fades the
+next one in over 1 s, *Crossfade* blends the last frame into the next show's first frame, and
+*Effect* runs an intermission effect (**Intermission effect**, Twinkle by default) on every light
+and then fades the next show in. Pressing stop, next, previous or a show cuts a transition short.
+Changing the setting from the card doesn't interrupt the show that is playing.
+
 ## Live from xLights / Light-O-Rama
 
 Home Assistant listens for pixel data on **DDP (UDP 4048)** and **E1.31/sACN (UDP 5568,

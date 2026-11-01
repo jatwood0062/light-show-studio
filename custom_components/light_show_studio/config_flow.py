@@ -22,6 +22,8 @@ from .const import (
     CONF_SKU,
     CONF_SPEAKER,
     CONF_START_PIXEL,
+    CONF_TRANSITION,
+    CONF_TRANSITION_EFFECT,
     CONF_TYPE,
     DEFAULT_BULBS,
     DOMAIN,
@@ -29,7 +31,9 @@ from .const import (
     TYPE_TWINKLY,
     TYPE_WLED,
 )
+from .effects import EFFECT_LIST
 from .protocol import async_scan
+from .transitions import DEFAULT_TRANSITION, MODES, default_effect
 from .twinkly import async_discover, async_gestalt
 from .wled import async_info, format_mac
 
@@ -64,6 +68,12 @@ def _player_schema(cur: dict[str, Any]) -> vol.Schema:
             selector.EntitySelector(selector.EntitySelectorConfig(domain="media_player")),
         vol.Required(CONF_AUDIO_OFFSET, default=cur.get(CONF_AUDIO_OFFSET, 0.0)): vol.Coerce(float),
         vol.Required(CONF_GAP, default=cur.get(CONF_GAP, 3.0)): vol.All(vol.Coerce(float), vol.Range(min=0, max=120)),
+        vol.Required(CONF_TRANSITION, default=cur.get(CONF_TRANSITION, DEFAULT_TRANSITION)):
+            selector.SelectSelector(selector.SelectSelectorConfig(
+                options=list(MODES), mode=selector.SelectSelectorMode.DROPDOWN, translation_key="transition")),
+        vol.Required(CONF_TRANSITION_EFFECT, default=cur.get(CONF_TRANSITION_EFFECT, default_effect(EFFECT_LIST))):
+            selector.SelectSelector(selector.SelectSelectorConfig(
+                options=EFFECT_LIST, mode=selector.SelectSelectorMode.DROPDOWN)),
     })
 
 

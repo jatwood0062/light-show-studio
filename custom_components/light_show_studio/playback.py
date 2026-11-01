@@ -88,6 +88,11 @@ class SequencePlayer:
         self.timeline = Timeline()
         self.frames_shown = 0
         self.frames_skipped = 0
+        self.last_frame: bytes | None = None  # the last frame of the current/finished show, unscaled
+        self.hold_on_stop = False  # a show ending keeps its last frame up (a transition takes over from it)
+        self.fade_in = 0.0  # seconds the next play() fades in from black; used up by that play()
+        self._fade = 0.0
+        self._fade_t0 = 0.0
 
     @property
     def current(self) -> asyncio.Task | None:
@@ -98,10 +103,15 @@ class SequencePlayer:
         return self._task is not None and not self._task.done()
 
     def play(self, seq: FseqFile, loop: bool = False, delay: float = 0.0,
-             timeline: Timeline | None = None, hold: bool = False) -> asyncio.Task:
+             timeline: Timeline | None = None, hold: bool = False,
+             fade_in: float = 0.0) -> asyncio.Task:
         """Start a show. `hold` keeps the last frame up at the end instead of finishing
-        (when following a speaker, which decides when the show is over)."""
+        (when following a speaker, which decides when the show is over). `fade_in` brings the
+        lights up from black over that many seconds (or set `self.fade_in` before play_with_speaker)."""
         self.stop(blank=False)
+        self._fade, self.fade_in = max(0.0, fade_in or self.fade_in), 0.0
+        self._fade_t0 = time.monotonic()
+        self.last_frame = None
         if timeline is None:
             timeline = Timeline()
             timeline.set(-delay)
@@ -114,8 +124,18 @@ class SequencePlayer:
             return
         self._task.cancel()
         self._task = None
-        if blank:  # after the external-frame rate limit, so it is not dropped
+        if blank and not self.hold_on_stop:  # after the external-frame rate limit, so it is not dropped
             asyncio.get_running_loop().call_later(0.1, self.output, b"")
+
+    def _faded(self, data: bytes) -> bytes:
+        if self._fade <= 0:
+            return data
+        k = (time.monotonic() - self._fade_t0) / self._fade
+        if k >= 1.0:
+            self._fade = 0.0
+            return data
+        k = max(0.0, k)
+        return bytes(int(v * k) for v in data)
 
     async def _run(self, seq: FseqFile, loop: bool, tl: Timeline, hold: bool) -> None:
         if not seq.frames:
@@ -153,7 +173,8 @@ class SequencePlayer:
                 data = seq.cached(i)
                 if data is None:
                     data = await ev.run_in_executor(None, seq.frame, i)
-                self.output(data)
+                self.last_frame = data
+                self.output(self._faded(data))
                 self.frames_shown += 1
                 if last >= 0 and i > last + 1:
                     self.frames_skipped += i - last - 1

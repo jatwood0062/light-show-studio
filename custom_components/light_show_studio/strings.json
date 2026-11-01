@@ -86,7 +86,9 @@
         "data": {
           "speaker": "Speaker for the music (optional)",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
-          "gap": "Pause between shows (seconds)"
+          "gap": "Pause between shows (seconds)",
+          "transition": "Between shows",
+          "transition_effect": "Intermission effect (for the Effect transition)"
         }
       }
     },
@@ -108,7 +110,9 @@
           "start_pixel": "First pixel in xLights / Light-O-Rama output",
           "speaker": "Speaker for the music (optional)",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
-          "gap": "Pause between shows (seconds)"
+          "gap": "Pause between shows (seconds)",
+          "transition": "Between shows",
+          "transition_effect": "Intermission effect (for the Effect transition)"
         }
       }
     }
@@ -157,6 +161,16 @@
     "stop_sequence": {
       "name": "Stop sequence",
       "description": "Stop the playing sequence and turn the bulbs dark."
+    }
+  },
+  "selector": {
+    "transition": {
+      "options": {
+        "none": "None",
+        "fade": "Fade",
+        "crossfade": "Crossfade",
+        "effect": "Effect"
+      }
     }
   }
 }

@@ -23,6 +23,8 @@ from .const import (
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
     CONF_START_PIXEL,
+    CONF_TRANSITION,
+    CONF_TRANSITION_EFFECT,
     CONF_TYPE,
     DEFAULT_BULBS,
     DOMAIN,
@@ -139,7 +141,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
     if entry.data.get(CONF_TYPE) == TYPE_PLAYER:
         await async_setup_player(hass, entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLAYER_PLATFORMS)
-        entry.async_on_unload(entry.add_update_listener(_reload))
+        entry.async_on_unload(entry.add_update_listener(_player_listener(entry)))
         return True
     bulbs = _opt(entry, CONF_BULBS, DEFAULT_BULBS)
     if entry.data.get(CONF_TYPE) == TYPE_TWINKLY:
@@ -181,6 +183,26 @@ def _reload_on_change(entry: ConfigEntry):
         if (now := _snapshot(entry)) != last:
             last = now
             await _reload(hass, entry)
+
+    return listener
+
+
+def _player_listener(entry: ConfigEntry):
+    """Update listener for the player: a changed between-shows transition is applied to the
+    running player in place (a reload would stop the show); any other change reloads."""
+    def snap(e: ConfigEntry) -> tuple:
+        skip = (CONF_TRANSITION, CONF_TRANSITION_EFFECT)
+        return (dict(e.data), {k: v for k, v in e.options.items() if k not in skip}, e.title)
+
+    last = snap(entry)
+
+    async def listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+        nonlocal last
+        if (now := snap(entry)) != last:
+            last = now
+            await _reload(hass, entry)
+        elif (player := hass.data.get(SHOW_PLAYER_KEY)) is not None:
+            player.set_transition(_opt(entry, CONF_TRANSITION, None), _opt(entry, CONF_TRANSITION_EFFECT, None))
 
     return listener
 

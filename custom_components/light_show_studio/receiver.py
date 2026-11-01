@@ -69,6 +69,10 @@ class PixelReceiver:
     def push(self) -> None:
         self.show(self.buf)
 
+    def subscriptions(self) -> list[tuple[int, int, Callable[[bytes], None]]]:
+        """Each string's (start byte, byte size, callback)."""
+        return list(self._subs.values())
+
     def show(self, data: bytes | bytearray) -> None:
         """Give every string its slice of a full channel buffer (channel 1 = byte 0)."""
         for start, size, cb in list(self._subs.values()):

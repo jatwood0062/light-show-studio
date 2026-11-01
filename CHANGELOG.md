@@ -5,6 +5,8 @@ Changes to Light Show Studio, newest first.
 ## [2.0.0] - 2026-11-01
 
 ### Added
+- Transitions between shows: a "Between shows" setting on the Light Show Player (None, Fade,
+  Crossfade or Effect, with a choice of intermission effect), also on the player card.
 - WLED lights: realtime frames over DDP; add them via Add entry → Add a WLED light.
 - Twinkly lights: local realtime control. The card layout uses the Twinkly app's camera mapping.
 - Strands list in the Light Shows app's Lights tab: IP, model, pixel and channel ranges, online

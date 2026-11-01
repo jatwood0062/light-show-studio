@@ -11,7 +11,10 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 
+from .const import CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_TYPE, DOMAIN, TYPE_PLAYER
+from .effects import EFFECT_LIST
 from .library import SHOW_PLAYER_KEY, Show, library_for
+from .transitions import MODES
 
 TICK = timedelta(seconds=1)
 
@@ -21,6 +24,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_delete)
     websocket_api.async_register_command(hass, ws_reorder)
     websocket_api.async_register_command(hass, ws_subscribe)
+    websocket_api.async_register_command(hass, ws_set_transition)
 
 
 def _row(s: Show) -> dict[str, Any]:
@@ -110,3 +114,27 @@ def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection
     connection.subscriptions[msg["id"]] = unsubscribe
     connection.send_result(msg["id"])
     send()
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "light_show_studio/player/set_transition",
+    vol.Required("transition"): vol.In(MODES),
+    vol.Optional("transition_effect"): vol.In(EFFECT_LIST),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_set_transition(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
+                            msg: dict[str, Any]) -> None:
+    player = hass.data.get(SHOW_PLAYER_KEY)
+    entry = next((e for e in hass.config_entries.async_entries(DOMAIN) if e.data.get(CONF_TYPE) == TYPE_PLAYER), None)
+    if player is None or entry is None:
+        connection.send_error(msg["id"], "not_found", "The light show player is not set up")
+        return
+    options = {**entry.options, CONF_TRANSITION: msg["transition"]}
+    if "transition_effect" in msg:
+        options[CONF_TRANSITION_EFFECT] = msg["transition_effect"]
+    # applied to the running player first, so a playing show is never interrupted; the entry's
+    # update listener sees that only the transition changed and does not reload
+    player.set_transition(options[CONF_TRANSITION], options.get(CONF_TRANSITION_EFFECT))
+    hass.config_entries.async_update_entry(entry, options=options)
+    connection.send_result(msg["id"], {})

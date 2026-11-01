@@ -5,7 +5,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+from homeassistant.core import callback, CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
 
@@ -32,7 +32,7 @@ class HealthMonitor:
 
     def start(self) -> None:
         self._stopped = False
-        self._cancel = async_call_later(self.hass, FIRST_RUN, self._run)
+        self._cancel = async_call_later(self.hass, FIRST_RUN, self._tick)
 
     def stop(self) -> None:
         self._stopped = True
@@ -40,13 +40,19 @@ class HealthMonitor:
             self._cancel()
             self._cancel = None
 
-    async def _run(self, _now) -> None:
+    @callback
+    def _tick(self, _now) -> None:
+        # a background task, so Home Assistant's startup never waits on a check
+        self._cancel = None
+        self.hass.async_create_background_task(self._run(), "light_show_studio health check")
+
+    async def _run(self) -> None:
         try:
             await self.async_check()
         except Exception:  # never let the monitor die
             _LOGGER.debug("Health check failed", exc_info=True)
         if not self._stopped:
-            self._cancel = async_call_later(self.hass, INTERVAL, self._run)
+            self._cancel = async_call_later(self.hass, INTERVAL, self._tick)
 
     async def async_check(self) -> None:
         govee: list[ConfigEntry] = []

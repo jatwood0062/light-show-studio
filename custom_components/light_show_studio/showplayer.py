@@ -16,7 +16,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, PLAYER
+from . import transitions
+from .const import CONF_TRANSITION, CONF_TRANSITION_EFFECT, DOMAIN, PLAYER
+from .effects import EFFECT_LIST, EFFECTS
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
 from .library import SHOW_PLAYER_KEY, Show, ShowLibrary, media_root
@@ -38,6 +40,8 @@ class ShowPlayer:
         self.speaker: str | None = None
         self.audio_offset = 0.0
         self.gap = DEFAULT_GAP
+        self.transition = transitions.DEFAULT_TRANSITION
+        self.transition_effect = transitions.default_effect(EFFECT_LIST)
         self.shuffle = False
         self.repeat = REPEAT_OFF
         self.entity_id: str | None = None  # set by the media_player entity
@@ -61,6 +65,16 @@ class ShowPlayer:
         self.audio_offset = float(opt("audio_offset", 0.0) or 0.0)
         gap = opt("gap", DEFAULT_GAP)
         self.gap = DEFAULT_GAP if gap is None else float(gap)
+        self.set_transition(opt(CONF_TRANSITION, None), opt(CONF_TRANSITION_EFFECT, None))
+
+    def set_transition(self, mode: str | None, effect: str | None = None) -> None:
+        """Change the between-shows look in place (takes effect at the next gap); bad values are ignored."""
+        self.transition = mode if mode in transitions.MODES else transitions.DEFAULT_TRANSITION
+        if effect in EFFECTS:
+            self.transition_effect = effect
+        elif self.transition_effect not in EFFECTS:
+            self.transition_effect = transitions.default_effect(EFFECT_LIST)
+        self._changed()
 
     def _sequencer(self) -> SequencePlayer:
         """The shared SequencePlayer, so play_sequence / stop_sequence act on the same one."""
@@ -123,6 +137,8 @@ class ShowPlayer:
             "shuffle": self.shuffle,
             "repeat": self.repeat,
             "speaker": self.speaker,
+            "transition": self.transition,
+            "transition_effect": self.transition_effect,
             "queue": list(self.queue),
             "entity_id": self.entity_id,
         }
@@ -190,6 +206,7 @@ class ShowPlayer:
     async def async_stop(self) -> None:
         was_speaker = self._with_speaker
         self._cancel_runner()
+        self._sequencer().hold_on_stop = False  # a user stop goes dark
         self._sequencer().stop()
         self._with_speaker = False
         self.state = IDLE
@@ -265,6 +282,7 @@ class ShowPlayer:
 
     async def _run(self, index: int) -> None:
         """Play shows from `index` until the queue ends or this task is cancelled."""
+        fade_in = 0.0  # the first show starts straight away; later ones may fade in
         try:
             while True:
                 if index >= len(self.queue):  # the library shrank during the gap: that was the end
@@ -276,7 +294,8 @@ class ShowPlayer:
                 self.state = PLAYING
                 self._changed()
                 if self.show is not None:
-                    await self._play_one(self.show)
+                    await self._play_one(self.show, fade_in)
+                fade_in = 0.0
                 if self.show is not None and self.show.id in self.queue:  # refresh may have moved it
                     self._index = self.queue.index(self.show.id)
                 nxt = self._next_index(auto=True)
@@ -285,7 +304,7 @@ class ShowPlayer:
                 self.show = self.shows.get(self.queue[nxt])  # "up next" while we wait
                 self._index = nxt
                 self._changed()
-                await asyncio.sleep(self.gap)
+                fade_in = await self._between(self.show)
                 index = self._index  # a refresh during the gap may have moved the queue
                 if self.show is not None and self.show.id in self.queue:
                     index = self.queue.index(self.show.id)
@@ -293,13 +312,70 @@ class ShowPlayer:
             raise
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Show queue stopped")
+        self._sequencer().hold_on_stop = False  # end of the queue goes dark
         self._sequencer().stop()
+        if (receiver := self.hass.data.get(DOMAIN)) is not None:
+            receiver.show(b"")  # in case the last show held its frame
         self._with_speaker = False
         self.state = IDLE
         self._changed()
 
-    async def _play_one(self, show: Show) -> None:
+    async def _between(self, nxt: Show | None) -> float:
+        """Fill the gap before `nxt`; returns the seconds the next show should fade in over.
+
+        Never raises (bar cancellation): on any failure the rest of the gap is just waited out."""
+        mode, gap = self.transition, self.gap
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        if mode == transitions.NONE or gap <= 0:
+            await asyncio.sleep(max(0.0, gap))
+            return 0.0
+        try:
+            await self._transition(mode, nxt, gap)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Transition failed; waiting out the gap")
+        await asyncio.sleep(max(0.0, gap - (loop.time() - t0)))
+        return transitions.FADE_IN if mode in (transitions.FADE, transitions.EFFECT) else 0.0
+
+    async def _transition(self, mode: str, nxt: Show | None, gap: float) -> None:
+        receiver: PixelReceiver | None = self.hass.data.get(DOMAIN)
+        if receiver is None:
+            return
+        last = self._sequencer().last_frame or b""
+        first = b""
+        if mode == transitions.CROSSFADE and nxt is not None:
+            try:
+                first = (await self.hass.async_add_executor_job(self._first_frame, nxt.fseq)) or b""
+            except (FseqError, OSError) as err:
+                _LOGGER.debug("No first frame of %s to crossfade into: %s", nxt.id, err)
+        effect_fn = EFFECTS.get(self.transition_effect)
+        subs = receiver.subscriptions()
+        size = max((start + length for start, length, _ in subs), default=0)
+        loop = asyncio.get_running_loop()
+        t0, step = loop.time(), 1 / transitions.FPS
+        while (t := loop.time() - t0) < gap:
+            k = t / gap
+            if mode == transitions.FADE:
+                buf: bytes | bytearray = transitions.fade(last, 1 - k)
+            elif mode == transitions.CROSSFADE:
+                buf = transitions.blend(last, first, k)
+            elif effect_fn is not None:
+                buf = transitions.effect_buffer(subs, effect_fn, t, transitions.TRANSITION_COLOUR, size)
+            else:
+                return
+            receiver.show(buf)
+            await asyncio.sleep(step)
+
+    @staticmethod
+    def _first_frame(path: str) -> bytes | None:
+        seq = load(path)
+        return seq.frame(0) if seq.frames else None
+
+    async def _play_one(self, show: Show, fade_in: float = 0.0) -> None:
         self._with_speaker = False
+        self._sequencer().hold_on_stop = self.transition != transitions.NONE  # the transition starts from its last frame
         if self._stop_speaker:  # here, not in _start, so it can't land after the new song began
             self._stop_speaker = False
             await self._speaker_call("media_stop")
@@ -313,6 +389,14 @@ class ShowPlayer:
             if hasattr(ctl, "enable_show"):
                 ctl.enable_show()
         sequencer = self._sequencer()
+        try:
+            sequencer.fade_in = fade_in  # taken by whichever play() starts the lights
+            await self._start_lights(show, seq, sequencer)
+        finally:
+            sequencer.fade_in = 0.0
+        self._with_speaker = False
+
+    async def _start_lights(self, show: Show, seq: FseqFile, sequencer: SequencePlayer) -> None:
         url = await self._audio_url(show) if self.speaker and show.audio else None
         task = None
         if url is not None:
@@ -328,7 +412,6 @@ class ShowPlayer:
         self._changed()
         if task is not None:
             await asyncio.wait({task})  # doesn't raise if the show was cancelled, e.g. the song ended
-        self._with_speaker = False
 
     async def _audio_url(self, show: Show) -> str | None:
         try:
