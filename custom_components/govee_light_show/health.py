@@ -11,7 +11,7 @@ from homeassistant.helpers.event import async_call_later
 
 from .const import CONF_DEVICE_ID, CONF_TYPE, DOMAIN, TYPE_PLAYER, TYPE_TWINKLY
 from .controller import C9Controller
-from .protocol import async_scan
+from .protocol import async_probe, async_scan
 from .twinkly import TwinklyController, async_discover, async_gestalt
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,7 +66,15 @@ class HealthMonitor:
 
     async def _check_govee(self, entries: list[ConfigEntry]) -> None:
         found = await async_scan(2.0)
-        if found is None:  # couldn't scan (port held): say nothing
+        _LOGGER.debug("Govee scan: %s", found)
+        if found is None:  # couldn't scan (port held, e.g. by Govee light local): check each light directly
+            seen = await async_probe([e.data[CONF_HOST] for e in entries])
+            _LOGGER.debug("Govee probe: %s", seen)
+            for entry in entries if seen is not None else []:
+                if seen.get(entry.data[CONF_HOST]):
+                    entry.runtime_data.mark_seen()
+                else:
+                    entry.runtime_data.mark_missed(GOVEE_MISSES)
             return
         if found:
             self._scan_ever_worked = True

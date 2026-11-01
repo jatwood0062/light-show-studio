@@ -116,3 +116,39 @@ async def async_scan(timeout: float = 2.5) -> dict[str, dict] | None:
     finally:
         sock.close()
     return found
+
+
+def _arp_table() -> dict[str, bool]:
+    """{ip: resolved} from the kernel's ARP table. Blocking."""
+    out: dict[str, bool] = {}
+    with open("/proc/net/arp", encoding="ascii") as f:
+        next(f, None)
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 4:
+                out[parts[0]] = bool(int(parts[2], 16) & 0x2) and parts[3] != "00:00:00:00:00:00"
+    return out
+
+
+async def async_probe(hosts: list[str], wait: float = 6.0) -> dict[str, bool] | None:
+    """Fallback presence check when the scan can't run: poke each light (a status query), give the
+    kernel time to re-check its address, then see whether it answered ARP. None if there's no ARP
+    table to read (not Linux)."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    loop = asyncio.get_running_loop()
+    try:
+        for _ in range(2):  # a stale entry needs traffic to be probed again
+            for host in hosts:
+                try:
+                    sock.sendto(_wrap("devStatus", {}), (host, CMD_PORT))
+                except OSError:
+                    pass
+            await asyncio.sleep(wait / 2)
+        table = await loop.run_in_executor(None, _arp_table)
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    return {h: table.get(h, False) for h in hosts}
+
