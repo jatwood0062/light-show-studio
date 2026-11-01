@@ -37,7 +37,7 @@ class NextShowSensor(_Base):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
 
     def __init__(self, scheduler: Scheduler) -> None:
-        super().__init__(scheduler, "next_show", "Light Show Next Show")
+        super().__init__(scheduler, "next_show", "Next show")
 
     @property
     def native_value(self) -> datetime | None:
@@ -57,7 +57,7 @@ class ScheduleStatusSensor(_Base):
     _attr_options = STATUSES
 
     def __init__(self, scheduler: Scheduler) -> None:
-        super().__init__(scheduler, "schedule_status", "Light Show Schedule Status")
+        super().__init__(scheduler, "schedule_status", "Schedule status")
 
     @property
     def native_value(self) -> str:
