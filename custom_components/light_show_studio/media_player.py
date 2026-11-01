@@ -111,6 +111,8 @@ class ShowPlayerEntity(MediaPlayerEntity):
         return {
             "show_id": self._player.show.id if self._player.show else None,
             "speaker": self._player.speaker,
+            "speakers": self._player.speakers,
+            "ungrouped": list(self._player.outputs.ungrouped),
             "transition": self._player.transition,
             "queue": list(self._player.queue),
         }

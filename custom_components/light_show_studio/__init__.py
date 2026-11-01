@@ -22,6 +22,8 @@ from .const import (
     CONF_DEVICE_ID,
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
+    CONF_SPEAKER,
+    CONF_SPEAKERS,
     CONF_START_PIXEL,
     CONF_TRANSITION,
     CONF_TRANSITION_EFFECT,
@@ -38,6 +40,7 @@ from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
 from .health import HealthMonitor
 from .library import SHOW_PLAYER_KEY
+from .outputs import configured_speakers
 from .playback import SequencePlayer
 from . import upload, websocket, ws_shows
 from .receiver import PixelReceiver
@@ -188,10 +191,10 @@ def _reload_on_change(entry: ConfigEntry):
 
 
 def _player_listener(entry: ConfigEntry):
-    """Update listener for the player: a changed between-shows transition is applied to the
-    running player in place (a reload would stop the show); any other change reloads."""
+    """Update listener for the player: a changed between-shows transition or speaker list is applied
+    to the running player in place (a reload would stop the show); any other change reloads."""
     def snap(e: ConfigEntry) -> tuple:
-        skip = (CONF_TRANSITION, CONF_TRANSITION_EFFECT)
+        skip = (CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_SPEAKER, CONF_SPEAKERS)
         return (dict(e.data), {k: v for k, v in e.options.items() if k not in skip}, e.title)
 
     last = snap(entry)
@@ -203,6 +206,7 @@ def _player_listener(entry: ConfigEntry):
             await _reload(hass, entry)
         elif (player := hass.data.get(SHOW_PLAYER_KEY)) is not None:
             player.set_transition(_opt(entry, CONF_TRANSITION, None), _opt(entry, CONF_TRANSITION_EFFECT, None))
+            player.set_speakers(configured_speakers({k: _opt(entry, k, None) for k in (CONF_SPEAKERS, CONF_SPEAKER)}))
 
     return listener
 

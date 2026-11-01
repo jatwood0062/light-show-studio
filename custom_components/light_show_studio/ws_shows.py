@@ -9,11 +9,13 @@ import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_TYPE, DOMAIN, TYPE_PLAYER
+from .const import CONF_SPEAKER, CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_TYPE, DOMAIN, TYPE_PLAYER
 from .effects import EFFECT_LIST
 from .library import SHOW_PLAYER_KEY, Show, library_for
+from .outputs import normalize_speakers
 from .transitions import MODES
 
 TICK = timedelta(seconds=1)
@@ -25,6 +27,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_reorder)
     websocket_api.async_register_command(hass, ws_subscribe)
     websocket_api.async_register_command(hass, ws_set_transition)
+    websocket_api.async_register_command(hass, ws_set_speakers)
 
 
 def _row(s: Show) -> dict[str, Any]:
@@ -138,3 +141,29 @@ async def ws_set_transition(hass: HomeAssistant, connection: websocket_api.Activ
     player.set_transition(options[CONF_TRANSITION], options.get(CONF_TRANSITION_EFFECT))
     hass.config_entries.async_update_entry(entry, options=options)
     connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "light_show_studio/player/set_speakers",
+    vol.Required("speakers"): [cv.entity_id],
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_set_speakers(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
+                          msg: dict[str, Any]) -> None:
+    player = hass.data.get(SHOW_PLAYER_KEY)
+    entry = next((e for e in hass.config_entries.async_entries(DOMAIN) if e.data.get(CONF_TYPE) == TYPE_PLAYER), None)
+    if player is None or entry is None:
+        connection.send_error(msg["id"], "not_found", "The light show player is not set up")
+        return
+    speakers = normalize_speakers(msg["speakers"])
+    if bad := [s for s in speakers if not s.startswith("media_player.") or s == player.entity_id]:
+        connection.send_error(msg["id"], "invalid_format", f"Not a speaker: {', '.join(bad)}")
+        return
+    # applied to the running player first (a show in progress keeps its speakers until the next show);
+    # the entry's update listener sees that only the speakers changed and does not reload
+    applies = player.set_speakers(speakers)
+    options = {k: v for k, v in entry.options.items() if k != CONF_SPEAKER}
+    options[CONF_SPEAKERS] = speakers
+    hass.config_entries.async_update_entry(entry, options=options)
+    connection.send_result(msg["id"], {"applies": applies})

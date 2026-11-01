@@ -24,7 +24,7 @@ Everything stays on your LAN (Govee LAN API on UDP 4003, and Twinkly's local API
    Then go to Settings → Devices & services → **Add integration** → Light Show Studio and choose:
    - **Add a Govee light**: lights on your network are listed (or type the IP). Repeat per light.
    - **Add a Twinkly light**: see [Twinkly lights](#twinkly-lights).
-   - **Add the Light Show Player**: pick the speaker for the music (optional).
+   - **Add the Light Show Player**: pick the speakers for the music (optional).
 3. **Add a show**: open **Light Shows** in the sidebar → **Add shows** → drop in your `.fseq`
    and its song → **Play**. New users land on **Setup** until everything is ready.
 
@@ -35,6 +35,16 @@ Open **Light Shows** in the sidebar. It has four tabs:
 - **Play**: what's playing now, play/pause, next/previous, seek, shuffle and repeat, and the
   show list. Shows play with their song, or pick **No music** to run the lights alone.
   **Light delay** (player options) shifts the lights if the speaker lags.
+
+### Audio output
+
+Pick one or several speakers in the player options, or live with the **Output** button on the
+player card (it also sets each speaker's volume). The first speaker leads and the lights follow its
+position. When you pick more, the others are grouped with the leader before a show and ungrouped
+when the queue ends or you stop; this works for speakers of the same kind that support grouping
+(e.g. Sonos with Sonos, Music Assistant with Music Assistant). Others can't play in sync, so they are
+skipped and marked in the picker. If the leader is unavailable, the next speaker leads. Changes made
+during a show apply from the next show. No speakers means lights only.
 - **Lights**: a live view of each string, updated during effects and shows. Pick a colour and
   tap or drag across bulbs to paint them. **Paint all** paints the whole string,
   **Holiday patterns…** fills it (Christmas, Valentine's, St. Patrick's, Easter, July 4th,

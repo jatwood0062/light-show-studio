@@ -19,6 +19,7 @@ const ICON = {
   del: "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z",
   note: "M12 3v10.55A4 4 0 1 0 14 17V7h4V3z",
   upload: "M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z",
+  speaker: "M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-5 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm0 16c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.65 0-3 1.35-3 3s1.35 3 3 3 3-1.35 3-3-1.35-3-3-3z",
 };
 
 const icon = (name, size = 24) =>
@@ -32,6 +33,7 @@ const fmt = (s) => {
   return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 };
 
+const GROUPING = 524288, VOLUME_SET = 4; // MediaPlayerEntityFeature bits
 const MAX_BYTES = 300 * 1024 * 1024;
 
 class LightShowStudioPlayerCard extends HTMLElement {
@@ -448,7 +450,8 @@ class LightShowStudioPlayerCard extends HTMLElement {
     title.classList.toggle("dim", s.state === "idle");
     r.querySelector(".np-sub").textContent =
       (s.state === "paused" ? "Paused" : s.state === "playing" ? "Now playing" : "Press play to start the first show") +
-      (s.speaker ? ` · ${this._speakerName(s.speaker)}` : " · No music");
+      ` · ${this._outputLabel()}`;
+    this._renderOutput();
     r.querySelector(".pp").innerHTML = icon(playing ? "pause" : "play", 40);
     r.querySelector(".pp").setAttribute("aria-label", playing ? "Pause" : "Play");
     const sh = r.querySelector(".shuf");
@@ -474,6 +477,174 @@ class LightShowStudioPlayerCard extends HTMLElement {
 
   _speakerName(id) {
     return this._hass?.states[id]?.attributes.friendly_name || id;
+  }
+
+  // --- audio output ---------------------------------------------------------
+  _outputs() {
+    const s = this._state || {};
+    return Array.isArray(s.speakers) ? s.speakers : s.speaker ? [s.speaker] : [];
+  }
+
+  _outputLabel() {
+    const list = this._outputs();
+    if (!list.length) return "Lights only";
+    const lead = this._speakerName(this._state?.speaker || list[0]);
+    return list.length > 1 ? `${lead} + ${list.length - 1}` : lead;
+  }
+
+  // can `id` play in sync with `leader`? (same integration, both support grouping)
+  _canGroup(leader, id) {
+    const f = (e) => Number(this._hass?.states[e]?.attributes.supported_features) || 0;
+    const plat = (e) => this._hass?.entities?.[e]?.platform;
+    return !!(f(leader) & GROUPING) && !!(f(id) & GROUPING) && !!plat(leader) && plat(leader) === plat(id);
+  }
+
+  _renderOutput() {
+    const r = this.shadowRoot;
+    if (!r || !this._built) return;
+    r.querySelector(".outbtn .outtxt").textContent = this._outputLabel();
+    const bad = this._state?.ungrouped || [];
+    const note = r.querySelector(".outnote");
+    const lead = this._state?.speaker;
+    note.hidden = !bad.length || !lead;
+    note.textContent = bad.length && lead
+      ? `${bad.map((id) => this._speakerName(id)).join(", ")} can't play in sync with ${this._speakerName(lead)}`
+      : "";
+  }
+
+  _togglePicker() {
+    this._pickOpen = !this._pickOpen;
+    this._pickDone = false;
+    if (this._pickOpen) {
+      this._draft = [...this._outputs()]; // checked speakers, leader first
+      this._pickMsg = "";
+    }
+    this._renderPicker();
+  }
+
+  _pickable() {
+    const own = this._entityId();
+    return Object.keys(this._hass?.states || {})
+      .filter((id) => id.startsWith("media_player.") && id !== own)
+      .sort((a, b) => this._speakerName(a).localeCompare(this._speakerName(b)));
+  }
+
+  _toggleSpeaker(id, on) {
+    this._draft = this._draft.filter((x) => x !== id);
+    if (on) this._draft.push(id);
+    this._renderPicker();
+  }
+
+  _setLeader(id) {
+    this._draft = [id, ...this._draft.filter((x) => x !== id)];
+    this._renderPicker();
+  }
+
+  _setVolume(id, pct) {
+    this._volTimers = this._volTimers || {};
+    clearTimeout(this._volTimers[id]);
+    this._volTimers[id] = setTimeout(() => {
+      Promise.resolve(this._hass.callService("media_player", "volume_set", { entity_id: id, volume_level: pct / 100 })).catch(
+        (err) => this._error(this._msg(err, `Couldn't set the volume on ${this._speakerName(id)}`))
+      );
+    }, 200);
+  }
+
+  async _applyOutput() {
+    try {
+      const r = await this._hass.callWS({ type: "light_show_studio/player/set_speakers", speakers: this._draft });
+      this._clearError("output");
+      this._pickMsg = r?.applies === "next_show" ? "Saved. A show is playing, so this applies from the next show." : "";
+      if (this._state) this._state = { ...this._state, speakers: [...this._draft], speaker: this._draft[0] || null };
+      this._pickOpen = !!this._pickMsg;
+      if (this._pickOpen) this._pickDone = true;
+      this._renderState();
+      this._renderPicker();
+    } catch (err) {
+      this._error(this._msg(err, "Couldn't change the output"), "output");
+    }
+  }
+
+  _renderPicker() {
+    const r = this.shadowRoot;
+    if (!r || !this._built) return;
+    const box = r.querySelector(".picker");
+    r.querySelector(".outbtn").setAttribute("aria-expanded", String(!!this._pickOpen));
+    box.hidden = !this._pickOpen;
+    box.innerHTML = "";
+    if (!this._pickOpen) return;
+    const admin = this._isAdmin();
+    const lead = this._draft[0];
+    const mk = (tag, cls, text) => {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    };
+    const none = mk("button", "lights" + (this._draft.length ? "" : " on"), "Lights only (no music)");
+    none.setAttribute("aria-pressed", String(!this._draft.length));
+    none.onclick = () => {
+      this._draft = [];
+      this._renderPicker();
+    };
+    box.append(none);
+    const ids = this._pickable();
+    this._draft.filter((id) => !ids.includes(id)).forEach((id) => ids.unshift(id)); // chosen but gone: still shown
+    if (!ids.length) box.append(mk("div", "empty", "No speakers found"));
+    ids.forEach((id) => {
+      const st = this._hass.states[id];
+      const on = this._draft.includes(id);
+      const gone = !st || st.state === "unavailable";
+      const row = mk("div", "spk" + (on ? " sel" : ""));
+      const label = mk("label", "spk-main");
+      const cb = mk("input");
+      cb.type = "checkbox";
+      cb.checked = on;
+      cb.onchange = () => this._toggleSpeaker(id, cb.checked);
+      const dot = mk("span", `dot ${gone ? "off" : st.state === "playing" ? "play" : "on"}`);
+      dot.title = st ? st.state : "unavailable";
+      const nm = mk("span", "spk-nm", this._speakerName(id));
+      label.append(cb, dot, nm);
+      row.append(label);
+      if (on) {
+        const rl = mk("label", "lead");
+        const rd = mk("input");
+        rd.type = "radio";
+        rd.name = "leader";
+        rd.checked = id === lead;
+        rd.onchange = () => this._setLeader(id);
+        rl.append(rd, document.createTextNode(id === lead ? "Leader" : "Lead"));
+        rl.title = "The lights follow the leader";
+        row.append(rl);
+        if (st && !gone && (Number(st.attributes.supported_features) & VOLUME_SET)) {
+          const vol = mk("input", "vol");
+          vol.type = "range";
+          vol.min = 0;
+          vol.max = 100;
+          vol.value = Math.round((Number(st.attributes.volume_level) || 0) * 100);
+          vol.setAttribute("aria-label", `Volume of ${this._speakerName(id)}`);
+          vol.oninput = () => this._setVolume(id, Number(vol.value));
+          row.append(vol);
+        }
+        if (id !== lead && lead && !this._canGroup(lead, id))
+          row.append(mk("div", "hint", "Plays separately — not in sync, will be skipped"));
+      }
+      box.append(row);
+    });
+    if (this._pickMsg) box.append(mk("div", "saved", this._pickMsg));
+    const acts = mk("div", "acts");
+    const cancel = mk("button", "txt", this._pickDone ? "Close" : "Cancel");
+    cancel.onclick = () => {
+      this._pickOpen = false;
+      this._pickDone = false;
+      this._renderPicker();
+    };
+    const apply = mk("button", "txt apply", "Apply");
+    apply.disabled = !admin;
+    apply.title = admin ? "" : "Only admins can change the output";
+    apply.onclick = () => this._applyOutput();
+    acts.append(cancel, apply);
+    box.append(acts);
   }
 
   _renderUploads() {
@@ -651,6 +822,39 @@ class LightShowStudioPlayerCard extends HTMLElement {
                  padding: 4px 8px; border-radius: 8px; border: 1px solid var(--divider-color, rgba(127,127,127,.4));
                  background: var(--card-background-color, transparent); }
         .trsel:disabled { opacity: 0.5; }
+        .outrow { display: flex; justify-content: center; margin-top: 6px; }
+        .outbtn { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; max-width: 100%; padding: 4px 10px;
+                  border-radius: 18px; font-size: 13px; color: var(--primary-text-color);
+                  border: 1px solid var(--divider-color, rgba(127,127,127,.4)); }
+        .outbtn:hover { background: rgba(127,127,127,.18); }
+        .outbtn svg { flex: none; color: var(--primary-color); }
+        .outbtn .outtxt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+        .outbtn[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
+        .outnote { font-size: 12px; color: var(--warning-color, #f4a100); margin-top: 4px; overflow-wrap: anywhere; }
+        .picker { text-align: left; margin-top: 8px; padding: 8px; border-radius: 12px; font-size: 14px;
+                  background: var(--card-background-color, rgba(127,127,127,.08));
+                  border: 1px solid var(--divider-color, rgba(127,127,127,.3)); }
+        .lights { width: 100%; min-height: 40px; border-radius: 8px; font-size: 14px; text-align: left; padding: 6px 8px;
+                  border: 1px solid transparent; }
+        .lights:hover { background: rgba(127,127,127,.18); }
+        .lights.on { color: var(--primary-color); font-weight: 500; border-color: var(--primary-color); }
+        .spk { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; padding: 4px 4px 6px; min-width: 0;
+               border-top: 1px solid var(--divider-color, rgba(127,127,127,.2)); }
+        .spk-main { display: flex; align-items: center; gap: 8px; flex: 1 1 120px; min-width: 0; min-height: 36px; cursor: pointer; }
+        .spk-main input, .lead input { margin: 0; width: 18px; height: 18px; flex: none; accent-color: var(--primary-color); }
+        .spk-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+        .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--secondary-text-color); }
+        .dot.on { background: var(--primary-color); }
+        .dot.play { background: var(--success-color, #43a047); }
+        .dot.off { background: var(--disabled-text-color, #999); opacity: .5; }
+        .lead { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--secondary-text-color);
+                min-height: 36px; cursor: pointer; flex: none; }
+        .vol { flex: 1 0 100%; width: 100%; min-width: 0; margin: 0; accent-color: var(--primary-color); }
+        .hint { flex: 1 0 100%; font-size: 12px; color: var(--warning-color, #f4a100); overflow-wrap: anywhere; }
+        .saved { font-size: 12px; color: var(--secondary-text-color); padding: 6px 4px 0; }
+        .acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+        .txt.apply { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+        .txt.apply:disabled { opacity: .4; }
         .toggle { color: var(--secondary-text-color); }
         .toggle.on { color: var(--primary-color); background: rgba(127,127,127,.15); }
         .sec { display: flex; align-items: baseline; justify-content: space-between; margin: 18px 0 6px; }
@@ -723,6 +927,11 @@ class LightShowStudioPlayerCard extends HTMLElement {
               <button class="ib next" aria-label="Next" title="Next">${icon("next", 30)}</button>
               <button class="ib toggle rep" aria-label="Repeat: off" title="Repeat: off">${icon("repeat")}</button>
             </div>
+            <div class="outrow">
+              <button class="outbtn" aria-expanded="false" aria-label="Audio output" title="Audio output">${icon("speaker", 18)}<span class="outtxt">Lights only</span>${icon("down", 18)}</button>
+            </div>
+            <div class="outnote" hidden></div>
+            <div class="picker" hidden></div>
             <div class="tr">
               <label for="trsel">Between shows</label>
               <select id="trsel" class="trsel" aria-label="Between shows">
@@ -756,6 +965,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
     r.querySelector(".next").onclick = () => this._service("media_next_track");
     r.querySelector(".shuf").onclick = () => this._toggleShuffle();
     r.querySelector(".rep").onclick = () => this._cycleRepeat();
+    r.querySelector(".outbtn").onclick = () => this._togglePicker();
     r.querySelector(".trsel").onchange = (e) => this._setTransition(e.target.value);
 
     const bar = r.querySelector(".bar");

@@ -5,6 +5,8 @@ Changes to Light Show Studio, newest first.
 ## [2.0.0] - 2026-11-01
 
 ### Added
+- Audio output: play the music on one or several speakers (grouped in sync, the first leads and the lights
+  follow it). Set in the player options or with the new Output picker (with volume) on the player card.
 - Transitions between shows: a "Between shows" setting on the Light Show Player (None, Fade,
   Crossfade or Effect, with a choice of intermission effect), also on the player card.
 - WLED lights: realtime frames over DDP; add them via Add entry → Add a WLED light.

@@ -20,7 +20,7 @@ from .const import (
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
     CONF_SKU,
-    CONF_SPEAKER,
+    CONF_SPEAKERS,
     CONF_START_PIXEL,
     CONF_TRANSITION,
     CONF_TRANSITION_EFFECT,
@@ -32,6 +32,7 @@ from .const import (
     TYPE_WLED,
 )
 from .effects import EFFECT_LIST
+from .outputs import configured_speakers
 from .protocol import async_scan
 from .transitions import DEFAULT_TRANSITION, MODES, default_effect
 from .twinkly import async_discover, async_gestalt
@@ -64,8 +65,8 @@ def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, n
 
 def _player_schema(cur: dict[str, Any]) -> vol.Schema:
     return vol.Schema({
-        vol.Optional(CONF_SPEAKER, description={"suggested_value": cur.get(CONF_SPEAKER)}):
-            selector.EntitySelector(selector.EntitySelectorConfig(domain="media_player")),
+        vol.Optional(CONF_SPEAKERS, description={"suggested_value": configured_speakers(cur)}):
+            selector.EntitySelector(selector.EntitySelectorConfig(domain="media_player", multiple=True)),
         vol.Required(CONF_AUDIO_OFFSET, default=cur.get(CONF_AUDIO_OFFSET, 0.0)): vol.Coerce(float),
         vol.Required(CONF_GAP, default=cur.get(CONF_GAP, 3.0)): vol.All(vol.Coerce(float), vol.Range(min=0, max=120)),
         vol.Required(CONF_TRANSITION, default=cur.get(CONF_TRANSITION, DEFAULT_TRANSITION)):

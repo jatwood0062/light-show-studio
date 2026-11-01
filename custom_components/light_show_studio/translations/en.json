@@ -84,7 +84,7 @@
         "title": "Light Show Player",
         "description": "Plays your xLights / Light-O-Rama .fseq shows on all your lights, with the music on a speaker.",
         "data": {
-          "speaker": "Speaker for the music (optional)",
+          "speakers": "Speakers for the music (optional; the first one leads and the lights follow it)",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
           "gap": "Pause between shows (seconds)",
           "transition": "Between shows",
@@ -108,7 +108,7 @@
           "segmented": "Per-bulb control (turn off if the light only takes one colour)",
           "bulb_entities": "Create a light for every bulb",
           "start_pixel": "First pixel in xLights / Light-O-Rama output",
-          "speaker": "Speaker for the music (optional)",
+          "speakers": "Speakers for the music (optional; the first one leads and the lights follow it)",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
           "gap": "Pause between shows (seconds)",
           "transition": "Between shows",

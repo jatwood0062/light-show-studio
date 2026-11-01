@@ -10,10 +10,12 @@ from datetime import datetime
 from typing import Any
 
 from homeassistant.components import media_source
+from homeassistant.components.media_player import MediaPlayerEntityFeature
 from homeassistant.components.media_player.browse_media import async_process_play_media_url
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from . import transitions
@@ -22,6 +24,7 @@ from .effects import EFFECT_LIST, EFFECTS
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
 from .library import SHOW_PLAYER_KEY, Show, ShowLibrary, media_root
+from .outputs import Outputs, SpeakerInfo, configured_speakers, normalize_speakers, plan_outputs
 from .playback import SequencePlayer
 from .receiver import PixelReceiver
 
@@ -37,7 +40,12 @@ class ShowPlayer:
     def __init__(self, hass: HomeAssistant, library: ShowLibrary) -> None:
         self.hass = hass
         self.library = library
-        self.speaker: str | None = None
+        self._speakers: list[str] = []  # configured outputs, first = leader
+        self._pending: list[str] | None = None  # a change made mid-show, applied at the next show
+        self._leader: str | None = None  # the speaker the current show's lights follow
+        self._joined: list[str] = []  # members this player grouped (and so will ungroup)
+        self._joined_leader: str | None = None
+        self._warned: set[str] = set()
         self.audio_offset = 0.0
         self.gap = DEFAULT_GAP
         self.transition = transitions.DEFAULT_TRANSITION
@@ -61,11 +69,100 @@ class ShowPlayer:
         def opt(key: str, default: Any) -> Any:
             return entry.options.get(key, entry.data.get(key, default))
 
-        self.speaker = opt("speaker", None) or None
+        self._speakers = configured_speakers({k: opt(k, None) for k in ("speakers", "speaker")})
+        self._pending = None
         self.audio_offset = float(opt("audio_offset", 0.0) or 0.0)
         gap = opt("gap", DEFAULT_GAP)
         self.gap = DEFAULT_GAP if gap is None else float(gap)
         self.set_transition(opt(CONF_TRANSITION, None), opt(CONF_TRANSITION_EFFECT, None))
+
+    # --- outputs ------------------------------------------------------------
+    @property
+    def speakers(self) -> list[str]:
+        """The chosen outputs (a change made during a show counts at once; it plays from the next show)."""
+        return list(self._speakers if self._pending is None else self._pending)
+
+    @property
+    def outputs(self) -> Outputs:
+        return self._plan(self.speakers)
+
+    @property
+    def speaker(self) -> str | None:
+        """The leader: the speaker the lights follow."""
+        return self.outputs.leader
+
+    def _plan(self, speakers: list[str]) -> Outputs:
+        registry = er.async_get(self.hass)
+        rows: list[SpeakerInfo] = []
+        for entity_id in speakers:
+            state = self.hass.states.get(entity_id)
+            entry = registry.async_get(entity_id)
+            features = int(state.attributes.get("supported_features") or 0) if state else 0
+            rows.append((entity_id, entry.platform if entry else None,
+                         bool(features & MediaPlayerEntityFeature.GROUPING),
+                         state is not None and state.state != "unavailable"))
+        return plan_outputs(rows)
+
+    def set_speakers(self, speakers: list[str]) -> str:
+        """Change the outputs in place. Returns "now", or "next_show" when a show is on (it keeps its speakers)."""
+        new = normalize_speakers(speakers)
+        if new == self.speakers:
+            return "now" if self._pending is None else "next_show"
+        self._warned.clear()
+        if self.state != IDLE:
+            self._pending = None if new == self._speakers else new
+            result = "now" if self._pending is None else "next_show"
+        else:
+            self._speakers, self._pending, result = new, None, "now"
+        self._changed()
+        return result
+
+    def _apply_pending(self) -> None:
+        if self._pending is not None:
+            self._speakers, self._pending = self._pending, None
+
+    async def _prepare_outputs(self) -> None:
+        """Before a show: apply a pending change, pick the leader and group the others with it."""
+        self._apply_pending()
+        plan = self._plan(self._speakers)
+        if self._joined and plan.leader != self._joined_leader:
+            await self._ungroup()
+        elif stale := [m for m in self._joined if m not in plan.members]:
+            await self._ungroup(stale)
+        self._leader = plan.leader
+        for entity_id in plan.ungrouped:
+            if entity_id not in self._warned:
+                self._warned.add(entity_id)
+                _LOGGER.warning("%s can't play in sync with %s (grouping unsupported or a different platform); skipping it",
+                                entity_id, plan.leader)
+        if plan.leader is None or not plan.members:
+            return
+        leader_state = self.hass.states.get(plan.leader)
+        already = set(leader_state.attributes.get("group_members") or []) if leader_state else set()
+        todo = [m for m in plan.members if m not in already]
+        if not todo:
+            return
+        try:
+            await self.hass.services.async_call(
+                "media_player", "join", {"entity_id": plan.leader, "group_members": todo}, blocking=True)
+        except HomeAssistantError as err:
+            _LOGGER.warning("Could not group %s with %s: %s", ", ".join(todo), plan.leader, err)
+            return
+        self._joined_leader = plan.leader
+        self._joined.extend(m for m in todo if m not in self._joined)
+
+    async def _ungroup(self, members: list[str] | None = None) -> None:
+        """Take out of the group exactly the members this player joined (not ones grouped before)."""
+        members = list(self._joined) if members is None else members
+        self._joined = [m for m in self._joined if m not in members]
+        if not self._joined:
+            self._joined_leader = None
+        if not members:
+            return
+        try:
+            await self.hass.services.async_call("media_player", "unjoin", {"entity_id": members}, blocking=True)
+        except HomeAssistantError as err:
+            _LOGGER.warning("Could not ungroup %s: %s", ", ".join(members), err)
 
     def set_transition(self, mode: str | None, effect: str | None = None) -> None:
         """Change the between-shows look in place (takes effect at the next gap); bad values are ignored."""
@@ -136,7 +233,9 @@ class ShowPlayer:
             "duration": self.duration,
             "shuffle": self.shuffle,
             "repeat": self.repeat,
-            "speaker": self.speaker,
+            "speaker": (out := self.outputs).leader,
+            "speakers": self.speakers,
+            "ungrouped": list(out.ungrouped),
             "transition": self.transition,
             "transition_effect": self.transition_effect,
             "queue": list(self.queue),
@@ -212,6 +311,9 @@ class ShowPlayer:
         self.state = IDLE
         if was_speaker:
             await self._speaker_call("media_stop")
+        await self._ungroup()
+        self._leader = None
+        self._apply_pending()
         self._changed()
 
     async def async_next(self) -> None:
@@ -272,13 +374,13 @@ class ShowPlayer:
 
     # --- running ------------------------------------------------------------
     async def _speaker_call(self, service: str, **data: Any) -> None:
-        if not self.speaker:
+        if not self._leader:
             return
         try:
             await self.hass.services.async_call(
-                "media_player", service, {"entity_id": self.speaker, **data}, blocking=True)
+                "media_player", service, {"entity_id": self._leader, **data}, blocking=True)
         except HomeAssistantError as err:
-            _LOGGER.warning("%s on %s failed: %s", service, self.speaker, err)
+            _LOGGER.warning("%s on %s failed: %s", service, self._leader, err)
 
     async def _run(self, index: int) -> None:
         """Play shows from `index` until the queue ends or this task is cancelled."""
@@ -318,6 +420,9 @@ class ShowPlayer:
             receiver.show(b"")  # in case the last show held its frame
         self._with_speaker = False
         self.state = IDLE
+        await self._ungroup()  # the queue is over: leave the speakers as we found them
+        self._leader = None
+        self._apply_pending()
         self._changed()
 
     async def _between(self, nxt: Show | None) -> float:
@@ -379,6 +484,7 @@ class ShowPlayer:
         if self._stop_speaker:  # here, not in _start, so it can't land after the new song began
             self._stop_speaker = False
             await self._speaker_call("media_stop")
+        await self._prepare_outputs()
         try:
             seq: FseqFile = await self.hass.async_add_executor_job(load, show.fseq)
         except (FseqError, OSError) as err:
@@ -397,15 +503,15 @@ class ShowPlayer:
         self._with_speaker = False
 
     async def _start_lights(self, show: Show, seq: FseqFile, sequencer: SequencePlayer) -> None:
-        url = await self._audio_url(show) if self.speaker and show.audio else None
+        url = await self._audio_url(show) if self._leader and show.audio else None
         task = None
         if url is not None:
             self._with_speaker = True
             try:
-                await play_with_speaker(self.hass, sequencer, seq, self.speaker, url, self.audio_offset)
+                await play_with_speaker(self.hass, sequencer, seq, self._leader, url, self.audio_offset)
                 task = sequencer.current
             except HomeAssistantError as err:
-                _LOGGER.warning("%s could not play %s, playing lights only: %s", self.speaker, show.id, err)
+                _LOGGER.warning("%s could not play %s, playing lights only: %s", self._leader, show.id, err)
                 self._with_speaker = False
         if task is None:
             task = sequencer.play(seq, delay=self.audio_offset)
@@ -416,10 +522,10 @@ class ShowPlayer:
     async def _audio_url(self, show: Show) -> str | None:
         try:
             play = await media_source.async_resolve_media(
-                self.hass, self.library.media_source_id(show.audio), self.speaker)
+                self.hass, self.library.media_source_id(show.audio), self._leader)
             return async_process_play_media_url(self.hass, play.url)
         except (HomeAssistantError, ValueError) as err:
-            _LOGGER.warning("Can't serve %s to %s, playing lights only: %s", show.audio, self.speaker, err)
+            _LOGGER.warning("Can't serve %s to %s, playing lights only: %s", show.audio, self._leader, err)
             return None
 
 
