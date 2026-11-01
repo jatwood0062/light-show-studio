@@ -47,6 +47,7 @@ class C9Controller:
         self.frame: list[Colour] = [(0, 0, 0)] * bulbs  # what the bulbs show now, for the card
         self._frame_listeners: list[Callable[[], None]] = []
         self._ext_sent = 0.0
+        self._ext_seen = 0.0  # last sequencer frame received, used or not
 
     # --- listeners -------------------------------------------------------
     def add_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
@@ -165,6 +166,10 @@ class C9Controller:
             self._whole = None
             self.is_on = True
             await asyncio.sleep(0.3)
+        # a plain turn_on during a show nobody is feeding would draw nothing: leave show mode
+        stale = time.monotonic() - self._ext_seen > 2  # frames still arriving (even while off) = keep the show
+        if self.show_mode and colour is None and effect is None and stale:
+            self.show_mode = False
         if brightness is not None:
             self.brightness = brightness
         if colour is not None:
@@ -178,6 +183,9 @@ class C9Controller:
 
     async def async_turn_off(self) -> None:
         self._stop_animation()
+        if self._whole_handle:
+            self._whole_handle.cancel()
+            self._whole_handle = None
         self.lan.send(turn_msg(False))
         self.is_on = False
         self._realtime = False
@@ -216,22 +224,25 @@ class C9Controller:
     @callback
     def enable_show(self) -> None:
         self._stop_animation()
+        if not self.is_on:
+            self.lan.send(turn_msg(True))
+            self.is_on = True
+            self._realtime = False
+            self._whole = None
         self.show_mode, self.effect, self.custom = True, None, False
         self._ext_sent = 0.0
         self._notify()
 
     @callback
     def show_external(self, rgb: bytes) -> None:
-        if not self.show_mode:
-            return  # an effect or colour was picked; ignore the sequencer
         now = time.monotonic()
+        self._ext_seen = now
+        if not self.show_mode or not self.is_on:
+            return  # an effect or colour was picked, or the light was turned off; ignore the sequencer
         if now - self._ext_sent < 0.8 / EXTERNAL_MAX_FPS:  # slack for jitter, or 25 ms shows lose every other frame
             return
         if now - self._ext_sent > 2:  # a new show (or the first frame after a pause)
             self._stop_animation()
-            if not self.is_on:
-                self.lan.send(turn_msg(True))
-                self.is_on = True
             self._realtime = False  # re-arm realtime mode in case the string dropped it
             self._whole = None
             self.effect, self.custom = None, False

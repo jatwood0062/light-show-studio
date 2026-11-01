@@ -123,10 +123,22 @@ class SequencePlayer:
         ev = asyncio.get_running_loop()
         step = seq.step_ms / 1000
         ahead = max(1, int(PREFETCH_SECONDS / step))
-        prefetch: asyncio.Future | None = None
-        last = -1
         self.frames_shown = self.frames_skipped = 0
         _LOGGER.info("Playing %s: %d frames at %d ms", seq.path, seq.frames, seq.step_ms)
+        try:
+            await self._frames(seq, loop, tl, hold, ev, step, ahead)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001  OSError, zstd errors: stop cleanly instead of dying silently
+            _LOGGER.warning("Stopped %s: can't read frames: %s", seq.path, err)
+            ev.call_later(0.1, self.output, b"")  # after the external-frame rate limit
+            return
+        _LOGGER.info("Finished %s (%d frames skipped)", seq.path, self.frames_skipped)
+
+    async def _frames(self, seq: FseqFile, loop: bool, tl: Timeline, hold: bool,
+                      ev: asyncio.AbstractEventLoop, step: float, ahead: int) -> None:
+        prefetch: asyncio.Future | None = None
+        last = -1
         while True:
             pos = tl.now()
             i = math.floor(pos / step)
@@ -153,4 +165,3 @@ class SequencePlayer:
                 await asyncio.sleep(step)
             else:  # wake at the next frame boundary, allowing for the timeline running fast
                 await asyncio.sleep(max(0.001, ((i + 1) * step - pos) / (1 + SLEW_RATE)))
-        _LOGGER.info("Finished %s (%d frames skipped)", seq.path, self.frames_skipped)

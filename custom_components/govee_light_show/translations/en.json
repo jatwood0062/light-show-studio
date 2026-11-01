@@ -44,6 +44,9 @@
     },
     "abort": {
       "already_configured": "This is already set up."
+    },
+    "error": {
+      "invalid_host": "Enter the light's IPv4 address, like 192.168.1.50."
     }
   },
   "options": {
@@ -53,12 +56,7 @@
           "bulbs": "Number of bulbs / segments",
           "segmented": "Per-bulb control (turn off if the light only takes one colour)",
           "bulb_entities": "Create a light for every bulb",
-          "start_pixel": "First pixel in xLights / Light-O-Rama output"
-        }
-      },
-      "player": {
-        "title": "Light Show Player",
-        "data": {
+          "start_pixel": "First pixel in xLights / Light-O-Rama output",
           "speaker": "Speaker for the music (optional)",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
           "gap": "Pause between shows (seconds)"

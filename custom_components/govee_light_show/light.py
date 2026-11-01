@@ -13,16 +13,17 @@ from homeassistant.components.light import (
     LightEntity,
     LightEntityFeature,
 )
-from homeassistant.const import CONF_HOST
+from homeassistant.const import CONF_HOST, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import C9ConfigEntry
 from .const import CONF_BULB_ENTITIES, CONF_SKU, DOMAIN
 from .controller import SHOW, C9Controller
-from .effects import EFFECT_LIST
+from .effects import EFFECT_LIST, EFFECTS
 from .protocol import Colour
 
 
@@ -73,7 +74,7 @@ class _Base(LightEntity):
         self.async_on_remove(self.ctl.add_listener(self.async_write_ha_state))
 
 
-class C9StringLight(_Base):
+class C9StringLight(_Base, RestoreEntity):
     _attr_name = None
     _attr_supported_features = LightEntityFeature.EFFECT
     _attr_effect_list = [SHOW, *EFFECT_LIST]
@@ -81,6 +82,23 @@ class C9StringLight(_Base):
     def __init__(self, ctl, entry, device) -> None:
         super().__init__(ctl, device)
         self._attr_unique_id = f"{entry.data[CONF_HOST]}_string"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if (last := await self.async_get_last_state()) is None or last.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return
+        ctl, attrs = self.ctl, last.attributes  # restore the controller's idea of the light; send nothing
+        ctl.is_on = last.state == STATE_ON
+        if (level := attrs.get(ATTR_BRIGHTNESS)) is not None:
+            ctl.brightness = int(level)
+        if (rgb := attrs.get(ATTR_RGB_COLOR)) is not None:
+            ctl.colour = tuple(rgb)
+        if (effect := attrs.get(ATTR_EFFECT)) == SHOW:
+            ctl.show_mode = True
+        elif effect in EFFECTS:
+            ctl.effect, ctl.show_mode = effect, False
+        elif ctl.is_on:  # on with a plain colour
+            ctl.show_mode = False
 
     @property
     def is_on(self) -> bool:

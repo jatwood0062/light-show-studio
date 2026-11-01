@@ -80,14 +80,19 @@ class PixelReceiver:
         if not self._listening:
             self._listening = True
             await self._start()
+            if not self._subs:  # everything unsubscribed while the sockets were opening
+                self._close()
 
     def unsubscribe(self, key: object) -> None:
         self._subs.pop(key, None)
         if not self._subs:
-            for t in self._transports:
-                t.close()
-            self._transports.clear()
-            self._listening = False
+            self._close()
+
+    def _close(self) -> None:
+        for t in self._transports:
+            t.close()
+        self._transports.clear()
+        self._listening = False
 
     async def _start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -101,11 +106,20 @@ class PixelReceiver:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("0.0.0.0", E131_PORT))
-            for u in range(1, UNIVERSES + 1):  # sACN is usually multicast to 239.255.<hi>.<lo>
-                group = socket.inet_aton(f"239.255.{u >> 8}.{u & 255}")
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, group + socket.inet_aton("0.0.0.0"))
-            t, _ = await loop.create_datagram_endpoint(lambda: _E131(self), sock=sock)
-            self._transports.append(t)
         except OSError as err:
             sock.close()
             _LOGGER.warning("E1.31 receiver not started on port %s: %s", E131_PORT, err)
+            return
+        try:
+            for u in range(1, UNIVERSES + 1):  # sACN is usually multicast to 239.255.<hi>.<lo>
+                group = socket.inet_aton(f"239.255.{u >> 8}.{u & 255}")
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, group + socket.inet_aton("0.0.0.0"))
+        except OSError as err:  # keep the socket: unicast E1.31 still works
+            _LOGGER.warning("E1.31 multicast not joined, unicast only: %s", err)
+        try:
+            t, _ = await loop.create_datagram_endpoint(lambda: _E131(self), sock=sock)
+        except OSError as err:
+            sock.close()
+            _LOGGER.warning("E1.31 receiver not started on port %s: %s", E131_PORT, err)
+            return
+        self._transports.append(t)

@@ -5,40 +5,54 @@ Local light shows for Govee lights in Home Assistant: play xLights / Light-O-Ram
 C9 string lights (H6860, which reports as R6861) and works with any Govee light that has
 **LAN Control**.
 
-- **Light Show Player**: an EZPlayer-style player inside Home Assistant. Drag `.fseq` files and
-  their songs onto the player card, press Play. Playlist, shuffle, repeat, next/previous, seek,
-  with the music on any Home Assistant speaker (Sonos, Music Assistant, …) and the lights kept in
-  sync with it. It's a normal media player, so automations and voice work too.
+- **Light Shows app**: a page in the Home Assistant sidebar to play shows with their music, paint
+  bulbs, and add shows. No dashboard setup needed.
 - **Any Govee LAN light**: lights that take per-segment frames (DreamView / "razer" mode, e.g.
   C9 strings, RGBIC strips) show every pixel; others get the show's blended colour.
   See [docs/DEVICES.md](docs/DEVICES.md).
 - **Live from a sequencer**: Home Assistant looks like a pixel controller (DDP and E1.31), so
   xLights, EZPlayer, Light-O-Rama, Falcon Player or Vixen can drive the lights live.
-- Effects for every season, a dashboard card that shows and paints every bulb live, one light
-  per bulb, and a `govee_light_show.set_pixels` action.
+- Effects for every season, one light per bulb, and a `govee_light_show.set_pixels` action.
 
-Everything stays on your LAN (Govee LAN API, UDP 4003). In the Govee Home app, turn on
-**LAN Control** for each light first.
+Everything stays on your LAN (Govee LAN API, UDP 4003).
 
-## Install (HACS)
+## Quick start
 
-1. HACS → ⋮ → **Custom repositories** → add this repository's URL, type **Integration**.
-2. Download **Govee Light Show**, then restart Home Assistant.
-3. Settings → Devices & services → **Add integration** → Govee Light Show:
+1. **Install**: in HACS → ⋮ → **Custom repositories**, add this repository's URL as type
+   **Integration**. Download **Govee Light Show**, then restart Home Assistant.
+2. **Add your lights**: in the Govee Home app, turn on **LAN Control** for each light first.
+   Then go to Settings → Devices & services → **Add integration** → Govee Light Show and choose:
    - **Add a Govee light**: lights on your network are listed (or type the IP). Repeat per light.
    - **Add the Light Show Player**: pick the speaker for the music (optional).
+3. **Add a show**: open **Light Shows** in the sidebar → **Add shows** → drop in your `.fseq`
+   and its song → **Play**. New users land on **Setup** until everything is ready.
 
-## Light Show Player
+## Light Shows app
+
+Open **Light Shows** in the sidebar. It has four tabs:
+
+- **Play**: what's playing now, play/pause, next/previous, seek, shuffle and repeat, and the
+  show list. Shows play with their song, or pick **No music** to run the lights alone.
+  **Light delay** (player options) shifts the lights if the speaker lags.
+- **Lights**: a live view of each string, updated during effects and shows. Pick a colour and
+  tap or drag across bulbs to paint them. **Paint all** paints the whole string,
+  **Holiday patterns…** fills it (Christmas, Valentine's, St. Patrick's, Easter, July 4th,
+  Halloween, Thanksgiving, Hanukkah, …), **off** turns bulbs off, and **Let the show control it**
+  hands the string back to the sequencer.
+- **Add shows**: a guide, plus upload for the `.fseq` and the song.
+- **Setup**: a checklist (lights added, Light Show Player set up, shows added) with a button
+  for each step.
+
+## Adding shows
 
 1. In xLights, save/render your sequence; the `.fseq` is next to the `.xsq` in your show folder.
-2. Add the **Govee light show player** card to a dashboard and drop the `.fseq` and the song
-   onto it (same name, e.g. `Thriller.fseq` + `Thriller.m4a`). Files go to `/media/xlights/`;
-   a folder per show (`/media/xlights/Thriller/`) works too if you copy files in yourself.
-3. Press Play. Reorder with the arrows, shuffle/repeat from the card or the media player.
+2. Upload the `.fseq` and the song in **Add shows** (same name, e.g. `Thriller.fseq` +
+   `Thriller.m4a`). Files go to `/media/xlights/`; a folder per show (`/media/xlights/Thriller/`)
+   works too if you copy files in yourself.
+3. Press Play. Reorder with the arrows; shuffle and repeat are in the app or the media player.
 
 Automations: `media_player.media_play` on `media_player.light_show_player` starts the playlist,
 `media_player.select_source` plays one show, `media_player.media_stop` stops.
-**Light delay** (player options) shifts the lights if the speaker lags.
 
 ## Live from xLights / Light-O-Rama
 
@@ -63,14 +77,16 @@ the sequencer until you pick **Light show** again (`play_sequence` switches it b
 The brightness slider dims shows too, and the string's own dimmer is set to 100 % so a low
 setting left in the Govee app can't dim them.
 
-## Dashboard card
+## Dashboard cards (optional)
 
-The integration ships a **Govee C9 string** card (no extra install: it appears in the dashboard's
-card picker after a restart). It shows every bulb live, including during effects and shows, and
-you can pick a colour and tap or drag across bulbs to paint them. **Fill all** paints the whole
-string, **Patterns** fills it with a holiday pattern (Christmas, Valentine's, St. Patrick's, Easter,
-July 4th, Halloween, Thanksgiving, Hanukkah, …), **off** turns bulbs off, and **Light show** hands
-the string back to the sequencer.
+You don't need these: the Light Shows app does everything they do. They're for anyone who wants
+the controls on a dashboard, and they appear in the card picker after a restart.
+
+- **Govee C9 string** (`custom:govee-light-show-card`): shows every bulb live, including during
+  effects and shows. Pick a colour and tap or drag to paint bulbs. **Paint all**, **Holiday
+  patterns…**, **off** and **Let the show control it** work as in the Lights tab.
+- **Light Show Player** (`custom:govee-light-show-player-card`): the Play tab on a dashboard.
+  Drop the `.fseq` and the song onto it, and press Play.
 
 ```yaml
 type: custom:govee-light-show-card
@@ -82,7 +98,7 @@ layout:               # optional: x, y of each bulb in order (y grows downward),
   - [0, 30]
   # ...
 colors: ["#ff0000", "#00ff00"]          # optional: your own paint swatches
-patterns:                               # optional: your own Patterns list
+patterns:                               # optional: your own Holiday patterns list
   Team colours: ["#002244", "#69be28"]  # colours repeat along the string
 ```
 
@@ -111,18 +127,18 @@ be running.
 ### Keeping in time with the music
 
 With `media_player` and `audio`, the action starts the song with `media_player.play_media`, waits
-(up to 15 s) for the player to report *playing*, then runs the lights from the player's own
+up to 15 s for the player to report *playing*, then runs the lights from the player's own
 position, not a fixed delay, so slow starts (Music Assistant and Sonos often take 1–3 s) don't
-matter. Whenever the player updates its position the lights re-sync: small drift (over 80 ms)
-is eased out by running the lights up to 25% fast or slow, a jump over 1 s (a seek, or repeat)
-is followed straight away. The lights pause with the player, and stop when it stops, goes idle
-or moves on to a different song.
+matter. Each position update re-syncs the lights: small drift (over 80 ms) is eased out by
+running the lights up to 25% fast or slow; a jump over 1 s (a seek, or repeat) is followed
+straight away. The lights pause with the player, and stop when it stops, goes idle or moves on
+to a different song.
 
-`audio` works with Music Assistant players: use a library or provider URI such as
+`audio` works with Music Assistant players: a library or provider URI such as
 `library://track/123` or `spotify://track/…`, a URL, or a `media-source://` ID such as
-`media-source://media_source/local/xlights/halloween.mp3`. If a player never reports a position, the lights
-just start when it reports *playing*. Use `audio_offset` only to fine-tune: if the lights are
-ahead of what you hear, try `0.1`–`0.3`.
+`media-source://media_source/local/xlights/halloween.mp3`. If a player never reports a position,
+the lights just start when it reports *playing*. Use `audio_offset` only to fine-tune: if the
+lights are ahead of what you hear, try `0.1`–`0.3`.
 
 `govee_light_show.stop_sequence` stops the show and turns the bulbs dark.
 

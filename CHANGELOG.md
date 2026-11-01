@@ -1,0 +1,69 @@
+# Changelog
+
+Changes to Govee Light Show, newest first.
+
+## [1.0.0] - 2026-11-01 (unreleased)
+
+### Added
+- "Light Shows" sidebar app with Play, Lights, Add shows and Setup tabs, plus a first-run checklist.
+- Friendlier wording on the cards.
+
+### Fixed
+- Player options can be saved.
+- Lights can be turned off during a show.
+- A plain turn-on works after a restart.
+- Next and Previous stop the old song on the speaker.
+- Uploads and deletes during a playlist no longer stop it.
+- Damaged show files are logged.
+- Stop sequence also stops the player.
+- Non-C9 lights default to one colour, so they no longer get 50 bulb entities.
+- Light state is restored after a restart.
+- E1.31 works without multicast.
+- Uploads from non-admins get 403.
+- Uploads keep the old show file until the new one is in place.
+
+## [0.9.0]
+
+### Changed
+- **Breaking:** domain renamed from `govee_c9` to `govee_light_show`. Remove and re-add the integration after updating.
+- Cards are now `custom:govee-light-show-card` and `custom:govee-light-show-player-card`.
+- Actions are `govee_light_show.*`; the WebSocket and HTTP APIs moved to `/govee_light_show`.
+
+## [0.8.0]
+
+### Added
+- Light Show Player: plays a playlist of .fseq shows from /media/xlights through any Home Assistant speaker, with a dashboard card.
+- Any Govee LAN light works. Lights without per-segment control show the frame's blended colour.
+- Setup scans the LAN for Govee lights and fills in known models.
+
+## [0.7.0]
+
+### Added
+- Seasonal effects: Valentine's, St. Patrick's, Easter, July 4th, Thanksgiving, Hanukkah, Valentine's Chase, July 4th Chase and Fireworks.
+- Colour palette and a Patterns menu of holiday fills on the card, both configurable.
+
+## [0.6.x]
+
+### Added
+- Dashboard card with a live view of every bulb; tap or drag to paint.
+- Bulbs scale with card width, so the card fits phones.
+
+## [0.5.0]
+
+### Added
+- Light show effect to choose between shows and effects.
+
+### Fixed
+- Brightness slider applies to shows, and dim shows are fixed.
+- Picking a colour or effect stops sequencer frames from taking over the string.
+
+## [0.4.0]
+
+### Added
+- Play xLights .fseq sequences synced to a media player (play_sequence / stop_sequence).
+- Several strings on one xLights controller.
+
+## [0.2.0]
+
+### Added
+- First release as Govee C9 Pixels: per-bulb control, effects, xLights/E1.31 receiver.

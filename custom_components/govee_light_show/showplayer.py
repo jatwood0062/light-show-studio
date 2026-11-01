@@ -49,6 +49,7 @@ class ShowPlayer:
         self._index = 0
         self._with_speaker = False  # the current show's song is on the speaker
         self._runner: asyncio.Task | None = None
+        self._stop_speaker = False  # stop the last show's song before the next one starts
         self._listeners: list[Callable[[], None]] = []
 
     # --- setup ------------------------------------------------------------
@@ -135,6 +136,8 @@ class ShowPlayer:
         if show_id is None and self.state == PAUSED:
             await self.async_resume()
             return
+        if show_id is None and self.state == PLAYING:
+            return  # already playing: don't restart the current show
         if not self.shows or (show_id is not None and show_id not in self.shows):
             await self.async_refresh()
         if show_id is not None and show_id not in self.shows:
@@ -150,6 +153,9 @@ class ShowPlayer:
 
     def _start(self, index: int) -> None:
         self._cancel_runner()
+        if self._with_speaker:  # the cancelled show's song would keep playing under the next one
+            self._with_speaker = False
+            self._stop_speaker = True
         self._index = index
         self.show = self.shows[self.queue[index]]
         self.state = PLAYING
@@ -261,12 +267,18 @@ class ShowPlayer:
         """Play shows from `index` until the queue ends or this task is cancelled."""
         try:
             while True:
+                if index >= len(self.queue):  # the library shrank during the gap: that was the end
+                    if self.repeat != REPEAT_ALL or not self.queue:
+                        break
+                    index = 0
                 self._index = index
                 self.show = self.shows.get(self.queue[index])
                 self.state = PLAYING
                 self._changed()
                 if self.show is not None:
                     await self._play_one(self.show)
+                if self.show is not None and self.show.id in self.queue:  # refresh may have moved it
+                    self._index = self.queue.index(self.show.id)
                 nxt = self._next_index(auto=True)
                 if nxt is None:
                     break
@@ -274,7 +286,9 @@ class ShowPlayer:
                 self._index = nxt
                 self._changed()
                 await asyncio.sleep(self.gap)
-                index = nxt
+                index = self._index  # a refresh during the gap may have moved the queue
+                if self.show is not None and self.show.id in self.queue:
+                    index = self.queue.index(self.show.id)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -285,6 +299,10 @@ class ShowPlayer:
         self._changed()
 
     async def _play_one(self, show: Show) -> None:
+        self._with_speaker = False
+        if self._stop_speaker:  # here, not in _start, so it can't land after the new song began
+            self._stop_speaker = False
+            await self._speaker_call("media_stop")
         try:
             seq: FseqFile = await self.hass.async_add_executor_job(load, show.fseq)
         except (FseqError, OSError) as err:

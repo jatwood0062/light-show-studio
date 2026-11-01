@@ -180,3 +180,18 @@ def test_save_upload_rejects_bad_input(lib):
 def test_media_source_id(lib):
     path = put(lib, "Show One/a.mp3")
     assert lib.media_source_id(path) == "media-source://media_source/local/xlights/Show One/a.mp3"
+
+
+def test_commit_upload_replaces_old_file_after_new_is_in_place(lib):
+    show = lib.root + "/Song"
+    os.makedirs(show)
+    Path(show, "old.fseq").write_bytes(fseq_bytes())
+    Path(show, "old.mp3").write_bytes(b"audio")
+    tmp = lib.new_temp()
+    Path(tmp).write_bytes(fseq_bytes(frames=10))
+    assert lib.commit_upload(tmp, "new.fseq", "Song") == "Song"
+    assert sorted(os.listdir(show)) == ["new.fseq", "old.mp3"]  # audio kept, old fseq replaced
+    tmp = lib.new_temp()
+    Path(tmp).write_bytes(fseq_bytes(frames=5))
+    lib.commit_upload(tmp, "new.fseq", "Song")  # same name: replaced in place, not deleted
+    assert Path(show, "new.fseq").stat().st_size == len(fseq_bytes(frames=5))

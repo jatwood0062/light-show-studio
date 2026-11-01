@@ -204,10 +204,12 @@ class ShowLibrary:
         folder = self._inside(os.path.join(self._real_root(), show_id))
         os.makedirs(folder, exist_ok=True)
         kinds = (FSEQ_EXT,) if ext == FSEQ_EXT else AUDIO_EXTS
+        dest = self._inside(os.path.join(folder, stem + ext))
+        os.replace(tmp, dest)  # the new file is in place before the old one goes
         for old in os.listdir(folder):
-            if old.lower().endswith(kinds):
-                os.unlink(os.path.join(folder, old))
-        os.replace(tmp, self._inside(os.path.join(folder, stem + ext)))
+            path = os.path.join(folder, old)
+            if old.lower().endswith(kinds) and os.path.realpath(path) != dest:
+                os.unlink(path)
         return show_id
 
     def save_upload(self, filename: str, stream: BinaryIO, show: str | None = None) -> str:

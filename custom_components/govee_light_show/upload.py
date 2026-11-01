@@ -27,7 +27,7 @@ class ShowUploadView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         if not request["hass_user"].is_admin:
-            return self.json_message("Admin access required", HTTPStatus.UNAUTHORIZED)
+            return self.json_message("Admin access required", HTTPStatus.FORBIDDEN)
         hass: HomeAssistant = request.app[KEY_HASS]
         library = library_for(hass)
         files: list[tuple[str, str]] = []  # (original name, temp path)

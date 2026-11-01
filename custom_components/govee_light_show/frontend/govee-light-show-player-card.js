@@ -3,6 +3,7 @@
 //   type: custom:govee-light-show-player-card
 //   entity: media_player.light_show_player   # optional: autodetected (the media_player with a "queue" attribute)
 //   title: Light shows                       # optional
+//   mode: player | upload                    # optional: "player" hides the add-shows area, "upload" shows only it
 
 const ICON = {
   play: "M8 5v14l11-7z",
@@ -46,6 +47,8 @@ class GoveeC9PlayerCard extends HTMLElement {
       schema: [
         { name: "entity", selector: { entity: { domain: "media_player", integration: "govee_light_show" } } },
         { name: "title", selector: { text: {} } },
+        { name: "mode", selector: { select: { mode: "dropdown", options: [
+          { value: "", label: "Everything" }, { value: "player", label: "Player only" }, { value: "upload", label: "Add shows only" }] } } },
       ],
     };
   }
@@ -53,6 +56,7 @@ class GoveeC9PlayerCard extends HTMLElement {
   setConfig(config) {
     this._config = { ...config };
     this._built = false;
+    this._retryAt = 0;
     if (this._hass) this._build();
   }
 
@@ -60,8 +64,18 @@ class GoveeC9PlayerCard extends HTMLElement {
     this._hass = hass;
     if (!this._built) this._build();
     this._detectEntity();
+    if (this._built) this._applyVisibility();
+    if (this._upload_only()) return;
     this._subscribe();
     if (!this._shows) this._loadShows();
+  }
+
+  _upload_only() {
+    return this._config?.mode === "upload";
+  }
+
+  _isAdmin() {
+    return !!this._hass?.user?.is_admin;
   }
 
   getCardSize() {
@@ -73,7 +87,8 @@ class GoveeC9PlayerCard extends HTMLElement {
   }
 
   connectedCallback() {
-    if (this._hass) {
+    this._retryAt = 0;
+    if (this._hass && !this._upload_only()) {
       this._subscribe();
       this._startTimer();
     }
@@ -92,6 +107,7 @@ class GoveeC9PlayerCard extends HTMLElement {
 
   _detectEntity() {
     if (this._config?.entity || !this._hass) return;
+    if (this._auto && this._hass.states[this._auto]) return; // already found
     const id = Object.keys(this._hass.states).find(
       (k) => k.startsWith("media_player.") && this._hass.states[k].attributes.queue !== undefined
     );
@@ -103,44 +119,71 @@ class GoveeC9PlayerCard extends HTMLElement {
 
   async _subscribe() {
     if (this._unsub || this._subscribing || !this.isConnected || !this._hass) return;
+    if (Date.now() < (this._retryAt || 0)) return; // a failed subscribe waits 10 s (or a new setConfig / reconnect)
     this._subscribing = true;
     try {
-      this._unsub = await this._hass.connection.subscribeMessage((m) => this._onEvent(m), {
+      const unsub = await this._hass.connection.subscribeMessage((m) => this._onEvent(m), {
         type: "govee_light_show/player/subscribe",
       });
-      this._error("");
+      if (!this.isConnected) unsub(); // removed from the page while we waited: don't leak the subscription
+      else {
+        this._unsub = unsub;
+        this._noPlayerErr = false;
+        this._clearError("sub");
+        this._startTimer();
+      }
     } catch (err) {
-      this._error(err?.message || "Can't reach the light show player");
+      this._retryAt = Date.now() + 10000;
+      this._noPlayerErr = err?.code === "not_found";
+      this._error(this._noPlayerErr ? "" : this._msg(err, "Can't reach the light show player. Trying again soon."), "sub");
+      this._applyVisibility();
     }
     this._subscribing = false;
-    this._startTimer();
+  }
+
+  _msg(err, fallback) {
+    return (typeof err === "string" ? err : err?.message) || fallback;
   }
 
   _unsubscribe() {
-    if (this._unsub) this._unsub();
+    if (this._unsub) {
+      try {
+        this._unsub();
+      } catch (e) {
+        /* connection already closed */
+      }
+    }
     this._unsub = null;
   }
 
   _onEvent(m) {
     const prev = this._state;
     this._state = m;
-    this._stamp = Date.now();
+    this._recv = Date.now(); // progress runs on our own clock, not the server's timestamp
+    this._noPlayerErr = false;
     const queueChanged = !prev || JSON.stringify(prev.queue) !== JSON.stringify(m.queue);
     if (queueChanged && this._shows) this._loadShows();
     this._renderState();
   }
 
   async _loadShows() {
-    if (this._loading || !this._hass) return;
-    this._loading = true;
-    try {
-      const r = await this._hass.callWS({ type: "govee_light_show/shows/list" });
-      this._shows = r.shows || [];
-      this._error("");
-    } catch (err) {
-      this._shows = this._shows || [];
-      this._error(err?.message || "Can't load the shows");
+    if (!this._hass) return;
+    if (this._loading) {
+      this._reload = true; // asked again mid-flight: run once more when this one ends
+      return;
     }
+    this._loading = true;
+    do {
+      this._reload = false;
+      try {
+        const r = await this._hass.callWS({ type: "govee_light_show/shows/list" });
+        this._shows = r.shows || [];
+        this._clearError("shows");
+      } catch (err) {
+        this._shows = this._shows || [];
+        this._error(this._msg(err, "Can't load the shows"), "shows");
+      }
+    } while (this._reload);
     this._loading = false;
     this._renderList();
   }
@@ -162,17 +205,17 @@ class GoveeC9PlayerCard extends HTMLElement {
     const s = this._state;
     if (!s) return 0;
     let p = s.position || 0;
-    if (s.state === "playing") {
-      const at = s.position_updated_at ? Date.parse(s.position_updated_at) : NaN;
-      p += (Date.now() - (isNaN(at) ? this._stamp : at)) / 1000;
-    }
+    if (s.state === "playing") p += (Date.now() - (this._recv || Date.now())) / 1000;
     return Math.min(Math.max(p, 0), s.duration || p);
   }
 
   _service(service, data = {}) {
     const entity_id = this._entityId();
     if (!entity_id) return this._error("No light show player found");
-    return this._hass.callService("media_player", service, { entity_id, ...data });
+    return Promise.resolve(this._hass.callService("media_player", service, { entity_id, ...data })).then(
+      () => this._clearError("action"),
+      (err) => this._error(this._msg(err, "That didn't work. Try again."))
+    );
   }
 
   // --- actions -----------------------------------------------------------
@@ -207,7 +250,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     try {
       await this._hass.callWS({ type: "govee_light_show/shows/reorder", order: list });
     } catch (err) {
-      this._error(err?.message || "Couldn't reorder");
+      this._error(this._msg(err, "Couldn't reorder"));
       this._loadShows();
     }
   }
@@ -220,7 +263,7 @@ class GoveeC9PlayerCard extends HTMLElement {
       this._renderList();
       this._loadShows();
     } catch (err) {
-      this._error(err?.message || "Couldn't delete");
+      this._error(this._msg(err, "Couldn't delete"));
     }
   }
 
@@ -228,8 +271,8 @@ class GoveeC9PlayerCard extends HTMLElement {
     const d = this._state?.duration;
     if (!d || this._state.state === "idle") return;
     const pos = Math.round(frac * d * 10) / 10;
-    this._state = { ...this._state, position: pos, position_updated_at: new Date().toISOString() };
-    this._stamp = Date.now();
+    this._state = { ...this._state, position: pos };
+    this._recv = Date.now();
     this._service("media_seek", { seek_position: pos });
     this._tick();
   }
@@ -238,6 +281,7 @@ class GoveeC9PlayerCard extends HTMLElement {
   _addFiles(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
+    if (!this._isAdmin()) return this._error("Only admins can add shows");
     const ok = /\.(fseq|mp3|m4a|aac|wav|ogg|flac)$/i;
     this._uploads = this._uploads || [];
     const batch = [];
@@ -280,14 +324,33 @@ class GoveeC9PlayerCard extends HTMLElement {
     }, 2500);
   }
 
-  _upload(file, item) {
+  async _token(refresh) {
+    const auth = this._hass?.auth;
+    if (!auth) throw new Error("Not signed in. Reload the page.");
+    if (refresh || auth.expired) await auth.refreshAccessToken();
+    return auth.accessToken;
+  }
+
+  async _upload(file, item, retried = false) {
+    const token = await this._token(retried);
+    try {
+      await this._post(file, item, token);
+    } catch (err) {
+      if (err.status === 401 && !retried) return this._upload(file, item, true); // token went stale: refresh once
+      throw err;
+    }
+  }
+
+  _post(file, item, token) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const form = new FormData();
       form.append("show", file.name.replace(/\.[^.]+$/, ""));
       form.append("file", file, file.name);
+      const fail = (message, status) => reject(Object.assign(new Error(message), { status }));
       xhr.open("POST", "/api/govee_light_show/shows/upload");
-      xhr.setRequestHeader("Authorization", `Bearer ${this._hass.auth.data.access_token}`);
+      xhr.timeout = 30 * 60 * 1000;
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
           item.pct = Math.round((e.loaded / e.total) * 100);
@@ -295,17 +358,31 @@ class GoveeC9PlayerCard extends HTMLElement {
         }
       };
       xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) resolve();
-        else if (xhr.status === 401) reject(new Error("Admin access needed to add shows"));
-        else reject(new Error(`Upload failed (${xhr.status})`));
+        if (xhr.status >= 200 && xhr.status < 300) return resolve();
+        let server = "";
+        try {
+          server = JSON.parse(xhr.responseText).message || "";
+        } catch (e) {
+          /* not JSON */
+        }
+        if (xhr.status === 403) fail("Only admins can add shows", 403);
+        else if (xhr.status === 401) fail(server || "Sign in again, then retry", 401);
+        else fail(server || `Upload failed (${xhr.status})`, xhr.status);
       };
-      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.onerror = () => fail("Network error. Check the connection and try again.", 0);
+      xhr.onabort = () => fail("Upload cancelled", 0);
+      xhr.ontimeout = () => fail("Upload timed out", 0);
       xhr.send(form);
     });
   }
 
   // --- render ------------------------------------------------------------
-  _error(msg) {
+  _clearError(src) {
+    if (this._errSrc === src || !this._errSrc) this._error("");
+  }
+
+  _error(msg, src = "action") {
+    this._errSrc = msg ? src : "";
     const el = this.shadowRoot?.querySelector(".err");
     if (!el) return;
     el.textContent = msg || "";
@@ -313,22 +390,45 @@ class GoveeC9PlayerCard extends HTMLElement {
   }
 
   _startTimer() {
-    if (this._timer) return;
+    if (this._timer || !this.isConnected || this._upload_only()) return;
     this._timer = setInterval(() => this._tick(), 250);
   }
 
   _tick() {
     const r = this.shadowRoot;
-    if (!r || !this._state) return;
+    if (!r || !this._state || this._seeking) return;
     const pos = this._position();
     const dur = this._state.duration || 0;
     r.querySelector(".fill").style.width = dur ? `${Math.min(100, (pos / dur) * 100)}%` : "0%";
     r.querySelector(".time").textContent = `${fmt(pos)} / ${fmt(dur)}`;
+    const bar = r.querySelector(".bar");
+    bar.setAttribute("aria-valuemax", String(Math.round(dur)));
+    bar.setAttribute("aria-valuenow", String(Math.round(pos)));
+    bar.setAttribute("aria-valuetext", `${fmt(pos)} of ${fmt(dur)}`);
+  }
+
+  // which parts show: mode, admin rights, and whether there is a player at all
+  _applyVisibility() {
+    const r = this.shadowRoot;
+    if (!r || !this._built) return;
+    const upload = this._upload_only(), playerOnly = this._config.mode === "player", admin = this._isAdmin();
+    const noPlayer = !upload && !this._entityId() && !this._state;
+    r.querySelector(".playpart").hidden = upload || noPlayer;
+    r.querySelector(".setup").hidden = upload || !noPlayer;
+    r.querySelector(".addpart").hidden = playerOnly || !admin;
+    r.querySelector(".noadmin").hidden = playerOnly || admin;
+    r.querySelector(".uploads").hidden = playerOnly || !admin;
+    r.querySelector(".count").hidden = upload || noPlayer;
+    if (this._adminShown !== admin) {
+      this._adminShown = admin;
+      this._renderList();
+    }
   }
 
   _renderState() {
     const r = this.shadowRoot;
     if (!r || !this._built) return;
+    this._applyVisibility();
     const s = this._state || { state: "idle", queue: [] };
     const playing = s.state === "playing";
     const show = (this._shows || []).find((x) => x.id === s.show_id);
@@ -337,7 +437,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     title.classList.toggle("dim", s.state === "idle");
     r.querySelector(".np-sub").textContent =
       (s.state === "paused" ? "Paused" : s.state === "playing" ? "Now playing" : "Press play to start the first show") +
-      (s.speaker ? ` · ${this._speakerName(s.speaker)}` : " · lights only");
+      (s.speaker ? ` · ${this._speakerName(s.speaker)}` : " · No music");
     r.querySelector(".pp").innerHTML = icon(playing ? "pause" : "play", 40);
     r.querySelector(".pp").setAttribute("aria-label", playing ? "Pause" : "Play");
     const sh = r.querySelector(".shuf");
@@ -348,7 +448,10 @@ class GoveeC9PlayerCard extends HTMLElement {
     rp.classList.toggle("on", !!s.repeat && s.repeat !== "off");
     rp.title = `Repeat: ${s.repeat || "off"}`;
     rp.setAttribute("aria-label", rp.title);
-    r.querySelector(".bar").classList.toggle("idle", s.state === "idle");
+    const bar = r.querySelector(".bar");
+    bar.classList.toggle("idle", s.state === "idle");
+    bar.tabIndex = s.state === "idle" ? -1 : 0;
+    bar.setAttribute("aria-disabled", String(s.state === "idle"));
     this._tick();
     this._renderList();
   }
@@ -371,12 +474,25 @@ class GoveeC9PlayerCard extends HTMLElement {
       st.className = "up-st";
       st.textContent =
         u.state === "error" ? u.msg : u.state === "done" ? "Added" : u.state === "wait" ? "Waiting" : `${u.pct}%`;
+      row.append(name, st);
+      if (u.state === "error") {
+        const x = document.createElement("button");
+        x.className = "up-x";
+        x.textContent = "×";
+        x.title = "Dismiss";
+        x.setAttribute("aria-label", `Dismiss ${u.name}`);
+        x.onclick = () => {
+          this._uploads = this._uploads.filter((v) => v !== u);
+          this._renderUploads();
+        };
+        st.append(x);
+      }
       const bar = document.createElement("div");
       bar.className = "up-bar";
       const fill = document.createElement("div");
       fill.style.width = `${u.pct}%`;
       bar.append(fill);
-      row.append(name, st, bar);
+      row.append(bar);
       box.append(row);
     });
   }
@@ -388,6 +504,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     const shows = this._ordered();
     const cur = this._state?.show_id;
     const active = this._state && this._state.state !== "idle";
+    const admin = this._isAdmin();
     r.querySelector(".count").textContent = shows.length ? `${shows.length} show${shows.length === 1 ? "" : "s"}` : "";
     list.innerHTML = "";
     if (!this._shows) {
@@ -395,7 +512,9 @@ class GoveeC9PlayerCard extends HTMLElement {
       return;
     }
     if (!shows.length) {
-      list.innerHTML = `<div class="empty"><b>No shows yet</b><br>Export your sequence from xLights (File → Export / the .fseq next to your .xsq) and drop it here with the song.</div>`;
+      list.innerHTML = admin
+        ? `<div class="empty"><b>No shows yet</b><br>In xLights, render your sequence — the .fseq is saved next to the .xsq. Add it below with the song.</div>`
+        : `<div class="empty"><b>No shows yet</b><br>Ask an admin to add shows.</div>`;
       return;
     }
     shows.forEach((s, i) => {
@@ -418,10 +537,14 @@ class GoveeC9PlayerCard extends HTMLElement {
       const meta = document.createElement("div");
       meta.className = "meta";
       meta.innerHTML = `<span>${fmt(s.duration)}</span>${
-        s.has_audio ? `<span class="note" title="Has a song">${icon("note", 13)} song</span>` : `<span>lights only</span>`
+        s.has_audio ? `<span class="note" title="Has a song">${icon("note", 13)} song</span>` : `<span>No music</span>`
       }`;
       info.append(nm, meta);
       row.append(play, info);
+      if (!admin) {
+        list.append(row);
+        return;
+      }
       if (this._confirming === s.id) {
         const q = document.createElement("span");
         q.className = "q";
@@ -429,6 +552,7 @@ class GoveeC9PlayerCard extends HTMLElement {
         const yes = document.createElement("button");
         yes.className = "txt danger";
         yes.textContent = "Delete";
+        yes.setAttribute("aria-label", `Delete ${s.name}`);
         yes.onclick = () => this._delete(s);
         const no = document.createElement("button");
         no.className = "txt";
@@ -465,15 +589,19 @@ class GoveeC9PlayerCard extends HTMLElement {
   _build() {
     if (!this._config) return;
     this._built = true;
+    this._adminShown = undefined;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    const touch = !!window.matchMedia?.("(pointer: coarse)").matches;
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
+        [hidden] { display: none !important; }
         ha-card { padding: 12px 16px 16px; box-sizing: border-box; min-width: 0; max-width: 100%; overflow: hidden; }
         * { box-sizing: border-box; }
         button { font: inherit; color: inherit; cursor: pointer; border: none; background: none; padding: 0; margin: 0;
                  -webkit-tap-highlight-color: transparent; }
         button:disabled { opacity: 0.3; cursor: default; }
+        :focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
         svg { display: block; }
         .drop svg { margin: 0 auto; }
         .head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
@@ -486,12 +614,12 @@ class GoveeC9PlayerCard extends HTMLElement {
         .np-title.dim { color: var(--secondary-text-color); }
         .np-sub { font-size: 12px; color: var(--secondary-text-color); margin-top: 2px; overflow: hidden;
                   text-overflow: ellipsis; white-space: nowrap; }
-        .bar { position: relative; height: 28px; margin-top: 10px; cursor: pointer; touch-action: none; }
+        .bar { position: relative; height: 40px; margin-top: 6px; cursor: pointer; touch-action: pan-y; border-radius: 6px; }
         .bar.idle { cursor: default; opacity: 0.6; }
-        .track { position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 3px;
+        .track { position: absolute; left: 0; right: 0; top: 17px; height: 6px; border-radius: 3px;
                  background: var(--divider-color, rgba(127,127,127,.35)); overflow: hidden; }
         .fill { height: 100%; width: 0; background: var(--primary-color); }
-        .time { font-size: 12px; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; margin-top: -2px; }
+        .time { font-size: 12px; color: var(--secondary-text-color); font-variant-numeric: tabular-nums; margin-top: -6px; }
         .ctl { display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 8px; }
         .ib { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px;
               border-radius: 50%; color: var(--primary-text-color); flex: none; }
@@ -518,26 +646,31 @@ class GoveeC9PlayerCard extends HTMLElement {
         .meta { display: flex; gap: 10px; font-size: 12px; color: var(--secondary-text-color); margin-top: 1px; }
         .note { display: inline-flex; align-items: center; gap: 2px; color: var(--primary-color); }
         .q { font-size: 13px; color: var(--error-color); margin-right: 4px; }
-        .txt { font-size: 13px; font-weight: 500; padding: 8px 10px; border-radius: 8px; color: var(--primary-text-color); }
+        .txt { font-size: 13px; font-weight: 500; padding: 10px 10px; min-height: 40px; border-radius: 8px; color: var(--primary-text-color); }
         .txt:hover { background: rgba(127,127,127,.18); }
         .txt.danger { background: var(--error-color); color: #fff; }
         .empty { padding: 18px 8px; text-align: center; font-size: 14px; color: var(--secondary-text-color); line-height: 1.5; }
         .empty b { color: var(--primary-text-color); font-size: 15px; }
+        .setup { padding: 18px 10px; text-align: center; font-size: 14px; line-height: 1.5; color: var(--secondary-text-color);
+                 background: var(--secondary-background-color, rgba(127,127,127,.12)); border-radius: 14px; }
+        .noadmin { padding: 12px; text-align: center; font-size: 14px; color: var(--secondary-text-color); }
         .drop { margin-top: 10px; border: 2px dashed var(--divider-color, rgba(127,127,127,.5)); border-radius: 14px;
                 padding: 16px 12px; text-align: center; color: var(--secondary-text-color); transition: all .12s; }
         .drop.over { border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 12%, transparent);
                      color: var(--primary-text-color); }
         .drop .big { font-size: 15px; color: var(--primary-text-color); margin: 2px 0 2px; }
         .drop .small { font-size: 12px; }
-        .add { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; padding: 10px 18px; border-radius: 22px;
+        .add { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; padding: 10px 18px; min-height: 40px; border-radius: 22px;
                background: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 500; font-size: 14px; }
         .add:hover { filter: brightness(1.1); }
         .uploads { margin-top: 8px; }
-        .up { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; padding: 4px 0; }
+        .up { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 12px; padding: 4px 0; align-items: center; }
         .up-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .up-st { color: var(--secondary-text-color); }
+        .up-st { color: var(--secondary-text-color); display: inline-flex; align-items: center; gap: 4px; }
         .up.error .up-st { color: var(--error-color); }
         .up.done .up-st { color: var(--success-color, #43a047); }
+        .up-x { font-size: 20px; line-height: 1; width: 40px; height: 40px; margin: -10px -8px -10px 0; border-radius: 50%; }
+        .up-x:hover { background: rgba(127,127,127,.18); }
         .up-bar { grid-column: 1 / 3; height: 3px; border-radius: 2px; background: var(--divider-color, rgba(127,127,127,.3)); overflow: hidden; }
         .up-bar div { height: 100%; background: var(--primary-color); transition: width .15s; }
         .up.error .up-bar { display: none; }
@@ -547,39 +680,45 @@ class GoveeC9PlayerCard extends HTMLElement {
           .ctl { gap: 0; }
           .ib { width: 40px; height: 40px; }
           .pp { width: 62px; height: 62px; }
-          .ib.sm { width: 34px; height: 34px; }
+          .ib.sm { width: 40px; height: 40px; }
         }
+        @media (pointer: coarse) { .ib.sm { width: 40px; height: 40px; } }
       </style>
       <ha-card>
         <div class="head"><span class="title"></span><span class="count"></span></div>
-        <div class="np">
-          <div class="np-title">Nothing playing</div>
-          <div class="np-sub"></div>
-          <div class="bar idle" role="slider" aria-label="Seek"><div class="track"><div class="fill"></div></div></div>
-          <div class="time">0:00 / 0:00</div>
-          <div class="ctl">
-            <button class="ib toggle shuf" aria-label="Shuffle" title="Shuffle">${icon("shuffle")}</button>
-            <button class="ib prev" aria-label="Previous" title="Previous">${icon("prev", 30)}</button>
-            <button class="ib pp" aria-label="Play">${icon("play", 40)}</button>
-            <button class="ib stop" aria-label="Stop" title="Stop">${icon("stop", 28)}</button>
-            <button class="ib next" aria-label="Next" title="Next">${icon("next", 30)}</button>
-            <button class="ib toggle rep" aria-label="Repeat" title="Repeat: off">${icon("repeat")}</button>
+        <div class="setup" hidden>No Light Show Player yet.<br><b>Set up the Light Show Player: Settings → Devices &amp; services → Add integration → Govee Light Show → Add the Light Show Player.</b></div>
+        <div class="playpart">
+          <div class="np">
+            <div class="np-title">Nothing playing</div>
+            <div class="np-sub"></div>
+            <div class="bar idle" role="slider" tabindex="-1" aria-label="Seek" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"><div class="track"><div class="fill"></div></div></div>
+            <div class="time">0:00 / 0:00</div>
+            <div class="ctl">
+              <button class="ib toggle shuf" aria-label="Shuffle" title="Shuffle">${icon("shuffle")}</button>
+              <button class="ib prev" aria-label="Previous" title="Previous">${icon("prev", 30)}</button>
+              <button class="ib pp" aria-label="Play">${icon("play", 40)}</button>
+              <button class="ib stop" aria-label="Stop" title="Stop">${icon("stop", 28)}</button>
+              <button class="ib next" aria-label="Next" title="Next">${icon("next", 30)}</button>
+              <button class="ib toggle rep" aria-label="Repeat: off" title="Repeat: off">${icon("repeat")}</button>
+            </div>
           </div>
+          <div class="sec"><span class="t">Shows</span></div>
+          <div class="list"></div>
         </div>
-        <div class="sec"><span class="t">Shows</span></div>
-        <div class="list"></div>
-        <div class="drop">
+        <div class="addpart drop">
           ${icon("upload", 28)}
-          <div class="big">Drop .fseq and song files here</div>
+          <div class="big">${touch ? "Tap to add shows (.fseq + song)" : "Drop .fseq and song files here"}</div>
           <div class="small">Same name = one show, e.g. Thriller.fseq + Thriller.m4a</div>
-          <button class="add">${icon("upload", 18)} Add files</button>
+          <button class="add" aria-label="Add files">${icon("upload", 18)} Add files</button>
           <input type="file" multiple accept=".fseq,audio/*" hidden>
         </div>
-        <div class="uploads"></div>
-        <div class="err" hidden></div>
+        <div class="noadmin" hidden>Only admins can add shows.</div>
+        <div class="uploads" aria-live="polite"></div>
+        <div class="err" role="alert" hidden></div>
       </ha-card>`;
     const r = this.shadowRoot;
-    r.querySelector(".title").textContent = this._config.title || "Light shows";
+    r.querySelector(".title").textContent =
+      this._config.title || (this._upload_only() ? "Add shows" : "Light shows");
     r.querySelector(".pp").onclick = () => this._playPause();
     r.querySelector(".stop").onclick = () => this._service("media_stop");
     r.querySelector(".prev").onclick = () => this._service("media_previous_track");
@@ -588,6 +727,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     r.querySelector(".rep").onclick = () => this._cycleRepeat();
 
     const bar = r.querySelector(".bar");
+    const barFill = () => r.querySelector(".fill");
     const seekAt = (e) => {
       const b = bar.getBoundingClientRect();
       return Math.min(1, Math.max(0, (e.clientX - b.left) / b.width));
@@ -596,10 +736,10 @@ class GoveeC9PlayerCard extends HTMLElement {
       if (!this._state?.duration || this._state.state === "idle") return;
       this._seeking = true;
       bar.setPointerCapture(e.pointerId);
-      r.querySelector(".fill").style.width = `${seekAt(e) * 100}%`;
+      barFill().style.width = `${seekAt(e) * 100}%`;
     });
     bar.addEventListener("pointermove", (e) => {
-      if (this._seeking) r.querySelector(".fill").style.width = `${seekAt(e) * 100}%`;
+      if (this._seeking) barFill().style.width = `${seekAt(e) * 100}%`;
     });
     bar.addEventListener("pointerup", (e) => {
       if (!this._seeking) return;
@@ -607,10 +747,23 @@ class GoveeC9PlayerCard extends HTMLElement {
       this._seek(seekAt(e));
     });
     bar.addEventListener("pointercancel", () => (this._seeking = false));
+    bar.addEventListener("keydown", (e) => {
+      const d = this._state?.duration;
+      if (!d || this._state.state === "idle") return;
+      const step = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5, PageDown: -30, PageUp: 30 }[e.key];
+      let pos = this._position();
+      if (step !== undefined) pos += step;
+      else if (e.key === "Home") pos = 0;
+      else if (e.key === "End") pos = d - 1;
+      else return;
+      e.preventDefault();
+      this._seek(Math.min(Math.max(pos, 0), d) / d);
+    });
 
     const drop = r.querySelector(".drop");
     const input = r.querySelector("input");
     r.querySelector(".add").onclick = () => input.click();
+    drop.addEventListener("click", (e) => touch && e.target === drop && input.click());
     input.onchange = () => {
       this._addFiles(input.files);
       input.value = "";
@@ -629,12 +782,7 @@ class GoveeC9PlayerCard extends HTMLElement {
     );
     drop.addEventListener("drop", (e) => this._addFiles(e.dataTransfer?.files));
 
-    // the seek bar must not be overwritten while dragging
-    const origTick = this._tick.bind(this);
-    this._tick = () => {
-      if (!this._seeking) origTick();
-    };
-
+    this._applyVisibility();
     this._renderState();
     this._renderUploads();
     this._startTimer();

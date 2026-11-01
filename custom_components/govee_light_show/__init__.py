@@ -5,6 +5,7 @@ import os
 
 import voluptuous as vol
 
+from homeassistant.components import panel_custom
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
@@ -28,6 +29,7 @@ from .const import (
 from .controller import C9Controller
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
+from .library import SHOW_PLAYER_KEY
 from .playback import SequencePlayer
 from . import upload, websocket, ws_shows
 from .receiver import PixelReceiver
@@ -37,6 +39,7 @@ PLATFORMS = [Platform.LIGHT]
 PLAYER_PLATFORMS = [Platform.MEDIA_PLAYER]
 FRONTEND_URL = "/govee_light_show"
 CARDS = ("govee-light-show-card.js", "govee-light-show-player-card.js")
+PANEL = "govee-light-show-panel"  # the "Light Shows" sidebar app
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 C9ConfigEntry = ConfigEntry[C9Controller]
@@ -57,6 +60,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     integration = await async_get_integration(hass, DOMAIN)
     for card in CARDS:  # the version in the URL makes browsers fetch new copies after an update
         add_extra_js_url(hass, f"{FRONTEND_URL}/{card}?v={integration.version}")
+    await panel_custom.async_register_panel(
+        hass, frontend_url_path="light-shows", webcomponent_name=PANEL, sidebar_title="Light Shows",
+        sidebar_icon="mdi:string-lights", module_url=f"{FRONTEND_URL}/{PANEL}.js?v={integration.version}",
+        require_admin=False)
     hass.data.setdefault(DOMAIN, PixelReceiver())  # before any entry, so the show player can use it
     websocket.async_register(hass)
     ws_shows.async_register(hass)
@@ -88,6 +95,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def stop(call: ServiceCall) -> None:
         if player := hass.data.get(PLAYER):
             player.stop()
+        if shows := hass.data.get(SHOW_PLAYER_KEY):
+            await shows.async_stop()
 
     hass.services.async_register(DOMAIN, "play_sequence", play, schema=PLAY_SCHEMA)
     hass.services.async_register(DOMAIN, "stop_sequence", stop, schema=vol.Schema({}))

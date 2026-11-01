@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
 
 import voluptuous as vol
@@ -93,19 +94,35 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         }))
 
     async def async_step_manual(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return await self._start_light(user_input[CONF_HOST].strip(), "")
-        return self.async_show_form(step_id="manual", data_schema=vol.Schema({vol.Required(CONF_HOST): str}))
+            host = user_input[CONF_HOST].strip()
+            try:  # a name would be resolved inside the event loop when sending
+                ipaddress.IPv4Address(host)
+            except ValueError:
+                errors[CONF_HOST] = "invalid_host"
+            else:
+                return await self._start_light(host, "")
+        return self.async_show_form(step_id="manual", data_schema=vol.Schema({vol.Required(CONF_HOST): str}),
+                                    errors=errors)
 
     async def _start_light(self, host: str, sku: str) -> ConfigFlowResult:
         await self.async_set_unique_id(host)
         self._abort_if_unique_id_configured()
         model = _model(sku)
         self._light = {CONF_HOST: host, CONF_SKU: sku}
+        if model:  # only models known to take per-segment frames start segmented
+            segmented = model.razer is True
+            bulbs = model.segments or (DEFAULT_BULBS if segmented else 1)
+        elif sku:  # reported but not in the table: play safe
+            segmented, bulbs = False, 1
+        else:  # typed IP: assume a string
+            segmented, bulbs = True, DEFAULT_BULBS
         self._defaults = {
             CONF_NAME: model.name if model else (f"Govee {sku}" if sku else "Govee lights"),
-            CONF_BULBS: (model.segments if model and model.segments else DEFAULT_BULBS),
-            CONF_SEGMENTED: model.razer is not False if model else True,
+            CONF_BULBS: bulbs,
+            CONF_SEGMENTED: segmented,
+            CONF_BULB_ENTITIES: segmented,
             CONF_START_PIXEL: self._next_pixel(),
         }
         return await self.async_step_details()
@@ -150,4 +167,4 @@ class C9OptionsFlow(OptionsFlow):
             return self.async_create_entry(data=user_input)
         cur = {**self.config_entry.data, **self.config_entry.options}
         schema = _player_schema(cur) if player else _light_schema(cur, False)
-        return self.async_show_form(step_id="player" if player else "init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema)
