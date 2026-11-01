@@ -12,6 +12,8 @@ from .protocol import Colour
 
 RED, GREEN, WHITE, BLACK = (255, 0, 0), (0, 255, 0), (255, 255, 255), (0, 0, 0)
 ORANGE, PURPLE, WARM = (255, 80, 0), (140, 0, 255), (255, 150, 40)
+BLUE, PINK, GOLD = (0, 40, 255), (255, 20, 110), (255, 140, 0)
+PASTELS = [(255, 120, 170), (120, 200, 255), (255, 220, 90), (150, 255, 140), (190, 130, 255)]
 
 
 def _hsv(h: float, s: float = 1.0, v: float = 1.0) -> Colour:
@@ -87,6 +89,26 @@ def _ocean(t, n, base):
     return [_hsv(0.52 + 0.08 * math.sin(i * 0.4 + t * 1.3), 1, 0.6 + 0.4 * math.sin(i * 0.25 - t)) for i in range(n)]
 
 
+_fireworks_state: dict[int, list] = {}
+
+
+def _fireworks(t, n, base):
+    """Bursts of colour that pop at random spots, spread out and fade."""
+    bursts = _fireworks_state.setdefault(n, [])
+    if random.random() < 0.08:
+        bursts.append((t, random.randrange(n), _hsv(random.random())))
+    bursts[:] = [b for b in bursts if t - b[0] < 1.5]
+    out = [BLACK] * n
+    for start, centre, colour in bursts:
+        age = t - start
+        reach, fade = age * 8, 1 - age / 1.5
+        for i in range(max(0, int(centre - reach) - 1), min(n, int(centre + reach) + 2)):
+            if abs(i - centre) <= reach:
+                c = _scale(colour, fade * (1 - abs(i - centre) / (reach + 1) * 0.5))
+                out[i] = tuple(max(a, b) for a, b in zip(out[i], c))
+    return out
+
+
 def _witches_brew(t, n, base):
     out = []
     for i in range(n):
@@ -100,6 +122,12 @@ STILL = {
     "Christmas": _pattern([RED, GREEN]),
     "Candy Cane": _pattern([RED, WHITE], 2),
     "Halloween": _pattern([ORANGE, PURPLE]),
+    "Valentine's": _pattern([RED, PINK, WHITE]),
+    "St. Patrick's": _pattern([GREEN, WHITE, GOLD]),
+    "Easter": _pattern(PASTELS),
+    "July 4th": _pattern([RED, WHITE, BLUE]),
+    "Thanksgiving": _pattern([ORANGE, GOLD, (180, 30, 0)]),
+    "Hanukkah": _pattern([BLUE, WHITE]),
     "Classic Multicolour": _pattern([RED, GREEN, (0, 60, 255), ORANGE, (255, 0, 120)]),
     "Warm White": _pattern([WARM]),
 }
@@ -110,6 +138,9 @@ ANIMATED = {
     "Candy Cane Chase": _chase([RED, WHITE], 2, 4),
     "Candy Cane Spin": _candy_spin,
     "Halloween Chase": _chase([ORANGE, PURPLE], 3, 4),
+    "Valentine's Chase": _chase([RED, PINK, WHITE], 2, 4),
+    "July 4th Chase": _chase([RED, WHITE, BLUE], 3, 4),
+    "Fireworks": _fireworks,
     "Comet": _comet,
     "Theater Chase": _theater,
     "Breathe": _breathe,

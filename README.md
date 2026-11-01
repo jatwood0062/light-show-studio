@@ -2,7 +2,7 @@
 
 Local, per-bulb control of Govee C9 string lights (H6860 / reports as R6861) for Home Assistant.
 
-- One light for the whole string, with effects (Candy Cane Spin, Halloween Chase, Witches Brew, …)
+- One light for the whole string, with effects for every season (Christmas, Candy Cane Spin, Valentine's, St. Patrick's, Easter, July 4th, Fireworks, Halloween Chase, Thanksgiving, Hanukkah, …)
 - One light per bulb, and a `govee_c9.set_pixels` action
 - **xLights / Light-O-Rama receiver**: the string shows up to a sequencer as a 50-pixel controller,
   so you can sequence it to music
@@ -45,7 +45,9 @@ setting left in the Govee app can't dim them.
 The integration ships a **Govee C9 string** card (no extra install: it appears in the dashboard's
 card picker after a restart). It shows every bulb live, including during effects and shows, and
 you can pick a colour and tap or drag across bulbs to paint them. **Fill all** paints the whole
-string, **off** turns bulbs off, and **Light show** hands the string back to the sequencer.
+string, **Patterns** fills it with a holiday pattern (Christmas, Valentine's, St. Patrick's, Easter,
+July 4th, Halloween, Thanksgiving, Hanukkah, …), **off** turns bulbs off, and **Light show** hands
+the string back to the sequencer.
 
 ```yaml
 type: custom:govee-c9-card
@@ -56,6 +58,9 @@ layout:               # optional: x, y of each bulb in order (y grows downward),
   - [0, 40]
   - [0, 30]
   # ...
+colors: ["#ff0000", "#00ff00"]          # optional: your own paint swatches
+patterns:                               # optional: your own Patterns list
+  Team colours: ["#002244", "#69be28"]  # colours repeat along the string
 ```
 
 ## Playing a sequence without xLights

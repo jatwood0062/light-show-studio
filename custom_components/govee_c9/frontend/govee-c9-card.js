@@ -5,8 +5,29 @@
 //   title: Porch                    # optional
 //   columns: 25                     # optional: wrap into rows of this many bulbs (default: one row that wraps to fit)
 //   layout: [[0, 0], [10, 0], ...]  # optional: x, y of each bulb (any units), e.g. your xLights positions
+//   colors: ["#ff0000", ...]        # optional: the paint swatches
+//   patterns:                       # optional: replaces the Patterns list (name: colours repeated along the string)
+//     Team colours: ["#002244", "#69be28"]
 
-const SWATCHES = ["#ff4600", "#8200ff", "#28ff00", "#ff0014", "#0050ff", "#ffb43c", "#ffffff"];
+const COLORS = ["#ff0000", "#ff5000", "#ffc800", "#00ff00", "#00ffc8", "#0040ff", "#8200ff", "#ff1478",
+  "#ffb43c", "#ffffff"];
+
+// one bulb per colour, repeated along the string; a colour listed twice makes a wider band
+const PATTERNS = {
+  Christmas: ["#ff0000", "#00ff00"],
+  "Classic multicolour": ["#ff0000", "#00ff00", "#0040ff", "#ff5000", "#ff1478"],
+  "Candy cane": ["#ff0000", "#ff0000", "#ffffff", "#ffffff"],
+  Hanukkah: ["#0040ff", "#ffffff"],
+  "New Year": ["#ffc800", "#ffffff", "#ffc800", "#000000"],
+  "Valentine's": ["#ff0000", "#ff1478", "#ffffff"],
+  "St. Patrick's": ["#00ff00", "#ffffff", "#ff8c00"],
+  Easter: ["#ff78aa", "#78c8ff", "#ffdc5a", "#96ff8c", "#be82ff"],
+  "July 4th": ["#ff0000", "#ffffff", "#0040ff"],
+  Halloween: ["#ff5000", "#8200ff"],
+  Thanksgiving: ["#ff5000", "#ff8c00", "#b41e00"],
+  "Warm white": ["#ffb43c"],
+  Rainbow: ["#ff0000", "#ff5000", "#ffc800", "#00ff00", "#0040ff", "#8200ff"],
+};
 
 class GoveeC9Card extends HTMLElement {
   static getStubConfig(hass) {
@@ -24,6 +45,8 @@ class GoveeC9Card extends HTMLElement {
         { name: "title", selector: { text: {} } },
         { name: "columns", selector: { number: { min: 0, max: 255, mode: "box" } } },
         { name: "layout", selector: { object: {} } },
+        { name: "colors", selector: { object: {} } },
+        { name: "patterns", selector: { object: {} } },
       ],
     };
   }
@@ -32,7 +55,7 @@ class GoveeC9Card extends HTMLElement {
     if (!config.entity) throw new Error("Pick a Govee C9 string light");
     const old = this._config;
     this._config = { columns: 0, ...config };
-    this._brush = this._brush || SWATCHES[0];
+    this._brush = this._brush || this._colors()[0];
     if (old && old.entity !== config.entity) this._unsubscribe();
     this._built = false;
     if (this._hass) this._build();
@@ -140,6 +163,21 @@ class GoveeC9Card extends HTMLElement {
     this._send();
   }
 
+  _fillPattern(colours) {
+    if (!Array.isArray(colours) || !colours.length) return;
+    this._pending = {};
+    for (let i = 0; i < this._count; i++) {
+      const c = colours[i % colours.length];
+      this._pending[i + 1] = c && c !== "#000000" ? c : null;
+      this._paintBulb(i, this._pending[i + 1]);
+    }
+    this._send();
+  }
+
+  _colors() {
+    return Array.isArray(this._config?.colors) && this._config.colors.length ? this._config.colors : COLORS;
+  }
+
   _lightShow() {
     this._hass.callService("light", "turn_on", { entity_id: this._config.entity, effect: "Light show" });
   }
@@ -175,7 +213,7 @@ class GoveeC9Card extends HTMLElement {
         .sw.offsw { background: #26262e; color: #aaa; font-size: 11px; }
         input[type=color] { width: 32px; height: 30px; border: none; background: none; padding: 0; cursor: pointer; }
         .spacer { flex: 1; }
-        button.act { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+        .act { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
                      border: 1px solid var(--divider-color); background: var(--card-background-color);
                      color: var(--primary-text-color); }
         .err { color: var(--error-color); font-size: 12px; margin-top: 8px; }
@@ -222,7 +260,7 @@ class GoveeC9Card extends HTMLElement {
       tools.querySelectorAll(".sw, input").forEach((s) => s.classList.remove("sel"));
       el.classList.add("sel");
     };
-    for (const c of SWATCHES) {
+    for (const c of this._colors()) {
       const b = document.createElement("button");
       b.className = "sw" + (c === this._brush ? " sel" : "");
       b.style.background = c;
@@ -244,10 +282,18 @@ class GoveeC9Card extends HTMLElement {
     tools.append(Object.assign(document.createElement("span"), { className: "spacer" }));
     const fill = Object.assign(document.createElement("button"), { className: "act", textContent: "Fill all" });
     fill.onclick = () => this._fill(this._brush);
+    const patterns = this._config.patterns || PATTERNS;
+    const menu = Object.assign(document.createElement("select"), { className: "act", title: "Fill the string with a pattern" });
+    menu.append(new Option("Patterns…", ""));
+    for (const name of Object.keys(patterns)) menu.append(new Option(name, name));
+    menu.onchange = () => {
+      if (menu.value) this._fillPattern(patterns[menu.value]);
+      menu.value = "";
+    };
     const show = Object.assign(document.createElement("button"), { className: "act", textContent: "Light show" });
     show.title = "Let xLights / EZPlayer / play_sequence drive the string again";
     show.onclick = () => this._lightShow();
-    tools.append(fill, show);
+    tools.append(menu, fill, show);
   }
 
   _buildBulbs() {

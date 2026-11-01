@@ -8,5 +8,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/jatwood0062/govee-c9/issues",
   "requirements": ["zstandard>=0.21"],
-  "version": "0.6.1"
+  "version": "0.7.0"
 }
