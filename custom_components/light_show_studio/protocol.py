@@ -125,8 +125,9 @@ def _arp_table() -> dict[str, bool]:
         next(f, None)
         for line in f:
             parts = line.split()
-            if len(parts) >= 4:
-                out[parts[0]] = bool(int(parts[2], 16) & 0x2) and parts[3] != "00:00:00:00:00:00"
+            if len(parts) >= 4:  # one line per interface: resolved on any of them counts
+                ok = bool(int(parts[2], 16) & 0x2) and parts[3] != "00:00:00:00:00:00"
+                out[parts[0]] = out.get(parts[0], False) or ok
     return out
 
 
@@ -150,5 +151,7 @@ async def async_probe(hosts: list[str], wait: float = 6.0) -> dict[str, bool] | 
         return None
     finally:
         sock.close()
+    if not any(h in table for h in hosts):
+        return None  # sending always leaves an entry, even a failed one: this isn't our ARP table
     return {h: table.get(h, False) for h in hosts}
 
