@@ -138,7 +138,7 @@ class WledController(C9Controller):
 
     def _tick(self) -> None:
         self._keepalive = None
-        if self._closed or not (self._on and self._last is not None):
+        if self._closed or self.show_mode or not (self._on and self._last is not None):  # shows stream their own frames; idle, the strip goes back to its own look
             return
         if time.monotonic() - self._last_sent >= KEEPALIVE - 0.1:
             self._send(self._last)

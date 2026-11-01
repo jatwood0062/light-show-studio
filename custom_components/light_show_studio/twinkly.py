@@ -285,7 +285,7 @@ class TwinklyController(C9Controller):
 
     def _tick(self) -> None:
         self._keepalive = None
-        if self._closed or not (self.is_on and self._last is not None):
+        if self._closed or self.show_mode or not (self.is_on and self._last is not None):  # shows stream their own frames
             return
         if not self._armed or self.client.token_expiring:  # dropped out of realtime, or the token is due
             self._armed = False
