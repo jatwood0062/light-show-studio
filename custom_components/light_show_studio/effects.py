@@ -135,6 +135,8 @@ STILL = {
     "Hanukkah": _pattern([BLUE, WHITE]),
     "Classic Multicolour": _pattern([RED, GREEN, (0, 60, 255), ORANGE, (255, 0, 120)]),
     "Warm White": _pattern([WARM]),
+    # old incandescent C9 colours: warm, a little soft
+    "Vintage Rainbow": _pattern([(230, 18, 0), (255, 90, 0), (255, 170, 20), (20, 150, 25), (0, 50, 200), (230, 60, 90)]),
 }
 
 ANIMATED = {
