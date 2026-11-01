@@ -25,6 +25,7 @@ FRAGMENT = 900  # data bytes per realtime packet
 KEEPALIVE = 2.0  # resend the last frame this often so a still picture holds in realtime mode
 TOKEN_MARGIN = 60  # log in again this long before the token expires
 ARM_RETRY = 5.0
+DEFAULT_FPS = 12.0  # what the strip can draw; frames sent faster tear between their two packets
 TIMEOUT = aiohttp.ClientTimeout(total=5)
 
 
@@ -165,9 +166,12 @@ class TwinklyClient:
 
 
 class TwinklyController(C9Controller):
-    def __init__(self, hass: HomeAssistant, host: str, bulbs: int, profile: str = "RGB") -> None:
+    def __init__(self, hass: HomeAssistant, host: str, bulbs: int, profile: str = "RGB",
+                 frame_rate: float | None = None) -> None:
         super().__init__(hass, host, bulbs, True)  # always takes a frame per LED
         self.profile = profile
+        self.max_fps = max(5.0, min(30.0, float(frame_rate or DEFAULT_FPS)))  # the strip's own rate (gestalt)
+        self._pending: asyncio.TimerHandle | None = None
         self.client = TwinklyClient(async_get_clientsession(hass), host)
         self.layout: list[list[float]] | None = None
         self._armed = False  # realtime mode is on and our token is the current one
@@ -201,6 +205,11 @@ class TwinklyController(C9Controller):
         if not self._armed:
             self._start_arm()
             return
+        wait = 1 / self.max_fps - (time.monotonic() - self._last_sent)
+        if wait > 0:  # faster than the strip draws: send the latest frame when it's ready for one
+            if self._pending is None:
+                self._pending = self.hass.loop.call_later(wait, self._send_pending)
+            return
         self._send(frame)
         if self._keepalive is None:
             self._keepalive = self.hass.loop.call_later(KEEPALIVE, self._tick)
@@ -226,7 +235,15 @@ class TwinklyController(C9Controller):
             except OSError:
                 return  # UDP: the next frame replaces it
 
+    def _send_pending(self) -> None:
+        self._pending = None
+        if self._armed and not self._closed and self._last is not None:
+            self._send(self._last)
+
     def _disarm(self) -> None:
+        if self._pending:
+            self._pending.cancel()
+            self._pending = None
         self._armed = False
         self._arm_after = 0.0
         self._last = None

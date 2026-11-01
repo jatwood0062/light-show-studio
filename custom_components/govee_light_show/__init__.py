@@ -142,11 +142,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
     bulbs = _opt(entry, CONF_BULBS, DEFAULT_BULBS)
     if entry.data.get(CONF_TYPE) == TYPE_TWINKLY:
         try:
-            await async_gestalt(async_get_clientsession(hass), entry.data[CONF_HOST])
+            info = await async_gestalt(async_get_clientsession(hass), entry.data[CONF_HOST])
         except Exception as err:  # unreachable now; Home Assistant retries
             raise ConfigEntryNotReady(f"Twinkly at {entry.data[CONF_HOST]} is not reachable: {err}") from err
         ctl = entry.runtime_data = TwinklyController(hass, entry.data[CONF_HOST], bulbs,
-                                                     entry.data.get(CONF_LED_PROFILE, "RGB"))
+                                                     entry.data.get(CONF_LED_PROFILE, "RGB"), info.get("frame_rate"))
         ctl.mark_seen()
     else:
         ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], bulbs, _opt(entry, CONF_SEGMENTED, True))
