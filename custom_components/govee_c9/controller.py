@@ -39,12 +39,23 @@ class C9Controller:
         self._task: asyncio.Task | None = None
         self._flush_handle: asyncio.TimerHandle | None = None
         self._listeners: list[Callable[[], None]] = []
+        self.frame: list[Colour] = [(0, 0, 0)] * bulbs  # what the bulbs show now, for the card
+        self._frame_listeners: list[Callable[[], None]] = []
         self._ext_sent = 0.0
 
     # --- listeners -------------------------------------------------------
     def add_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
         self._listeners.append(cb)
         return lambda: self._listeners.remove(cb)
+
+    def add_frame_listener(self, cb: Callable[[], None]) -> Callable[[], None]:
+        self._frame_listeners.append(cb)
+        return lambda: self._frame_listeners.remove(cb)
+
+    def _set_frame(self, frame: list[Colour]) -> None:
+        self.frame = frame
+        for cb in list(self._frame_listeners):
+            cb()
 
     @callback
     def _notify(self) -> None:
@@ -65,7 +76,9 @@ class C9Controller:
             self.lan.send(realtime_msg(True))
             self._realtime = True
         f = self.brightness / 255
-        self.lan.send(colours_msg([(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]))
+        frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
+        self.lan.send(colours_msg(frame))
+        self._set_frame(frame)
 
     def _render(self) -> None:
         self._stop_animation()
@@ -131,6 +144,7 @@ class C9Controller:
         self.lan.send(turn_msg(False))
         self.is_on = False
         self._realtime = False
+        self._set_frame([(0, 0, 0)] * self.bulbs)
         self._notify()
 
     async def async_set_pixels(self, colours: list[Colour], repeat: bool = True) -> None:

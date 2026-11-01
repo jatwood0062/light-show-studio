@@ -1,0 +1,310 @@
+// Govee C9 card: every bulb of a string, live, and paintable. Ships with the govee_c9 integration.
+//
+//   type: custom:govee-c9-card
+//   entity: light.govee_c9          # the whole-string light
+//   title: Porch                    # optional
+//   columns: 25                     # optional: wrap into rows of this many bulbs (default: one row that wraps to fit)
+//   layout: [[0, 0], [10, 0], ...]  # optional: x, y of each bulb (any units), e.g. your xLights positions
+
+const SWATCHES = ["#ff4600", "#8200ff", "#28ff00", "#ff0014", "#0050ff", "#ffb43c", "#ffffff"];
+
+class GoveeC9Card extends HTMLElement {
+  static getStubConfig(hass) {
+    const entity = Object.keys(hass.states).find((id) => {
+      const a = hass.states[id].attributes;
+      return id.startsWith("light.") && a.bulbs && (a.effect_list || []).includes("Light show");
+    });
+    return { entity: entity || "" };
+  }
+
+  static getConfigForm() {
+    return {
+      schema: [
+        { name: "entity", required: true, selector: { entity: { domain: "light", integration: "govee_c9" } } },
+        { name: "title", selector: { text: {} } },
+        { name: "columns", selector: { number: { min: 0, max: 255, mode: "box" } } },
+        { name: "layout", selector: { object: {} } },
+      ],
+    };
+  }
+
+  setConfig(config) {
+    if (!config.entity) throw new Error("Pick a Govee C9 string light");
+    const old = this._config;
+    this._config = { columns: 0, ...config };
+    this._brush = this._brush || SWATCHES[0];
+    if (old && old.entity !== config.entity) this._unsubscribe();
+    this._built = false;
+    if (this._hass) this._build();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._built) this._build();
+    this._updateStatus();
+    this._subscribe();
+  }
+
+  getCardSize() {
+    return 3;
+  }
+
+  getGridOptions() {
+    return { columns: 12, min_columns: 6 };
+  }
+
+  connectedCallback() {
+    if (this._hass) this._subscribe();
+  }
+
+  disconnectedCallback() {
+    this._unsubscribe();
+  }
+
+  // --- live bulbs --------------------------------------------------------
+  async _subscribe() {
+    if (this._unsub || this._subscribing || !this.isConnected || !this._config?.entity) return;
+    this._subscribing = true;
+    try {
+      this._unsub = await this._hass.connection.subscribeMessage((m) => this._onFrame(m), {
+        type: "govee_c9/subscribe",
+        entity_id: this._config.entity,
+      });
+      this._error("");
+    } catch (err) {
+      this._error(err.message || "Can't reach the string");
+    }
+    this._subscribing = false;
+  }
+
+  _unsubscribe() {
+    if (this._unsub) this._unsub();
+    this._unsub = null;
+  }
+
+  _onFrame(m) {
+    if (m.bulbs !== this._count) {
+      this._count = m.bulbs;
+      this._buildBulbs();
+    }
+    this._live = m;
+    for (let i = 0; i < this._count; i++) {
+      const hex = this._pending?.[i + 1];
+      this._paintBulb(i, hex !== undefined ? hex : m.on ? "#" + m.frame.substr(i * 6, 6) : null);
+    }
+    this._updateStatus();
+  }
+
+  _paintBulb(i, colour) {
+    const el = this._bulbs?.[i];
+    if (!el) return;
+    const lit = colour && colour !== "#000000";
+    el.style.background = lit ? colour : "";
+    el.style.boxShadow = lit ? `0 0 10px 2px ${colour}` : "";
+    el.classList.toggle("off", !lit);
+  }
+
+  // --- painting ----------------------------------------------------------
+  _paint(i) {
+    const last = this._lastPainted;
+    if (i === last) return;
+    this._lastPainted = i;
+    this._pending = this._pending || {};
+    // a fast drag skips bulbs between pointer events: fill in short gaps along the string
+    const from = last !== null && Math.abs(i - last) <= 12 ? last : i;
+    for (let j = Math.min(from, i); j <= Math.max(from, i); j++) {
+      this._pending[j + 1] = this._brush;
+      this._paintBulb(j, this._brush);
+    }
+    clearTimeout(this._sendTimer);
+    this._sendTimer = setTimeout(() => this._send(), 120);
+  }
+
+  async _send() {
+    const bulbs = this._pending;
+    if (!bulbs) return;
+    try {
+      await this._hass.callWS({ type: "govee_c9/set_bulbs", entity_id: this._config.entity, bulbs });
+    } catch (err) {
+      this._error(err.message);
+    }
+    if (this._pending === bulbs) this._pending = null;
+  }
+
+  _fill(colour) {
+    this._pending = {};
+    for (let i = 0; i < this._count; i++) {
+      this._pending[i + 1] = colour;
+      this._paintBulb(i, colour);
+    }
+    this._send();
+  }
+
+  _lightShow() {
+    this._hass.callService("light", "turn_on", { entity_id: this._config.entity, effect: "Light show" });
+  }
+
+  // --- layout ------------------------------------------------------------
+  _build() {
+    if (!this._config) return;
+    this._built = true;
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this.shadowRoot.innerHTML = `
+      <style>
+        ha-card { padding: 12px 16px 16px; }
+        .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+        .title { font-size: 16px; font-weight: 500; }
+        .status { font-size: 12px; color: var(--secondary-text-color); }
+        .strip { position: relative; touch-action: none; user-select: none; -webkit-user-select: none;
+                 padding: 8px; border-radius: 12px; background: #0b0b10; }
+        .strip.grid { display: grid; gap: 6px; justify-items: center; }
+        .strip.flow { display: flex; flex-wrap: wrap; gap: 6px; }
+        .bulb { width: 18px; height: 18px; border-radius: 50%; cursor: pointer; box-sizing: border-box;
+                transition: background 0.08s; }
+        .bulb.off { background: #26262e; box-shadow: inset 0 0 0 1px #3a3a44; }
+        .strip.points { padding: 16px; }
+        .area { position: relative; }
+        .strip.points .bulb { position: absolute; transform: translate(-50%, -50%); width: 14px; height: 14px; }
+        .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+        .sw { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer;
+              box-sizing: border-box; padding: 0; box-shadow: inset 0 0 0 1px #0003; }
+        .sw.sel { border-color: var(--primary-text-color); }
+        .sw.offsw { background: #26262e; color: #aaa; font-size: 11px; }
+        input[type=color] { width: 32px; height: 30px; border: none; background: none; padding: 0; cursor: pointer; }
+        .spacer { flex: 1; }
+        button.act { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+                     border: 1px solid var(--divider-color); background: var(--card-background-color);
+                     color: var(--primary-text-color); }
+        .err { color: var(--error-color); font-size: 12px; margin-top: 8px; }
+      </style>
+      <ha-card>
+        <div class="head"><span class="title"></span><span class="status"></span></div>
+        <div class="strip"></div>
+        <div class="tools"></div>
+        <div class="err" hidden></div>
+      </ha-card>`;
+    const root = this.shadowRoot;
+    root.querySelector(".title").textContent =
+      this._config.title || this._hass.states[this._config.entity]?.attributes.friendly_name || this._config.entity;
+    this._strip = root.querySelector(".strip");
+    this._buildTools(root.querySelector(".tools"));
+    this._count = this._count || this._hass.states[this._config.entity]?.attributes.bulbs || 50;
+    this._buildBulbs();
+
+    const at = (e) => {
+      const el = root.elementFromPoint(e.clientX, e.clientY);
+      return el && el.dataset.i !== undefined ? Number(el.dataset.i) : null;
+    };
+    this._strip.addEventListener("pointerdown", (e) => {
+      const i = at(e);
+      if (i === null) return;
+      this._painting = true;
+      this._lastPainted = null;
+      this._strip.setPointerCapture(e.pointerId);
+      this._paint(i);
+    });
+    this._strip.addEventListener("pointermove", (e) => {
+      if (!this._painting) return;
+      const i = at(e);
+      if (i !== null) this._paint(i);
+    });
+    const end = () => (this._painting = false);
+    this._strip.addEventListener("pointerup", end);
+    this._strip.addEventListener("pointercancel", end);
+  }
+
+  _buildTools(tools) {
+    const select = (el, colour) => {
+      this._brush = colour;
+      tools.querySelectorAll(".sw, input").forEach((s) => s.classList.remove("sel"));
+      el.classList.add("sel");
+    };
+    for (const c of SWATCHES) {
+      const b = document.createElement("button");
+      b.className = "sw" + (c === this._brush ? " sel" : "");
+      b.style.background = c;
+      b.title = c;
+      b.onclick = () => select(b, c);
+      tools.append(b);
+    }
+    const off = document.createElement("button");
+    off.className = "sw offsw" + (this._brush === null ? " sel" : "");
+    off.textContent = "off";
+    off.title = "Turn bulbs off";
+    off.onclick = () => select(off, null);
+    tools.append(off);
+    const pick = document.createElement("input");
+    pick.type = "color";
+    pick.title = "Any colour";
+    pick.oninput = () => select(pick, pick.value);
+    tools.append(pick);
+    tools.append(Object.assign(document.createElement("span"), { className: "spacer" }));
+    const fill = Object.assign(document.createElement("button"), { className: "act", textContent: "Fill all" });
+    fill.onclick = () => this._fill(this._brush);
+    const show = Object.assign(document.createElement("button"), { className: "act", textContent: "Light show" });
+    show.title = "Let xLights / EZPlayer / play_sequence drive the string again";
+    show.onclick = () => this._lightShow();
+    tools.append(fill, show);
+  }
+
+  _buildBulbs() {
+    const strip = this._strip;
+    if (!strip) return;
+    strip.innerHTML = "";
+    this._bulbs = [];
+    const { columns, layout } = this._config;
+    const points = Array.isArray(layout) && layout.length ? layout : null;
+    strip.className = "strip " + (points ? "points" : columns > 0 ? "grid" : "flow");
+    if (columns > 0 && !points) strip.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+    let place = null, parent = strip;
+    if (points) {
+      // positions as % of an area with the layout's own aspect ratio (min 1:8 so flat rooflines stay tappable)
+      const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+      const x0 = Math.min(...xs), y0 = Math.min(...ys);
+      const w = Math.max(...xs) - x0 || 1, h = Math.max(...ys) - y0 || 0;
+      parent = document.createElement("div");
+      parent.className = "area";
+      parent.style.aspectRatio = `${w} / ${Math.max(h, w / 8)}`;
+      strip.append(parent);
+      place = (el, p) => {
+        el.style.left = `${((p[0] - x0) / w) * 100}%`;
+        el.style.top = h ? `${((p[1] - y0) / h) * 100}%` : "50%";
+      };
+    }
+    for (let i = 0; i < this._count; i++) {
+      const el = document.createElement("div");
+      el.className = "bulb off";
+      el.dataset.i = i;
+      el.title = `Bulb ${i + 1}`;
+      if (place && points[i]) place(el, points[i]);
+      else if (place) el.hidden = true;
+      parent.append(el);
+      this._bulbs.push(el);
+    }
+  }
+
+  _updateStatus() {
+    const st = this.shadowRoot?.querySelector(".status");
+    if (!st || !this._hass) return;
+    const s = this._hass.states[this._config.entity];
+    if (!s) st.textContent = "not found";
+    else if (s.state !== "on") st.textContent = "Off";
+    else st.textContent = s.attributes.effect || (s.attributes.per_bulb ? "Painted" : "Colour");
+  }
+
+  _error(text) {
+    const el = this.shadowRoot?.querySelector(".err");
+    if (!el) return;
+    el.textContent = text;
+    el.hidden = !text;
+  }
+}
+
+customElements.define("govee-c9-card", GoveeC9Card);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: "govee-c9-card",
+  name: "Govee C9 string",
+  description: "Every bulb of a Govee C9 string, live, with tap or drag to paint.",
+  preview: true,
+});

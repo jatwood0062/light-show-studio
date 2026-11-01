@@ -40,6 +40,24 @@ the sequencer until you pick **Light show** again (`play_sequence` switches it b
 The brightness slider dims shows too, and the string's own dimmer is set to 100 % so a low
 setting left in the Govee app can't dim them.
 
+## Dashboard card
+
+The integration ships a **Govee C9 string** card (no extra install: it appears in the dashboard's
+card picker after a restart). It shows every bulb live, including during effects and shows, and
+you can pick a colour and tap or drag across bulbs to paint them. **Fill all** paints the whole
+string, **off** turns bulbs off, and **Light show** hands the string back to the sequencer.
+
+```yaml
+type: custom:govee-c9-card
+entity: light.govee_c9
+title: Porch          # optional
+columns: 25           # optional: rows of this many bulbs
+layout:               # optional: x, y of each bulb in order (y grows downward), e.g. your roofline
+  - [0, 40]
+  - [0, 30]
+  # ...
+```
+
 ## Playing a sequence without xLights
 
 Once a show is sequenced, Home Assistant can play it on its own, so xLights doesn't need to

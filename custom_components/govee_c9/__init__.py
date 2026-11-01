@@ -5,21 +5,26 @@ import os
 
 import voluptuous as vol
 
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 
 from .const import CONF_BULBS, CONF_START_PIXEL, DEFAULT_BULBS, DOMAIN, PLAYER
 from .controller import C9Controller
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
 from .playback import SequencePlayer
+from . import websocket
 from .receiver import PixelReceiver
 
 PLATFORMS = [Platform.LIGHT]
+CARD_URL = "/govee_c9/govee-c9-card.js"
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 C9ConfigEntry = ConfigEntry[C9Controller]
@@ -34,6 +39,13 @@ PLAY_SCHEMA = vol.Schema({
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    # the dashboard card ships with the integration: served from here and loaded on every dashboard
+    card = os.path.join(os.path.dirname(__file__), "frontend", "govee-c9-card.js")
+    await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, card, False)])
+    integration = await async_get_integration(hass, DOMAIN)
+    add_extra_js_url(hass, f"{CARD_URL}?v={integration.version}")  # new version, fresh browser copy
+    websocket.async_register(hass)
+
     async def play(call: ServiceCall) -> None:
         receiver: PixelReceiver | None = hass.data.get(DOMAIN)
         if receiver is None:
