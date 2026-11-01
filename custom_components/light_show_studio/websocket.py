@@ -1,4 +1,4 @@
-"""Websocket API for the Govee C9 card: watch a string's bulbs live and paint single bulbs."""
+"""Websocket API for the light card and the app: watch a string's bulbs live, paint single bulbs, manage strands."""
 from __future__ import annotations
 
 from typing import Any
@@ -199,7 +199,7 @@ def ws_strand_update(hass: HomeAssistant, connection: websocket_api.ActiveConnec
         connection.send_error(msg["id"], "invalid_format", f"Pixels run past {MAX_PIXELS}")
         return
     if o.get(CONF_TYPE) not in (TYPE_TWINKLY, TYPE_WLED) and bulbs > 255:
-        connection.send_error(msg["id"], "invalid_format", "A Govee light takes at most 255 bulbs")
+        connection.send_error(msg["id"], "invalid_format", "This kind of light takes at most 255 bulbs")
         return
     data = entry.data
     if (host := msg.get("host")) is not None and host != entry.data[CONF_HOST]:

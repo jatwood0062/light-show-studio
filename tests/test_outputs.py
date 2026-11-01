@@ -73,9 +73,3 @@ def test_normalize_speakers():
     assert o.normalize_speakers(None) == []
 
 
-def test_configured_speakers_backward_compatible():
-    assert o.configured_speakers({"speaker": "media_player.old"}) == ["media_player.old"]
-    assert o.configured_speakers({"speakers": ["media_player.a", "media_player.b"], "speaker": "media_player.old"}) == [
-        "media_player.a", "media_player.b"]
-    assert o.configured_speakers({"speakers": [], "speaker": "media_player.old"}) == []
-    assert o.configured_speakers({}) == []

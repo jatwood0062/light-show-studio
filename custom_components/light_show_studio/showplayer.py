@@ -19,12 +19,21 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from . import transitions
-from .const import CONF_TRANSITION, CONF_TRANSITION_EFFECT, DOMAIN, PLAYER
+from .const import (
+    CONF_AUDIO_OFFSET,
+    CONF_GAP,
+    CONF_SPEAKERS,
+    CONF_TRANSITION,
+    CONF_TRANSITION_EFFECT,
+    DOMAIN,
+    SEQUENCER_KEY,
+)
+from .controller import enable_shows
 from .effects import EFFECT_LIST, EFFECTS
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
 from .library import SHOW_PLAYER_KEY, Show, ShowLibrary, media_root
-from .outputs import Outputs, SpeakerInfo, configured_speakers, normalize_speakers, plan_outputs
+from .outputs import Outputs, SpeakerInfo, normalize_speakers, plan_outputs
 from .playback import SequencePlayer
 from .receiver import PixelReceiver
 
@@ -40,8 +49,8 @@ class ShowPlayer:
     def __init__(self, hass: HomeAssistant, library: ShowLibrary) -> None:
         self.hass = hass
         self.library = library
-        self._speakers: list[str] = []  # configured outputs, first = leader
-        self._pending: list[str] | None = None  # a change made mid-show, applied at the next show
+        self._speakers: list[str] = []  # the chosen outputs, first = leader; read at the start of each show
+        self._applied: list[str] = []  # the outputs the current show started with
         self._leader: str | None = None  # the speaker the current show's lights follow
         self._joined: list[str] = []  # members this player grouped (and so will ungroup)
         self._joined_leader: str | None = None
@@ -69,10 +78,9 @@ class ShowPlayer:
         def opt(key: str, default: Any) -> Any:
             return entry.options.get(key, entry.data.get(key, default))
 
-        self._speakers = configured_speakers({k: opt(k, None) for k in ("speakers", "speaker")})
-        self._pending = None
-        self.audio_offset = float(opt("audio_offset", 0.0) or 0.0)
-        gap = opt("gap", DEFAULT_GAP)
+        self._speakers = normalize_speakers(opt(CONF_SPEAKERS, []))
+        self.audio_offset = float(opt(CONF_AUDIO_OFFSET, 0.0) or 0.0)
+        gap = opt(CONF_GAP, DEFAULT_GAP)
         self.gap = DEFAULT_GAP if gap is None else float(gap)
         self.set_transition(opt(CONF_TRANSITION, None), opt(CONF_TRANSITION_EFFECT, None))
 
@@ -80,11 +88,11 @@ class ShowPlayer:
     @property
     def speakers(self) -> list[str]:
         """The chosen outputs (a change made during a show counts at once; it plays from the next show)."""
-        return list(self._speakers if self._pending is None else self._pending)
+        return list(self._speakers)
 
     @property
     def outputs(self) -> Outputs:
-        return self._plan(self.speakers)
+        return self._plan(self._speakers)
 
     @property
     def speaker(self) -> str | None:
@@ -106,24 +114,15 @@ class ShowPlayer:
     def set_speakers(self, speakers: list[str]) -> str:
         """Change the outputs in place. Returns "now", or "next_show" when a show is on (it keeps its speakers)."""
         new = normalize_speakers(speakers)
-        if new == self.speakers:
-            return "now" if self._pending is None else "next_show"
-        self._warned.clear()
-        if self.state != IDLE:
-            self._pending = None if new == self._speakers else new
-            result = "now" if self._pending is None else "next_show"
-        else:
-            self._speakers, self._pending, result = new, None, "now"
-        self._changed()
-        return result
-
-    def _apply_pending(self) -> None:
-        if self._pending is not None:
-            self._speakers, self._pending = self._pending, None
+        if new != self._speakers:
+            self._speakers = new
+            self._warned.clear()
+            self._changed()
+        return "now" if self.state == IDLE or new == self._applied else "next_show"
 
     async def _prepare_outputs(self) -> None:
-        """Before a show: apply a pending change, pick the leader and group the others with it."""
-        self._apply_pending()
+        """Before a show: take the chosen outputs, pick the leader and group the others with it."""
+        self._applied = list(self._speakers)
         plan = self._plan(self._speakers)
         if self._joined and plan.leader != self._joined_leader:
             await self._ungroup()
@@ -174,13 +173,8 @@ class ShowPlayer:
         self._changed()
 
     def _sequencer(self) -> SequencePlayer:
-        """The shared SequencePlayer, so play_sequence / stop_sequence act on the same one."""
-        player = self.hass.data.get(PLAYER)
-        if player is None:
-            receiver: PixelReceiver = self.hass.data.setdefault(DOMAIN, PixelReceiver())
-            player = self.hass.data[PLAYER] = SequencePlayer(
-                receiver.show, lambda coro: self.hass.async_create_background_task(coro, "light_show_studio sequence"))
-        return player
+        """The shared SequencePlayer (made in async_setup), so play_sequence / stop_sequence act on the same one."""
+        return self.hass.data[SEQUENCER_KEY]
 
     async def async_refresh(self) -> None:
         """Re-read the library (after an upload, delete or reorder) and rebuild the queue."""
@@ -303,17 +297,23 @@ class ShowPlayer:
         self._changed()
 
     async def async_stop(self) -> None:
-        was_speaker = self._with_speaker
         self._cancel_runner()
-        self._sequencer().hold_on_stop = False  # a user stop goes dark
-        self._sequencer().stop()
+        await self._finish()
+
+    async def _finish(self) -> None:
+        """Go idle: lights dark, the song stopped, the speakers left as we found them."""
+        was_speaker = self._with_speaker
+        sequencer = self._sequencer()
+        sequencer.hold_on_stop = False  # stopping, or the end of the queue, goes dark
+        sequencer.stop()
+        if (receiver := self.hass.data.get(DOMAIN)) is not None:
+            receiver.show(b"")  # in case the last show held its frame
         self._with_speaker = False
         self.state = IDLE
         if was_speaker:
             await self._speaker_call("media_stop")
         await self._ungroup()
         self._leader = None
-        self._apply_pending()
         self._changed()
 
     async def async_next(self) -> None:
@@ -414,16 +414,7 @@ class ShowPlayer:
             raise
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Show queue stopped")
-        self._sequencer().hold_on_stop = False  # end of the queue goes dark
-        self._sequencer().stop()
-        if (receiver := self.hass.data.get(DOMAIN)) is not None:
-            receiver.show(b"")  # in case the last show held its frame
-        self._with_speaker = False
-        self.state = IDLE
-        await self._ungroup()  # the queue is over: leave the speakers as we found them
-        self._leader = None
-        self._apply_pending()
-        self._changed()
+        await self._finish()  # the queue is over
 
     async def _between(self, nxt: Show | None) -> float:
         """Fill the gap before `nxt`; returns the seconds the next show should fade in over.
@@ -490,10 +481,7 @@ class ShowPlayer:
         except (FseqError, OSError) as err:
             _LOGGER.warning("Skipping %s: %s", show.id, err)
             return
-        for entry in self.hass.config_entries.async_loaded_entries(DOMAIN):
-            ctl = getattr(entry, "runtime_data", None)  # the player's own entry has none
-            if hasattr(ctl, "enable_show"):
-                ctl.enable_show()
+        enable_shows(self.hass)
         sequencer = self._sequencer()
         try:
             sequencer.fade_in = fade_in  # taken by whichever play() starts the lights

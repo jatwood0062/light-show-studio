@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 from homeassistant.core import HomeAssistant, callback
 
-from .const import EXTERNAL_MAX_FPS, FLUSH_DELAY, FPS, WHOLE_LIGHT_FPS
+from .const import DOMAIN, EXTERNAL_MAX_FPS, FLUSH_DELAY, FPS, WHOLE_LIGHT_FPS
 from .effects import ANIMATED, EFFECTS
 from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
 
@@ -20,6 +20,13 @@ def _split(c: Colour) -> tuple[Colour, int]:
     if m == 0:
         return (255, 255, 255), 0
     return (c[0] * 255 // m, c[1] * 255 // m, c[2] * 255 // m), m
+
+
+def enable_shows(hass: HomeAssistant) -> None:
+    """Let every loaded light (Govee, Twinkly, WLED) show frames from a sequence."""
+    for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+        if isinstance(ctl := getattr(entry, "runtime_data", None), C9Controller):
+            ctl.enable_show()
 
 
 class C9Controller:

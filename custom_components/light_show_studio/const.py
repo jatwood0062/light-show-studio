@@ -1,5 +1,5 @@
 DOMAIN = "light_show_studio"
-PLAYER = f"{DOMAIN}_player"  # hass.data key of the .fseq SequencePlayer
+SEQUENCER_KEY = f"{DOMAIN}_sequencer"  # hass.data key of the one shared .fseq SequencePlayer (made in async_setup)
 
 CONF_BULBS = "bulbs"
 CONF_BULB_ENTITIES = "bulb_entities"
@@ -13,7 +13,6 @@ CONF_SEGMENTED = "segmented"  # light takes per-segment ("razer") frames
 CONF_SKU = "sku"
 CONF_TYPE = "type"  # "light" (default) or "player"
 TYPE_PLAYER = "player"
-CONF_SPEAKER = "speaker"  # old single-speaker option, still read
 CONF_SPEAKERS = "speakers"  # ordered list of media players; the first leads
 CONF_AUDIO_OFFSET = "audio_offset"
 CONF_GAP = "gap"  # where this string's slice begins in the xLights output

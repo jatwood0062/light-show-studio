@@ -3,7 +3,8 @@
 //   type: custom:light-show-studio-player-card
 //   entity: media_player.light_show_player   # optional: autodetected (the media_player with a "queue" attribute)
 //   title: Light shows                       # optional
-//   mode: player | upload                    # optional: "player" hides the add-shows area, "upload" shows only it
+//   mode: player | library | upload         # optional: "player" hides the add-shows area, "library" shows only the show list
+//                                            # (play, reorder, delete), "upload" shows only the add-shows area
 
 const ICON = {
   play: "M8 5v14l11-7z",
@@ -50,7 +51,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
         { name: "entity", selector: { entity: { domain: "media_player", integration: "light_show_studio" } } },
         { name: "title", selector: { text: {} } },
         { name: "mode", selector: { select: { mode: "dropdown", options: [
-          { value: "", label: "Everything" }, { value: "player", label: "Player only" }, { value: "upload", label: "Add shows only" }] } } },
+          { value: "", label: "Everything" }, { value: "player", label: "Player only" }, { value: "library", label: "Show list only" }, { value: "upload", label: "Add shows only" }] } } },
       ],
     };
   }
@@ -315,7 +316,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
     this._runUploads(batch);
   }
 
-  // Uploads run one at a time; each carries its base name as `show`, so Thriller.fseq + Thriller.m4a land in one show.
+  // Uploads run one at a time; each carries its base name as `show`, so My Show.fseq + My Show.m4a land in one show.
   async _runUploads(batch) {
     for (const { f, item } of batch) {
       item.state = "up";
@@ -424,10 +425,13 @@ class LightShowStudioPlayerCard extends HTMLElement {
   _applyVisibility() {
     const r = this.shadowRoot;
     if (!r || !this._built) return;
-    const upload = this._upload_only(), playerOnly = this._config.mode === "player", admin = this._isAdmin();
+    const upload = this._upload_only(), library = this._config.mode === "library", playerOnly = this._config.mode === "player" || library,
+      admin = this._isAdmin();
     const noPlayer = !upload && !this._entityId() && !this._state;
     r.querySelector(".playpart").hidden = upload || noPlayer;
     r.querySelector(".setup").hidden = upload || !noPlayer;
+    r.querySelector(".np").hidden = library;
+    r.querySelector(".sec").hidden = library;
     r.querySelector(".addpart").hidden = playerOnly || !admin;
     r.querySelector(".noadmin").hidden = playerOnly || admin;
     r.querySelector(".uploads").hidden = playerOnly || !admin;
@@ -948,7 +952,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
         <div class="addpart drop">
           ${icon("upload", 28)}
           <div class="big">${touch ? "Tap to add shows (.fseq + song)" : "Drop .fseq and song files here"}</div>
-          <div class="small">Same name = one show, e.g. Thriller.fseq + Thriller.m4a</div>
+          <div class="small">Same name = one show, e.g. My Show.fseq + My Show.m4a</div>
           <button class="add" aria-label="Add files">${icon("upload", 18)} Add files</button>
           <input type="file" multiple accept=".fseq,audio/*" hidden>
         </div>
@@ -958,7 +962,8 @@ class LightShowStudioPlayerCard extends HTMLElement {
       </ha-card>`;
     const r = this.shadowRoot;
     r.querySelector(".title").textContent =
-      this._config.title || (this._upload_only() ? "Add shows" : "Light shows");
+      this._config.title ?? (this._upload_only() ? "Add shows" : "Light shows");
+    r.querySelector(".head").hidden = this._config.title === ""; // the app puts its own heading above
     r.querySelector(".pp").onclick = () => this._playPause();
     r.querySelector(".stop").onclick = () => this._service("media_stop");
     r.querySelector(".prev").onclick = () => this._service("media_previous_track");

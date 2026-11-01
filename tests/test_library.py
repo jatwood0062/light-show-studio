@@ -61,19 +61,19 @@ def test_scan_empty_creates_root(lib):
 def test_scan_folders_and_loose_files(lib):
     put(lib, "Carol/Carol.fseq", fseq_bytes(100, 50))
     put(lib, "Carol/song.mp3", b"abc")
-    put(lib, "Thriller.fseq", fseq_bytes(200, 25))
-    put(lib, "Thriller.m4a", b"12345")
+    put(lib, "My Show.fseq", fseq_bytes(200, 25))
+    put(lib, "My Show.m4a", b"12345")
     put(lib, "NoAudio/a.fseq", fseq_bytes())
     put(lib, "Empty/readme.txt")
     put(lib, "Lonely.mp3")  # a song with no sequence is not a show
     shows = {s.id: s for s in lib.scan()}
-    assert set(shows) == {"Carol", "Thriller", "NoAudio"}
+    assert set(shows) == {"Carol", "My Show", "NoAudio"}
     carol = shows["Carol"]
     assert carol.name == "Carol" and carol.audio.endswith("song.mp3")
     assert carol.frames == 100 and carol.duration == pytest.approx(5.0)
     assert carol.size == os.path.getsize(carol.fseq) + 3
-    assert shows["Thriller"].audio.endswith("Thriller.m4a")
-    assert shows["Thriller"].duration == pytest.approx(5.0)
+    assert shows["My Show"].audio.endswith("My Show.m4a")
+    assert shows["My Show"].duration == pytest.approx(5.0)
     assert shows["NoAudio"].audio is None
 
 
@@ -158,13 +158,13 @@ def test_sanitize_rejects(raw):
 
 
 def test_save_upload_groups_into_show_folder(lib):
-    assert lib.save_upload("Thriller.fseq", io.BytesIO(fseq_bytes(80))) == "Thriller"
-    assert lib.save_upload("Thriller.MP3", io.BytesIO(b"song")) == "Thriller"
+    assert lib.save_upload("My Show.fseq", io.BytesIO(fseq_bytes(80))) == "My Show"
+    assert lib.save_upload("My Show.MP3", io.BytesIO(b"song")) == "My Show"
     (show,) = lib.scan()
-    assert show.id == "Thriller" and show.frames == 80 and show.audio.endswith("Thriller.mp3")
+    assert show.id == "My Show" and show.frames == 80 and show.audio.endswith("My Show.mp3")
     # a different song replaces the old one instead of piling up
-    lib.save_upload("other.m4a", io.BytesIO(b"new"), show="Thriller")
-    assert sorted(os.listdir(os.path.join(lib.root, "Thriller"))) == ["Thriller.fseq", "other.m4a"]
+    lib.save_upload("other.m4a", io.BytesIO(b"new"), show="My Show")
+    assert sorted(os.listdir(os.path.join(lib.root, "My Show"))) == ["My Show.fseq", "other.m4a"]
     assert not os.listdir(os.path.join(lib.root, ".uploading"))
 
 

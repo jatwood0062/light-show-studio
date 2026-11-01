@@ -4,6 +4,17 @@ Changes to Light Show Studio, newest first.
 
 ## [2.0.0] - 2026-11-01
 
+### Changed
+- The Light Shows app now has five tabs: Play, Library, Schedule (placeholder), Lights and Studio. Shows
+  are added in a collapsible section of the Library; the Add shows and Setup tabs are gone, replaced by a
+  dismissible first-run banner. The Lights tab is just the strands list (live views are in Studio).
+- The player's options keep only the light delay and the pause between shows; speakers and the
+  between-shows look are set in the app. An old single `speaker` option is migrated to `speakers`.
+- One update rule for config entries: only changes that were applied in place (speakers, transition,
+  a light's device id) skip the reload.
+- `play_sequence` shares one sequence player and enables every light type (Govee, Twinkly, WLED).
+- Wording no longer assumes Govee lights; removed the stale build specs from docs.
+
 ### Added
 - 25 new effects: Vintage Pastel, Retro Christmas, Icy Blue & White, Gold & White, Red/Green/White, Rainbow Bands,
   Ombre, Snowy (still); Rainbow Twinkle, Vintage Twinkle, Christmas Twinkle, Sparkle, Starfield, Snowfall, Icicle Drip,

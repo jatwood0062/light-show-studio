@@ -66,7 +66,7 @@ again, or play a show from the Light Shows app, to hand control back.
 ### A show doesn't appear
 
 - The `.fseq` must be in `/media/xlights/`, or in a folder inside it.
-- Name the song the same as the `.fseq`, like `Thriller.fseq` and `Thriller.m4a`. Songs can be
+- Name the song the same as the `.fseq`, like `My Show.fseq` and `My Show.m4a`. Songs can be
   `.mp3`, `.m4a`, `.aac`, `.wav`, `.ogg` or `.flac`.
 - Refresh the Light Shows page after copying files in.
 

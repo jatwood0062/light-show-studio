@@ -18,7 +18,7 @@ play_sequence:
   fields:
     file:
       required: true
-      example: halloween.fseq
+      example: My Show.fseq
       selector:
         text:
     loop:

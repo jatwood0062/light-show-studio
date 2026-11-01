@@ -22,7 +22,6 @@ from .const import (
     CONF_DEVICE_ID,
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
-    CONF_SPEAKER,
     CONF_SPEAKERS,
     CONF_START_PIXEL,
     CONF_TRANSITION,
@@ -30,17 +29,17 @@ from .const import (
     CONF_TYPE,
     DEFAULT_BULBS,
     DOMAIN,
-    PLAYER,
+    SEQUENCER_KEY,
     TYPE_PLAYER,
     TYPE_TWINKLY,
     TYPE_WLED,
 )
-from .controller import C9Controller
+from .controller import C9Controller, enable_shows
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
 from .health import HealthMonitor
 from .library import SHOW_PLAYER_KEY
-from .outputs import configured_speakers
+from .outputs import normalize_speakers
 from .playback import SequencePlayer
 from . import upload, websocket, ws_shows
 from .receiver import PixelReceiver
@@ -78,7 +77,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         hass, frontend_url_path="light-shows", webcomponent_name=PANEL, sidebar_title="Light Shows",
         sidebar_icon="mdi:string-lights", module_url=f"{FRONTEND_URL}/{PANEL}.js?v={integration.version}",
         require_admin=False)
-    hass.data.setdefault(DOMAIN, PixelReceiver())  # before any entry, so the show player can use it
+    receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver())  # before any entry, so the show player can use it
+    # the one SequencePlayer: play_sequence, stop_sequence and the show player all drive this one
+    sequencer = hass.data[SEQUENCER_KEY] = SequencePlayer(
+        receiver.show, lambda coro: hass.async_create_background_task(coro, "light_show_studio sequence"))
     websocket.async_register(hass)
     ws_shows.async_register(hass)
     upload.async_register(hass)
@@ -87,31 +89,21 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: health.stop())
 
     async def play(call: ServiceCall) -> None:
-        receiver: PixelReceiver | None = hass.data.get(DOMAIN)
-        if receiver is None:
-            raise ServiceValidationError("No lights are set up")
         path = await hass.async_add_executor_job(_resolve, hass, call.data["file"])
         try:
             seq: FseqFile = await hass.async_add_executor_job(load, path)
         except (FseqError, OSError) as err:
             raise HomeAssistantError(f"Can't play {path}: {err}") from err
 
-        player: SequencePlayer | None = hass.data.get(PLAYER)
-        if player is None:
-            player = hass.data[PLAYER] = SequencePlayer(
-                receiver.show, lambda coro: hass.async_create_background_task(coro, "light_show_studio sequence"))
-        for entry in hass.config_entries.async_loaded_entries(DOMAIN):
-            if isinstance(getattr(entry, "runtime_data", None), C9Controller):
-                entry.runtime_data.enable_show()
+        enable_shows(hass)
         speaker, audio = call.data.get("media_player"), call.data.get("audio")
         if speaker and audio:
-            await play_with_speaker(hass, player, seq, speaker, audio, call.data["audio_offset"])
+            await play_with_speaker(hass, sequencer, seq, speaker, audio, call.data["audio_offset"])
         else:
-            player.play(seq, call.data["loop"], delay=call.data["audio_offset"])
+            sequencer.play(seq, call.data["loop"], delay=call.data["audio_offset"])
 
     async def stop(call: ServiceCall) -> None:
-        if player := hass.data.get(PLAYER):
-            player.stop()
+        sequencer.stop()
         if shows := hass.data.get(SHOW_PLAYER_KEY):
             await shows.async_stop()
 
@@ -136,6 +128,23 @@ def _resolve(hass: HomeAssistant, name: str) -> str:
     raise ServiceValidationError(f"{name} not found in {', '.join(dirs)}")
 
 
+_LEGACY_SPEAKER = "speaker"  # before version 1.2 the player had one speaker
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """1.1 -> 1.2: the player's single `speaker` became the `speakers` list."""
+    if entry.version > 1:
+        return False
+    if entry.minor_version < 2:
+        data, options = dict(entry.data), dict(entry.options)
+        old = data.pop(_LEGACY_SPEAKER, None)
+        old = options.pop(_LEGACY_SPEAKER, old)
+        if old and CONF_SPEAKERS not in options:
+            options[CONF_SPEAKERS] = normalize_speakers(old)
+        hass.config_entries.async_update_entry(entry, data=data, options=options, minor_version=2)
+    return True
+
+
 def _opt(entry: ConfigEntry, key: str, default):
     return entry.options.get(key, entry.data.get(key, default))
 
@@ -144,7 +153,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
     if entry.data.get(CONF_TYPE) == TYPE_PLAYER:
         await async_setup_player(hass, entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLAYER_PLATFORMS)
-        entry.async_on_unload(entry.add_update_listener(_player_listener(entry)))
+        entry.async_on_unload(entry.add_update_listener(_reload_on_change(entry)))
         return True
     bulbs = _opt(entry, CONF_BULBS, DEFAULT_BULBS)
     if entry.data.get(CONF_TYPE) == TYPE_TWINKLY:
@@ -173,40 +182,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
     return True
 
 
-def _snapshot(entry: ConfigEntry) -> tuple:
-    return ({k: v for k, v in entry.data.items() if k != CONF_DEVICE_ID}, dict(entry.options), entry.title)
+# Changes the entry can make without a reload: a light's device id being filled in, and the player's
+# speakers / transition, which the websocket commands have already applied to the running player.
+_IN_PLACE_DATA = (CONF_DEVICE_ID,)
+_IN_PLACE_OPTIONS = (CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT)
 
 
 def _reload_on_change(entry: ConfigEntry):
-    """Update listener that reloads, except when only the remembered device id was filled in."""
-    last = _snapshot(entry)
+    """Update listener: reload when anything but the in-place settings changed."""
+    def snapshot(e: ConfigEntry) -> tuple:
+        return ({k: v for k, v in e.data.items() if k not in _IN_PLACE_DATA},
+                {k: v for k, v in e.options.items() if k not in _IN_PLACE_OPTIONS}, e.title)
+
+    last = snapshot(entry)
 
     async def listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
         nonlocal last
-        if (now := _snapshot(entry)) != last:
+        if (now := snapshot(entry)) != last:
             last = now
             await _reload(hass, entry)
-
-    return listener
-
-
-def _player_listener(entry: ConfigEntry):
-    """Update listener for the player: a changed between-shows transition or speaker list is applied
-    to the running player in place (a reload would stop the show); any other change reloads."""
-    def snap(e: ConfigEntry) -> tuple:
-        skip = (CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_SPEAKER, CONF_SPEAKERS)
-        return (dict(e.data), {k: v for k, v in e.options.items() if k not in skip}, e.title)
-
-    last = snap(entry)
-
-    async def listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-        nonlocal last
-        if (now := snap(entry)) != last:
-            last = now
-            await _reload(hass, entry)
-        elif (player := hass.data.get(SHOW_PLAYER_KEY)) is not None:
-            player.set_transition(_opt(entry, CONF_TRANSITION, None), _opt(entry, CONF_TRANSITION_EFFECT, None))
-            player.set_speakers(configured_speakers({k: _opt(entry, k, None) for k in (CONF_SPEAKERS, CONF_SPEAKER)}))
 
     return listener
 

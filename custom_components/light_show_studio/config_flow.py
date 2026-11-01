@@ -20,10 +20,7 @@ from .const import (
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
     CONF_SKU,
-    CONF_SPEAKERS,
     CONF_START_PIXEL,
-    CONF_TRANSITION,
-    CONF_TRANSITION_EFFECT,
     CONF_TYPE,
     DEFAULT_BULBS,
     DOMAIN,
@@ -31,10 +28,7 @@ from .const import (
     TYPE_TWINKLY,
     TYPE_WLED,
 )
-from .effects import EFFECT_LIST
-from .outputs import configured_speakers
 from .protocol import async_scan
-from .transitions import DEFAULT_TRANSITION, MODES, default_effect
 from .twinkly import async_discover, async_gestalt
 from .wled import async_info, format_mac
 
@@ -50,10 +44,10 @@ def _model(sku: str):
     return lookup(sku) if sku else None
 
 
-def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, name: str = "Twinkly") -> vol.Schema:
+def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, name: str = "Light") -> vol.Schema:
     fields: dict = {}
     if with_name:
-        fields[vol.Required(CONF_NAME, default=cur.get(CONF_NAME, name if twinkly else "Govee lights"))] = str
+        fields[vol.Required(CONF_NAME, default=cur.get(CONF_NAME, name))] = str
     fields[vol.Required(CONF_BULBS, default=cur.get(CONF_BULBS, DEFAULT_BULBS))] = vol.All(
         int, vol.Range(min=1, max=1020 if twinkly else 255))
     if not twinkly:
@@ -64,22 +58,16 @@ def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, n
 
 
 def _player_schema(cur: dict[str, Any]) -> vol.Schema:
+    """Speakers and the between-shows look are chosen in the app; only the timing lives here."""
     return vol.Schema({
-        vol.Optional(CONF_SPEAKERS, description={"suggested_value": configured_speakers(cur)}):
-            selector.EntitySelector(selector.EntitySelectorConfig(domain="media_player", multiple=True)),
         vol.Required(CONF_AUDIO_OFFSET, default=cur.get(CONF_AUDIO_OFFSET, 0.0)): vol.Coerce(float),
         vol.Required(CONF_GAP, default=cur.get(CONF_GAP, 3.0)): vol.All(vol.Coerce(float), vol.Range(min=0, max=120)),
-        vol.Required(CONF_TRANSITION, default=cur.get(CONF_TRANSITION, DEFAULT_TRANSITION)):
-            selector.SelectSelector(selector.SelectSelectorConfig(
-                options=list(MODES), mode=selector.SelectSelectorMode.DROPDOWN, translation_key="transition")),
-        vol.Required(CONF_TRANSITION_EFFECT, default=cur.get(CONF_TRANSITION_EFFECT, default_effect(EFFECT_LIST))):
-            selector.SelectSelector(selector.SelectSelectorConfig(
-                options=EFFECT_LIST, mode=selector.SelectSelectorMode.DROPDOWN)),
     })
 
 
 class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
+    MINOR_VERSION = 2  # 1.2: the player keeps a `speakers` list instead of one `speaker`
 
     def __init__(self) -> None:
         self._found: dict[str, dict] = {}
@@ -105,7 +93,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
             return await self._start_light(host, found.get("sku", ""), found.get("device", ""))
         known = {e.data.get(CONF_HOST) for e in self._async_current_entries()}
         self._found = {ip: d for ip, d in (await async_scan() or {}).items() if ip not in known}
-        options = [selector.SelectOptionDict(value=ip, label=f"{d['sku'] or 'Govee light'} at {ip}")
+        options = [selector.SelectOptionDict(value=ip, label=f"{d['sku'] or 'Light'} at {ip}")
                    for ip, d in sorted(self._found.items())]
         options.append(selector.SelectOptionDict(value=MANUAL, label="Enter an IP address"))
         if len(options) == 1:
@@ -142,7 +130,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         else:  # typed IP: assume a string
             segmented, bulbs = True, DEFAULT_BULBS
         self._defaults = {
-            CONF_NAME: model.name if model else (f"Govee {sku}" if sku else "Govee lights"),
+            CONF_NAME: model.name if model else (sku or "Light"),
             CONF_BULBS: bulbs,
             CONF_SEGMENTED: segmented,
             CONF_BULB_ENTITIES: segmented,
@@ -321,7 +309,8 @@ class C9OptionsFlow(OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         player = self.config_entry.data.get(CONF_TYPE) == TYPE_PLAYER
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            # the app manages the speakers and transition: keep them
+            return self.async_create_entry(data={**self.config_entry.options, **user_input} if player else user_input)
         cur = {**self.config_entry.data, **self.config_entry.options}
         twinkly = self.config_entry.data.get(CONF_TYPE) in (TYPE_TWINKLY, TYPE_WLED)
         schema = _player_schema(cur) if player else _light_schema(cur, False, twinkly)

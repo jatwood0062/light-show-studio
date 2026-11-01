@@ -1,7 +1,7 @@
 """Choosing which speaker leads and which others can play in sync with it (pure, no Home Assistant)."""
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,13 +27,6 @@ def normalize_speakers(value: Any) -> list[str]:
         if isinstance(item, str) and (item := item.strip()) and item not in out:
             out.append(item)
     return out
-
-
-def configured_speakers(options: Mapping[str, Any]) -> list[str]:
-    """`speakers` if set (even to an empty list = lights only), else the old single `speaker`."""
-    if options.get("speakers") is not None:
-        return normalize_speakers(options["speakers"])
-    return normalize_speakers(options.get("speaker") or [])
 
 
 def plan_outputs(speakers: Sequence[SpeakerInfo]) -> Outputs:

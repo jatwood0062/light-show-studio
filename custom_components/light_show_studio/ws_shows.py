@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import CONF_SPEAKER, CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_TYPE, DOMAIN, TYPE_PLAYER
+from .const import CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_TYPE, DOMAIN, TYPE_PLAYER
 from .effects import EFFECT_LIST
 from .library import SHOW_PLAYER_KEY, Show, library_for
 from .outputs import normalize_speakers
@@ -137,7 +137,7 @@ async def ws_set_transition(hass: HomeAssistant, connection: websocket_api.Activ
     if "transition_effect" in msg:
         options[CONF_TRANSITION_EFFECT] = msg["transition_effect"]
     # applied to the running player first, so a playing show is never interrupted; the entry's
-    # update listener sees that only the transition changed and does not reload
+    # update listener ignores these keys (see _IN_PLACE_OPTIONS) and does not reload
     player.set_transition(options[CONF_TRANSITION], options.get(CONF_TRANSITION_EFFECT))
     hass.config_entries.async_update_entry(entry, options=options)
     connection.send_result(msg["id"], {})
@@ -161,9 +161,7 @@ async def ws_set_speakers(hass: HomeAssistant, connection: websocket_api.ActiveC
         connection.send_error(msg["id"], "invalid_format", f"Not a speaker: {', '.join(bad)}")
         return
     # applied to the running player first (a show in progress keeps its speakers until the next show);
-    # the entry's update listener sees that only the speakers changed and does not reload
+    # the entry's update listener ignores this key (see _IN_PLACE_OPTIONS) and does not reload
     applies = player.set_speakers(speakers)
-    options = {k: v for k, v in entry.options.items() if k != CONF_SPEAKER}
-    options[CONF_SPEAKERS] = speakers
-    hass.config_entries.async_update_entry(entry, options=options)
+    hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_SPEAKERS: speakers})
     connection.send_result(msg["id"], {"applies": applies})

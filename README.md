@@ -25,49 +25,44 @@ Everything stays on your LAN (Govee LAN API on UDP 4003, and Twinkly's local API
    - **Add a Govee light**: lights on your network are listed (or type the IP). Repeat per light.
    - **Add a Twinkly light**: see [Twinkly lights](#twinkly-lights).
    - **Add the Light Show Player**: pick the speakers for the music (optional).
-3. **Add a show**: open **Light Shows** in the sidebar → **Add shows** → drop in your `.fseq`
-   and its song → **Play**. New users land on **Setup** until everything is ready.
+3. **Add a show**: open **Light Shows** in the sidebar → **Library** → **Add shows** → drop in your `.fseq`
+   and its song → **Play**. A banner guides you until everything is ready.
 
 ## Light Shows app
 
-Open **Light Shows** in the sidebar. It has four tabs:
+Open **Light Shows** in the sidebar. A banner at the top lists anything still missing (lights,
+the Light Show Player, shows) with a button for each; dismiss it once you're set. It has five tabs:
 
-- **Play**: what's playing now, play/pause, next/previous, seek, shuffle and repeat, and the
-  show list. Shows play with their song, or pick **No music** to run the lights alone.
-  **Light delay** (player options) shifts the lights if the speaker lags.
+- **Play**: what's playing now, play/pause, next/previous, seek, shuffle and repeat, the audio
+  output, the between-shows look and the queue. Shows play with their song, or pick **No music**
+  to run the lights alone. **Light delay** (player options) shifts the lights if the speaker lags.
+- **Library**: your shows, with play, reorder and delete, and a collapsible **Add shows** section to
+  upload the `.fseq` and its song. Playlists will appear here.
+- **Schedule**: coming next (run playlists on a schedule).
+- **Lights**: the strands list, one row per light: status (online, offline, or checking), name,
+  model, IP address, and the pixels and channels it uses. **Identify** flashes the light so you can
+  find it. Two strands with overlapping pixels show a warning. Tap a row to open it in Studio.
+  **Add a light** is in the header. **Copy** gives the setup text for xLights / EZPlayer.
+- **Studio**: pick one light for a large live view, power, brightness, colour and effect controls
+  (holiday patterns, **Follow the show**), a status line showing whether it follows the show, and
+  (for admins) its name, IP address, start pixel and bulb count with the pixel and xLights channel
+  range shown as you type, plus **Remove light**. Link straight to a light with
+  `/light-shows?studio=<entity_id>`.
 
 ### Audio output
 
-Pick one or several speakers in the player options, or live with the **Output** button on the
-player card (it also sets each speaker's volume). The first speaker leads and the lights follow its
-position. When you pick more, the others are grouped with the leader before a show and ungrouped
-when the queue ends or you stop; this works for speakers of the same kind that support grouping
-(e.g. Sonos with Sonos, Music Assistant with Music Assistant). Others can't play in sync, so they are
-skipped and marked in the picker. If the leader is unavailable, the next speaker leads. Changes made
-during a show apply from the next show. No speakers means lights only.
-- **Lights**: a live view of each string, updated during effects and shows. Pick a colour and
-  tap or drag across bulbs to paint them. **Paint all** paints the whole string,
-  **Holiday patterns…** fills it (Christmas, Valentine's, St. Patrick's, Easter, July 4th,
-  Halloween, Thanksgiving, Hanukkah, …), **off** turns bulbs off, and **Let the show control it**
-  hands the string back to the sequencer.
-- **Add shows**: a guide, plus upload for the `.fseq` and the song.
-- **Setup**: a checklist (lights added, Light Show Player set up, shows added) with a button
-  for each step.
-
-**Strands** are listed at the top of the Lights tab, one row per light. Each row shows its
-status (online, offline, or checking), name, model, IP address, and the pixels and channels it
-uses. **Identify** flashes the light so you can find it. Admins can **Edit** the name, start
-pixel or bulb count. Two strands with overlapping pixels show a warning. **Copy** in the footer
-gives the setup text for xLights.
+Pick one or several speakers with the **Output** button on the Play tab (it also sets each
+speaker's volume). The first speaker leads and the lights follow its position. When you pick more,
+the others are grouped with the leader before a show and ungrouped when the queue ends or you
+stop; this works for speakers of the same kind that support grouping (e.g. Sonos with Sonos, Music
+Assistant with Music Assistant). Others can't play in sync, so they are skipped and marked in the
+picker. If the leader is unavailable, the next speaker leads. Changes made during a show apply from
+the next show. No speakers means lights only. The player's options hold only the light delay and
+the pause between shows.
 
 ## Twinkly lights
 
-**Studio tab.** Pick one light (or tap its row or card title in the Lights tab) for a large live view,
-power, brightness, colour and effect controls, a status line showing whether it follows the show, and
-(for admins) its name, IP address, start pixel and bulb count with the pixel and xLights channel range
-shown as you type. Link straight to a light with `/light-shows?studio=<entity_id>`.
-
-Twinkly strings are added the same way as Govee lights, and show live in the Lights tab.
+Twinkly strings are added the same way as Govee lights, and show live in the Studio tab.
 
 1. Go to Settings → Devices & services → Light Show Studio → **Add entry** → **Add a Twinkly light**.
 2. Pick the light from the list, or type its IP address.
@@ -79,7 +74,7 @@ Twinkly strings are added the same way as Govee lights, and show live in the Lig
 
 ## WLED lights
 
-WLED strips are added the same way, and show live in the Lights tab. Frames go out over DDP (UDP 4048).
+WLED strips are added the same way, and show live in the Studio tab. Frames go out over DDP (UDP 4048).
 
 1. Go to Settings → Devices & services → Light Show Studio → **Add entry** → **Add a WLED light**.
 2. Pick the light from the list of WLED devices Home Assistant already knows, or type its IP address.
@@ -90,8 +85,8 @@ WLED strips are added the same way, and show live in the Lights tab. Frames go o
 ## Adding shows
 
 1. In xLights, save/render your sequence; the `.fseq` is next to the `.xsq` in your show folder.
-2. Upload the `.fseq` and the song in **Add shows** (same name, e.g. `Thriller.fseq` +
-   `Thriller.m4a`). Files go to `/media/xlights/`; a folder per show (`/media/xlights/Thriller/`)
+2. Upload the `.fseq` and the song in **Add shows** (same name, e.g. `My Show.fseq` +
+   `My Show.m4a`). Files go to `/media/xlights/`; a folder per show (`/media/xlights/My Show/`)
    works too if you copy files in yourself.
 3. Press Play. Reorder with the arrows; shuffle and repeat are in the app or the media player.
 
@@ -139,7 +134,7 @@ the controls on a dashboard, and they appear in the card picker after a restart.
 
 - **Govee C9 string** (`custom:light-show-studio-card`): shows every bulb live, including during
   effects and shows. Pick a colour and tap or drag to paint bulbs. **Paint all**, **Holiday
-  patterns…**, **off** and **Let the show control it** work as in the Lights tab.
+  patterns…**, **off** and **Let the show control it** work as in the Studio tab.
 - **Light Show Player** (`custom:light-show-studio-player-card`): the Play tab on a dashboard.
   Drop the `.fseq` and the song onto it, and press Play.
 
@@ -191,7 +186,7 @@ to a different song.
 
 `audio` works with Music Assistant players: a library or provider URI such as
 `library://track/123` or `spotify://track/…`, a URL, or a `media-source://` ID such as
-`media-source://media_source/local/xlights/halloween.mp3`. If a player never reports a position,
+`media-source://media_source/local/xlights/My Show/My Show.m4a`. If a player never reports a position,
 the lights just start when it reports *playing*. Use `audio_offset` only to fine-tune: if the
 lights are ahead of what you hear, try `0.1`–`0.3`.
 
@@ -199,7 +194,7 @@ lights are ahead of what you hear, try `0.1`–`0.3`.
 
 ```yaml
 automation:
-  - alias: Halloween show
+  - alias: My Show
     triggers:
       - trigger: time
         at: "19:00:00"
@@ -209,7 +204,7 @@ automation:
     actions:
       - action: light_show_studio.play_sequence
         data:
-          file: halloween.fseq
+          file: My Show.fseq
           media_player: media_player.porch_sonos
           audio: library://track/123  # the song in Music Assistant
           audio_offset: 0.15
