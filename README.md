@@ -34,8 +34,11 @@ the first string is pixels 1–50, a second one defaults to 51–100, and so on.
 
 Light-O-Rama S6: add E1.31 universe 1 (510 channels covers three strings), unicast to the Home Assistant IP.
 
-While frames arrive the string follows the sequencer; normal Home Assistant control takes
-over again when you pick a colour or effect.
+**Show or effects:** the string's effect list starts with **Light show**. In that mode it
+follows xLights / EZPlayer / `play_sequence`. Pick a colour or any other effect and it ignores
+the sequencer until you pick **Light show** again (`play_sequence` switches it back by itself).
+The brightness slider dims shows too, and the string's own dimmer is set to 100 % so a low
+setting left in the Govee app can't dim them.
 
 ## Playing a sequence without xLights
 

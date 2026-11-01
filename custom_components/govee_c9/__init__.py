@@ -48,6 +48,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         if player is None:
             player = hass.data[PLAYER] = SequencePlayer(
                 receiver.show, lambda coro: hass.async_create_background_task(coro, "govee_c9 sequence"))
+        for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            entry.runtime_data.enable_show()
         speaker, audio = call.data.get("media_player"), call.data.get("audio")
         if speaker and audio:
             await play_with_speaker(hass, player, seq, speaker, audio, call.data["audio_offset"])

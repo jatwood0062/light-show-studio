@@ -21,7 +21,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import C9ConfigEntry
 from .const import CONF_BULB_ENTITIES, DOMAIN
-from .controller import C9Controller
+from .controller import SHOW, C9Controller
 from .effects import EFFECT_LIST
 from .protocol import Colour
 
@@ -76,7 +76,7 @@ class _Base(LightEntity):
 class C9StringLight(_Base):
     _attr_name = None
     _attr_supported_features = LightEntityFeature.EFFECT
-    _attr_effect_list = EFFECT_LIST
+    _attr_effect_list = [SHOW, *EFFECT_LIST]
 
     def __init__(self, ctl, entry, device) -> None:
         super().__init__(ctl, device)
@@ -96,7 +96,7 @@ class C9StringLight(_Base):
 
     @property
     def effect(self) -> str | None:
-        return self.ctl.effect
+        return SHOW if self.ctl.show_mode else self.ctl.effect
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

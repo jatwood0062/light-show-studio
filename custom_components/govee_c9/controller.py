@@ -9,7 +9,9 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import EXTERNAL_MAX_FPS, FLUSH_DELAY, FPS
 from .effects import ANIMATED, EFFECTS
-from .protocol import Colour, GoveeLan, colours_msg, realtime_msg, turn_msg
+from .protocol import Colour, GoveeLan, brightness_msg, colours_msg, realtime_msg, turn_msg
+
+SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive the string
 
 
 def _split(c: Colour) -> tuple[Colour, int]:
@@ -29,6 +31,7 @@ class C9Controller:
         self.brightness = 255
         self.colour: Colour = (255, 150, 40)
         self.effect: str | None = None
+        self.show_mode = True  # accept sequencer frames; picking a colour or effect turns it off
         self.custom = False  # True once single bulbs have been set
         self.bulb_colour: list[Colour] = [self.colour] * bulbs
         self.bulb_level: list[int] = [255] * bulbs
@@ -56,17 +59,18 @@ class C9Controller:
             return [tuple(v * lvl // 255 for v in c) for c, lvl in zip(self.bulb_colour, self.bulb_level)]
         return [self.colour] * self.bulbs
 
-    def _send_frame(self, frame: list[Colour], scale: bool = True) -> None:
+    def _send_frame(self, frame: list[Colour]) -> None:
         if not self._realtime:
+            self.lan.send(brightness_msg(100))  # the string's own dimmer would dim every frame
             self.lan.send(realtime_msg(True))
             self._realtime = True
-        f = self.brightness / 255 if scale else 1
+        f = self.brightness / 255
         self.lan.send(colours_msg([(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]))
 
     def _render(self) -> None:
         self._stop_animation()
-        if not self.is_on:
-            return
+        if not self.is_on or self.show_mode:
+            return  # in show mode the sequencer's frames are the picture
         if self.effect in ANIMATED:
             self._task = self.hass.async_create_background_task(self._animate(), "govee_c9 effect")
         else:
@@ -101,6 +105,7 @@ class C9Controller:
                 self.bulb_colour[i], self.bulb_level[i] = _split(c)
             self.custom = True
             self.effect = None
+            self.show_mode = False
 
     # --- whole-string commands ------------------------------------------
     async def async_turn_on(self, brightness: int | None = None, colour: Colour | None = None,
@@ -113,9 +118,11 @@ class C9Controller:
         if brightness is not None:
             self.brightness = brightness
         if colour is not None:
-            self.colour, self.effect, self.custom = colour, None, False
-        if effect is not None:
-            self.effect, self.custom = (effect if effect in EFFECTS else None), False
+            self.colour, self.effect, self.custom, self.show_mode = colour, None, False, False
+        if effect == SHOW:
+            self.enable_show()
+        elif effect is not None:
+            self.effect, self.custom, self.show_mode = (effect if effect in EFFECTS else None), False, False
         self._render()
         self._notify()
 
@@ -156,7 +163,16 @@ class C9Controller:
 
     # --- frames from a sequencer (xLights / Light-O-Rama) ----------------
     @callback
+    def enable_show(self) -> None:
+        self._stop_animation()
+        self.show_mode, self.effect, self.custom = True, None, False
+        self._ext_sent = 0.0
+        self._notify()
+
+    @callback
     def show_external(self, rgb: bytes) -> None:
+        if not self.show_mode:
+            return  # an effect or colour was picked; ignore the sequencer
         now = time.monotonic()
         if now - self._ext_sent < 0.8 / EXTERNAL_MAX_FPS:  # slack for jitter, or 25 ms shows lose every other frame
             return
@@ -169,7 +185,7 @@ class C9Controller:
             self.effect, self.custom = None, False
             self._notify()
         self._ext_sent = now
-        self._send_frame([tuple(rgb[i : i + 3]) for i in range(0, self.bulbs * 3, 3)], scale=False)
+        self._send_frame([tuple(rgb[i : i + 3]) for i in range(0, self.bulbs * 3, 3)])
 
     def shutdown(self) -> None:
         self._stop_animation()
