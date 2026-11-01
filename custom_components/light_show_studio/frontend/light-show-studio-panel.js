@@ -60,11 +60,13 @@ class LightShowStudioPanel extends HTMLElement {
 
   connectedCallback() {
     this._startPolling();
+    if (this._tab === "schedule") this._subscribeSchedule();
   }
 
   disconnectedCallback() {
     clearInterval(this._poll);
     this._poll = null;
+    this._unsubscribeSchedule();
   }
 
   set hass(hass) {
@@ -242,6 +244,81 @@ class LightShowStudioPanel extends HTMLElement {
         .narrow nav button[aria-selected=true] { color: var(--primary-color); box-shadow: inset 0 3px 0 var(--primary-color); }
         .narrow main { padding: 12px 12px calc(76px + env(safe-area-inset-bottom)); }
         .btn.rm { color: var(--error-color, #db4437); border-color: var(--error-color, #db4437); margin-left: auto; }
+        /* playlists + schedule */
+        .pl { border: 1px solid var(--divider-color); border-radius: 10px; margin-top: 10px; overflow: hidden; }
+        .plh { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 48px; padding: 6px 12px; text-align: left; }
+        .plh:hover { background: var(--secondary-background-color, rgba(127,127,127,.12)); }
+        .plh .pn { flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .plh .chev { flex: none; transition: transform .12s; color: var(--secondary-text-color); }
+        .plh[aria-expanded=true] .chev { transform: rotate(180deg); }
+        .ple { padding: 4px 12px 12px; border-top: 1px solid var(--divider-color); }
+        .ple h3, .sed h3 { font-size: 13px; font-weight: 500; margin: 14px 0 6px; color: var(--secondary-text-color); }
+        .row2 { display: flex; align-items: center; gap: 6px; min-height: 44px; border-bottom: 1px solid var(--divider-color); }
+        .row2:last-child { border-bottom: none; }
+        .row2 .rn { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .row2 .rn.gone { color: var(--secondary-text-color); font-style: italic; }
+        .ib2 { width: 40px; height: 40px; border-radius: 50%; flex: none; display: inline-flex; align-items: center; justify-content: center; }
+        .ib2:hover:not(:disabled) { background: var(--secondary-background-color, rgba(127,127,127,.15)); }
+        .ib2:disabled { opacity: .3; cursor: default; }
+        .inl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .inl input[type=text] { flex: 1 1 160px; min-width: 0; }
+        input[type=text], input[type=time], input[type=number], textarea { font: inherit; font-size: 14px; padding: 6px 8px; min-height: 40px;
+                 border: 1px solid var(--divider-color); border-radius: 8px; background: var(--card-background-color, #fff);
+                 color: var(--primary-text-color); max-width: 100%; min-width: 0; }
+        .btn.danger { color: var(--error-color, #db4437); border-color: var(--error-color, #db4437); }
+        .btn.warnb { background: var(--error-color, #db4437); }
+        .sbanner { display: flex; flex-direction: column; gap: 4px; }
+        .sbanner .l1 { font-weight: 500; overflow-wrap: anywhere; }
+        .sbanner .l2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 14px; }
+        .sbanner .stt { min-width: 0; overflow-wrap: anywhere; }
+        .sbanner .sdot { display: inline-block; margin-right: 2px; }
+        .sdot.run { background: var(--success-color, #43a047); }
+        .sdot.pause { background: var(--warning-color, #f4a100); }
+        .sc { padding: 12px 14px; }
+        .sc + .sc { margin-top: 12px; }
+        .sc.off .sbody { opacity: .55; }
+        .sc .top { display: flex; align-items: center; gap: 10px; }
+        .sc .top .sn { flex: 1; min-width: 0; font-weight: 500; font-size: 16px; overflow-wrap: anywhere; }
+        .tgl { position: relative; flex: none; width: 52px; height: 32px; border-radius: 16px; background: var(--disabled-text-color, #9e9e9e); }
+        .tgl::after { content: ""; position: absolute; top: 4px; left: 4px; width: 24px; height: 24px; border-radius: 50%; background: #fff; transition: transform .12s; }
+        .tgl[aria-checked=true] { background: var(--primary-color); }
+        .tgl[aria-checked=true]::after { transform: translateX(20px); }
+        .tgl:disabled { opacity: .5; cursor: default; }
+        .sbody { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+        .dd { display: flex; gap: 4px; flex-wrap: wrap; }
+        .dd span { width: 26px; height: 26px; border-radius: 50%; font-size: 12px; display: inline-flex; align-items: center; justify-content: center;
+                   border: 1px solid var(--divider-color); color: var(--secondary-text-color); }
+        .dd span.on { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+        .tag { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--secondary-background-color, rgba(127,127,127,.15)); }
+        .tag.run { background: var(--success-color, #43a047); color: #fff; }
+        .tag.pause { background: var(--warning-color, #f4a100); color: #000; }
+        .sacts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .sed { border-color: var(--primary-color); }
+        .sed form > * + * { margin-top: 14px; }
+        .fld { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--secondary-text-color); min-width: 0; }
+        .fld > span.lb, .sed h3.lb { font-size: 13px; font-weight: 500; color: var(--secondary-text-color); margin: 0; }
+        .fld input[type=text], .fld select { width: 100%; }
+        .seg { display: flex; border: 1px solid var(--divider-color); border-radius: 20px; overflow: hidden; }
+        .segb { flex: 1 1 0; min-height: 40px; padding: 4px 6px; font-size: 14px; border-right: 1px solid var(--divider-color); min-width: 0; }
+        .segb:last-child { border-right: none; }
+        .segb[aria-checked=true] { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+        .dsel { display: flex; gap: 6px; flex-wrap: wrap; }
+        .dsel button { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--divider-color); font-size: 14px; }
+        .dsel button[aria-pressed=true] { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
+        .edge-in { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+        .edge-in .note { font-size: 12px; color: var(--secondary-text-color); }
+        .chk { display: flex; align-items: center; gap: 10px; min-height: 40px; font-size: 14px; color: var(--primary-text-color); cursor: pointer; }
+        .chk input { width: 20px; height: 20px; flex: none; accent-color: var(--primary-color); margin: 0; }
+        .seas { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 8px; }
+        .seas .md { display: flex; align-items: center; gap: 6px; }
+        .seas select { min-width: 76px; }
+        .spk-l { max-height: 220px; overflow: auto; border: 1px solid var(--divider-color); border-radius: 8px; padding: 2px 10px; margin-top: 6px; }
+        .vrow { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+        .vrow input[type=range] { flex: 1; min-width: 0; height: 40px; accent-color: var(--primary-color); }
+        .vrow .bv { width: 3.2em; text-align: right; font-size: 14px; color: var(--primary-text-color); }
+        .sed .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+        .notice { font-size: 13px; color: var(--primary-text-color); }
+        details.spk > summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; font-size: 14px; color: var(--primary-text-color); }
       </style>
       <div class="root">
         <header>
@@ -263,17 +340,13 @@ class LightShowStudioPanel extends HTMLElement {
               </ol>
               <div class="ulcard"></div>
             </details>
-            <div class="box">
-              <h2>Playlists</h2>
-              <div class="muted">Coming next: build playlists from your shows.</div>
-            </div>
+            <div class="box pls" aria-label="Playlists"></div>
           </section>
           <section id="p-schedule" role="tabpanel">
-            <!-- the scheduler fills this section -->
-            <div class="box">
-              <h2>Schedule</h2>
-              <div class="muted">Coming next: run playlists on a schedule.</div>
-            </div>
+            <div class="box sbanner" role="status" aria-live="polite"></div>
+            <div class="lhead"><h2>Schedules</h2><button class="btn sm add-sched" type="button" hidden>Add schedule</button></div>
+            <div class="box sed" hidden></div>
+            <div class="slist"></div>
           </section>
           <section id="p-lights" role="tabpanel"></section>
           <section id="p-studio" role="tabpanel" class="st"></section>
@@ -317,6 +390,15 @@ class LightShowStudioPanel extends HTMLElement {
     this._noLights = q(".no-lights");
     this._addLight.onclick = q(".no-lights .btn").onclick = () => this._navigate(INTEGRATION_PATH);
     this._buildStudio();
+    this._plBox = root.querySelector(".pls");
+    this._schBanner = root.querySelector(".sbanner");
+    this._sed = root.querySelector(".sed");
+    this._schList = root.querySelector(".slist");
+    this._addSched = root.querySelector(".add-sched");
+    this._addSched.onclick = () => this._openEditor();
+    this._renderPlaylists();
+    this._renderSchedBanner();
+    this._renderSchedules();
   }
 
   // a card element that works whether or not its script has loaded yet
@@ -347,6 +429,11 @@ class LightShowStudioPanel extends HTMLElement {
     if (user) stored.set(id);
     if (id === "lights" || id === "studio") this._loadStrands();
     if (id === "studio") this._renderStudio();
+    if (id === "library") this._loadPlaylists();
+    if (id === "schedule") {
+      this._loadSchedules();
+      this._subscribeSchedule();
+    }
   }
 
   // --- strands list --------------------------------------------------------
@@ -356,6 +443,11 @@ class LightShowStudioPanel extends HTMLElement {
     this._poll = setInterval(() => {
       if (document.hidden) return;
       if (this._tab === "lights" || this._tab === "studio") this._loadStrands();
+      if (this._tab === "library") this._loadPlaylists();
+      if (this._tab === "schedule") {
+        if (!this._draft) this._loadSchedules();
+        this._subscribeSchedule();
+      }
     }, 15000);
   }
 
@@ -912,6 +1004,890 @@ class LightShowStudioPanel extends HTMLElement {
     if (s.entity_id) this._feed(this._studioCards.get(s.entity_id));
   }
 
+  // --- shared bits for playlists and schedules ----------------------------------
+  _btn(text, cls, onclick) {
+    const b = this._el("button", cls, text);
+    b.type = "button";
+    if (onclick) b.onclick = onclick;
+    return b;
+  }
+
+  _err(err, fallback) {
+    return (typeof err === "string" ? err : err?.message) || fallback;
+  }
+
+  _seg(options, value, label, onPick) {
+    const g = this._el("div", "seg");
+    g.setAttribute("role", "radiogroup");
+    g.setAttribute("aria-label", label);
+    for (const [v, t] of options) {
+      const b = this._btn(t, "segb", () => onPick(v));
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", String(v === value));
+      g.append(b);
+    }
+    return g;
+  }
+
+  _keepFocus(key) {
+    this._focusKey = key;
+  }
+
+  _restoreFocus() {
+    const key = this._focusKey;
+    this._focusKey = null;
+    if (!key) return;
+    const el = [...this._root.querySelectorAll("[data-fk]")].find((e) => e.dataset.fk === key && !e.disabled);
+    el?.focus?.();
+  }
+
+  _showName(id) {
+    return (this._plShows || []).find((s) => s.id === id)?.name || null;
+  }
+
+  // --- playlists (Library tab) ---------------------------------------------------
+  async _loadPlaylists() {
+    if (!this._hass) return;
+    if (this._plLoading) {
+      this._plAgain = true;
+      return;
+    }
+    this._plLoading = true;
+    do {
+      this._plAgain = false;
+      try {
+        const [p, s] = await Promise.all([
+          this._hass.callWS({ type: "light_show_studio/playlists/list" }),
+          this._hass.callWS({ type: "light_show_studio/shows/list" }),
+        ]);
+        this._pl = p.playlists || [];
+        this._plShows = s.shows || [];
+        this._plError = "";
+      } catch (err) {
+        this._plError = this._err(err, "Couldn't load the playlists.");
+        this._pl = this._pl || [];
+      }
+    } while (this._plAgain);
+    this._plLoading = false;
+    this._renderPlaylists();
+  }
+
+  _plChanged() {
+    window.dispatchEvent(new CustomEvent("light-show-studio-playlists-changed"));
+  }
+
+  async _plSave(p, patch, focusKey) {
+    const next = { ...p, ...patch };
+    const prev = { ...p };
+    Object.assign(p, patch); // optimistic
+    this._plError = "";
+    this._keepFocus(focusKey);
+    this._renderPlaylists();
+    try {
+      const r = await this._hass.callWS({
+        type: "light_show_studio/playlists/save", playlist_id: p.id, name: next.name, show_ids: next.show_ids,
+      });
+      Object.assign(p, r.playlist);
+      this._plChanged();
+    } catch (err) {
+      Object.assign(p, prev);
+      this._plError = this._err(err, "Couldn't save the playlist.");
+    }
+    this._keepFocus(focusKey);
+    this._renderPlaylists();
+  }
+
+  async _plCreate(name) {
+    name = name.trim();
+    if (!name) {
+      this._plError = "Give the playlist a name.";
+      return this._renderPlaylists();
+    }
+    try {
+      const r = await this._hass.callWS({ type: "light_show_studio/playlists/save", name, show_ids: [] });
+      this._pl.push(r.playlist);
+      this._plOpen = r.playlist.id;
+      this._plCreating = false;
+      this._plError = "";
+      this._plChanged();
+    } catch (err) {
+      this._plError = this._err(err, "Couldn't create the playlist.");
+    }
+    this._renderPlaylists();
+  }
+
+  async _plDelete(p) {
+    this._plConfirm = null;
+    try {
+      await this._hass.callWS({ type: "light_show_studio/playlists/delete", playlist_id: p.id });
+      this._pl = this._pl.filter((x) => x.id !== p.id);
+      if (this._plOpen === p.id) this._plOpen = null;
+      this._plError = "";
+      this._plChanged();
+    } catch (err) {
+      this._plError = this._err(err, "Couldn't delete the playlist.");
+    }
+    this._renderPlaylists();
+  }
+
+  _renderPlaylists() {
+    const box = this._plBox;
+    if (!box) return;
+    const admin = this._isAdmin();
+    box.textContent = "";
+    const head = this._el("div", "lhead");
+    head.append(this._el("h2", "", "Playlists"));
+    if (admin && this._pl) {
+      const nb = this._btn("New playlist", "btn alt sm", () => {
+        this._plCreating = true;
+        this._renderPlaylists();
+        this._root.querySelector(".pl-new input")?.focus();
+      });
+      head.append(nb);
+    }
+    box.append(head);
+    box.append(this._el("div", "muted", "A playlist is a named, ordered list of shows (Halloween, Christmas). Pick one on the Play tab or in a schedule."));
+    if (this._plError) box.append(this._el("div", "serr", this._plError));
+    if (!this._pl) {
+      box.append(this._el("div", "muted", "Loading playlists…"));
+      return;
+    }
+    if (this._plCreating && admin) {
+      const form = this._el("form", "inl pl-new");
+      form.style.marginTop = "10px";
+      const input = this._el("input");
+      input.type = "text";
+      input.maxLength = 60;
+      input.placeholder = "Playlist name, e.g. Halloween";
+      input.setAttribute("aria-label", "New playlist name");
+      form.append(input, this._btn("Create", "btn sm"), this._btn("Cancel", "btn alt sm", () => {
+        this._plCreating = false;
+        this._renderPlaylists();
+      }));
+      form.querySelector(".btn").type = "submit";
+      form.onsubmit = (e) => {
+        e.preventDefault();
+        this._plCreate(input.value);
+      };
+      box.append(form);
+    }
+    if (!this._pl.length && !this._plCreating) {
+      box.append(this._el("div", "muted", admin ? "No playlists yet. Tap New playlist to make one." : "No playlists yet."));
+    }
+    const list = this._el("div", "");
+    list.setAttribute("role", "list");
+    for (const p of this._pl) list.append(this._playlistCard(p, admin));
+    box.append(list);
+    this._restoreFocus();
+  }
+
+  _playlistCard(p, admin) {
+    const open = this._plOpen === p.id;
+    const card = this._el("div", "pl");
+    card.setAttribute("role", "listitem");
+    const h = this._el("button", "plh");
+    h.type = "button";
+    h.setAttribute("aria-expanded", String(open));
+    h.dataset.fk = `h-${p.id}`;
+    const n = p.show_ids.length;
+    h.append(this._el("span", "pn", p.name), this._el("span", "muted", `${n} show${n === 1 ? "" : "s"}`));
+    const chev = this._el("span", "chev");
+    chev.innerHTML = svg("M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z", 22);
+    h.append(chev);
+    h.onclick = () => {
+      this._plOpen = open ? null : p.id;
+      this._plConfirm = null;
+      this._renderPlaylists();
+    };
+    card.append(h);
+    if (!open) return card;
+    const ed = this._el("div", "ple");
+    if (admin) {
+      const f = this._el("form", "inl");
+      f.style.marginTop = "8px";
+      const input = this._el("input");
+      input.type = "text";
+      input.maxLength = 60;
+      input.value = p.name;
+      input.setAttribute("aria-label", "Playlist name");
+      const save = this._btn("Rename", "btn alt sm");
+      save.type = "submit";
+      f.append(input, save);
+      f.onsubmit = (e) => {
+        e.preventDefault();
+        const name = input.value.trim();
+        if (!name) {
+          this._plError = "Give the playlist a name.";
+          return this._renderPlaylists();
+        }
+        if (name !== p.name) this._plSave(p, { name }, `h-${p.id}`);
+      };
+      ed.append(f);
+    }
+    ed.append(this._el("h3", "", "In this playlist (plays in this order)"));
+    if (!p.show_ids.length) ed.append(this._el("div", "muted", admin ? "Empty. Add shows below." : "Empty."));
+    p.show_ids.forEach((id, i) => {
+      const row = this._el("div", "row2");
+      const name = this._showName(id);
+      row.append(this._el("span", "rn" + (name ? "" : " gone"), name || `${id} (missing from the library)`));
+      if (admin) {
+        const mk = (label, path, dis, fn, fk) => {
+          const b = this._el("button", "ib2");
+          b.type = "button";
+          b.innerHTML = svg(path, 22);
+          b.title = label;
+          b.setAttribute("aria-label", `${label}: ${name || id}`);
+          b.disabled = dis;
+          b.dataset.fk = fk;
+          b.onclick = fn;
+          return b;
+        };
+        const swap = (j) => {
+          const ids = [...p.show_ids];
+          [ids[i], ids[j]] = [ids[j], ids[i]];
+          this._plSave(p, { show_ids: ids }, `${j < i ? "up" : "dn"}-${p.id}-${j}`);
+        };
+        row.append(
+          mk("Move up", "M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z", i === 0, () => swap(i - 1), `up-${p.id}-${i}`),
+          mk("Move down", "M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z", i === p.show_ids.length - 1, () => swap(i + 1), `dn-${p.id}-${i}`),
+          mk("Remove", "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z", false,
+            () => this._plSave(p, { show_ids: p.show_ids.filter((x) => x !== id) }, `h-${p.id}`), `rm-${p.id}-${i}`)
+        );
+      }
+      ed.append(row);
+    });
+    if (admin) {
+      const rest = (this._plShows || []).filter((s) => !p.show_ids.includes(s.id));
+      ed.append(this._el("h3", "", "Add shows"));
+      if (!this._plShows?.length) ed.append(this._el("div", "muted", "No shows in the library yet."));
+      else if (!rest.length) ed.append(this._el("div", "muted", "Every show is already in this playlist."));
+      for (const s of rest) {
+        const row = this._el("div", "row2");
+        row.append(this._el("span", "rn", s.name));
+        const add = this._btn("Add", "btn alt sm", () => this._plSave(p, { show_ids: [...p.show_ids, s.id] }, `ad-${p.id}-${s.id}`));
+        add.setAttribute("aria-label", `Add ${s.name}`);
+        add.dataset.fk = `ad-${p.id}-${s.id}`;
+        row.append(add);
+        ed.append(row);
+      }
+      if (rest.length > 1) {
+        const all = this._btn("Add all", "btn alt sm", () => this._plSave(p, { show_ids: [...p.show_ids, ...rest.map((s) => s.id)] }, `h-${p.id}`));
+        all.style.marginTop = "8px";
+        ed.append(all);
+      }
+      const acts = this._el("div", "sacts");
+      if (this._plConfirm === p.id) {
+        acts.append(this._el("span", "muted", `Delete "${p.name}"? The shows stay in the library.`),
+          this._btn("Delete", "btn sm warnb", () => this._plDelete(p)),
+          this._btn("Cancel", "btn alt sm", () => {
+            this._plConfirm = null;
+            this._renderPlaylists();
+          }));
+      } else {
+        acts.append(this._btn("Delete playlist", "btn alt sm danger", () => {
+          this._plConfirm = p.id;
+          this._renderPlaylists();
+        }));
+      }
+      ed.append(acts);
+    }
+    card.append(ed);
+    return card;
+  }
+
+  // --- schedule tab ---------------------------------------------------------------
+  static _DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  static _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  static _clock(hhmm) {
+    const [h, m] = (hhmm || "00:00").split(":").map(Number);
+    return new Date(2000, 0, 1, h || 0, m || 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  static _edgeText(e) {
+    if (!e) return "";
+    if (e.type === "time") return LightShowStudioPanel._clock(e.time);
+    const name = e.type === "sunset" ? "Sunset" : "Sunrise";
+    const off = Number(e.offset_min) || 0;
+    return off ? `${name} ${off < 0 ? "−" : "+"}${Math.abs(off)} min` : name;
+  }
+
+  static _mdText(md) {
+    const [m, d] = md.split("-").map(Number);
+    return `${LightShowStudioPanel._MONTHS[m - 1]} ${d}`;
+  }
+
+  // "Fri 6:00 PM" for the coming week, a date after that
+  static _when(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return "";
+    const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const days = (d - new Date()) / 86400000;
+    if (days < 6.5) return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+    return `${d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} ${time}`;
+  }
+
+  static _timeOnly(iso) {
+    const d = new Date(iso);
+    return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  _subscribeSchedule() {
+    if (this._schUnsub || this._schSubscribing || !this._hass?.connection || !this.isConnected) return;
+    this._schSubscribing = true;
+    this._hass.connection
+      .subscribeMessage((m) => {
+        this._schSummary = m;
+        this._renderSchedBanner();
+        this._loadSchedules();
+      }, { type: "light_show_studio/schedule/subscribe" })
+      .then((unsub) => {
+        if (this.isConnected) this._schUnsub = unsub;
+        else unsub();
+      })
+      .catch(() => {})
+      .finally(() => {
+        this._schSubscribing = false;
+      });
+  }
+
+  _unsubscribeSchedule() {
+    try {
+      this._schUnsub?.();
+    } catch (e) {
+      /* connection already closed */
+    }
+    this._schUnsub = null;
+  }
+
+  async _loadSchedules() {
+    if (!this._hass) return;
+    if (this._schLoading) {
+      this._schAgain = true;
+      return;
+    }
+    this._schLoading = true;
+    do {
+      this._schAgain = false;
+      try {
+        const r = await this._hass.callWS({ type: "light_show_studio/schedules/list" });
+        this._sch = r.schedules || [];
+        this._schPlaylists = r.playlists || [];
+        this._schSummary = { status: r.status, active: r.active, next: r.next };
+        this._schError = "";
+      } catch (err) {
+        this._schError = this._err(err, "Couldn't load the schedules.");
+        this._sch = this._sch || [];
+      }
+    } while (this._schAgain);
+    this._schLoading = false;
+    this._renderSchedBanner();
+    if (!this._draft) this._renderSchedules();
+  }
+
+  _renderSchedBanner() {
+    const b = this._schBanner;
+    if (!b) return;
+    const sum = this._schSummary;
+    b.textContent = "";
+    if (!sum) {
+      b.append(this._el("div", "muted", this._schError || "Loading the schedule…"));
+      return;
+    }
+    const nx = sum.next;
+    let l1 = "Nothing scheduled";
+    if (nx) {
+      l1 = `Next: ${LightShowStudioPanel._when(nx.start)} · ${nx.playlist || "(no playlist)"}`;
+      if (nx.end) l1 += ` (until ${LightShowStudioPanel._timeOnly(nx.end)})`;
+      if (nx.schedule) l1 += ` · ${nx.schedule}`;
+    }
+    b.append(this._el("div", "l1", l1));
+    const l2 = this._el("div", "l2");
+    const act = sum.active;
+    const dot = this._el("span", "sdot " + (sum.status === "running" ? "run" : sum.status === "paused" ? "pause" : ""));
+    dot.setAttribute("aria-hidden", "true");
+    let text = { idle: "Idle: waiting for the next show", off: "No schedules are turned on" }[sum.status] || sum.status;
+    if (sum.status === "running" && act) text = `Running: ${act.schedule}${act.end ? ` until ${LightShowStudioPanel._timeOnly(act.end)}` : ""}`;
+    if (sum.status === "paused" && act) text = `Paused: ${act.schedule}. You stopped it, so it stays off until ${act.end ? LightShowStudioPanel._timeOnly(act.end) : "the next start"}`;
+    const st = this._el("span", "stt");
+    st.append(dot, document.createTextNode(" " + text));
+    l2.append(st);
+    if (sum.status === "paused" && this._isAdmin()) {
+      l2.append(this._btn("Resume", "btn sm", async () => {
+        try {
+          await this._hass.callWS({ type: "light_show_studio/schedules/resume" });
+        } catch (err) {
+          this._schError = this._err(err, "Couldn't resume.");
+        }
+        this._loadSchedules();
+      }));
+    }
+    b.append(l2);
+    if (this._schError) b.append(this._el("div", "serr", this._schError));
+  }
+
+  _renderSchedules() {
+    const box = this._schList;
+    if (!box) return;
+    const admin = this._isAdmin();
+    this._addSched.hidden = !admin || !!this._draft;
+    box.textContent = "";
+    if (this._schNotice) box.append(this._el("div", "box notice", this._schNotice));
+    if (!this._sch) return;
+    if (!this._sch.length) {
+      const e = this._el("div", "box empty", "No schedules yet.");
+      if (admin) {
+        e.append(document.createElement("br"));
+        e.append(this._btn("Add schedule", "btn", () => this._openEditor()));
+      }
+      box.append(e);
+      return;
+    }
+    for (const s of this._sch) box.append(this._schedCard(s, admin));
+    this._restoreFocus();
+  }
+
+  _schedCard(s, admin) {
+    const card = this._el("div", "box sc" + (s.enabled ? "" : " off"));
+    card.setAttribute("role", "listitem");
+    const top = this._el("div", "top");
+    top.append(this._el("div", "sn", s.name));
+    const tg = this._el("button", "tgl");
+    tg.type = "button";
+    tg.setAttribute("role", "switch");
+    tg.setAttribute("aria-checked", String(s.enabled));
+    tg.setAttribute("aria-label", `${s.name} enabled`);
+    tg.disabled = !admin;
+    tg.dataset.fk = `tg-${s.id}`;
+    tg.onclick = async () => {
+      s.enabled = !s.enabled; // optimistic
+      this._keepFocus(`tg-${s.id}`);
+      this._renderSchedules();
+      try {
+        await this._hass.callWS({ type: "light_show_studio/schedules/toggle", schedule_id: s.id, enabled: s.enabled });
+      } catch (err) {
+        this._schError = this._err(err, "Couldn't change the schedule.");
+      }
+      this._keepFocus(`tg-${s.id}`);
+      this._loadSchedules();
+    };
+    top.append(tg);
+    card.append(top);
+    const body = this._el("div", "sbody");
+    const dd = this._el("div", "dd");
+    dd.setAttribute("role", "img");
+    dd.setAttribute("aria-label", "Days: " + s.days.map((d) => LightShowStudioPanel._DAYS[d]).join(", "));
+    LightShowStudioPanel._DAYS.forEach((d, i) => dd.append(this._el("span", s.days.includes(i) ? "on" : "", d[0])));
+    body.append(dd);
+    const E = LightShowStudioPanel._edgeText;
+    body.append(this._el("div", "", s.end ? `${E(s.start)} → ${E(s.end)}` : `${E(s.start)} · plays once`));
+    if (s.date_from && s.date_to)
+      body.append(this._el("div", "muted", `Season: ${LightShowStudioPanel._mdText(s.date_from)} – ${LightShowStudioPanel._mdText(s.date_to)}`));
+    body.append(this._el("div", "", s.playlist ? `Playlist: ${s.playlist}` : "Playlist missing. Edit this schedule to pick one."));
+    const tags = this._el("div", "");
+    if (s.state === "running") tags.append(this._el("span", "tag run", "Running now"), " ");
+    if (s.state === "paused") tags.append(this._el("span", "tag pause", "Paused (stopped by you)"), " ");
+    if (s.skipped) tags.append(this._el("span", "tag", "Skipped today"), " ");
+    if (tags.childNodes.length) body.append(tags);
+    if (s.enabled && s.next_start)
+      body.append(this._el("div", "muted", `Next: ${LightShowStudioPanel._when(s.next_start)}${s.next_end ? ` until ${LightShowStudioPanel._timeOnly(s.next_end)}` : ""}`));
+    for (const c of s.conflicts || [])
+      body.append(this._el("div", "warn", `⚠ Overlaps ${c.name}: whichever starts later takes over.`));
+    card.append(body);
+    if (admin) {
+      const acts = this._el("div", "sacts");
+      if (this._schConfirm === s.id) {
+        acts.append(this._el("span", "muted", `Delete "${s.name}"?`),
+          this._btn("Delete", "btn sm warnb", () => this._schDelete(s)),
+          this._btn("Cancel", "btn alt sm", () => {
+            this._schConfirm = null;
+            this._renderSchedules();
+          }));
+      } else {
+        acts.append(this._btn("Edit", "btn alt sm", () => this._openEditor(s)));
+        if (s.enabled) {
+          const sk = this._btn(s.skipped ? "Undo skip" : s.state === "running" ? "Stop for today" : "Skip today", "btn alt sm", async () => {
+            try {
+              await this._hass.callWS({ type: "light_show_studio/schedules/skip_today", schedule_id: s.id, skip: !s.skipped });
+            } catch (err) {
+              this._schError = this._err(err, "Couldn't skip.");
+            }
+            this._loadSchedules();
+          });
+          acts.append(sk);
+        }
+        acts.append(this._btn("Delete", "btn alt sm danger", () => {
+          this._schConfirm = s.id;
+          this._renderSchedules();
+        }));
+      }
+      card.append(acts);
+    }
+    return card;
+  }
+
+  async _schDelete(s) {
+    this._schConfirm = null;
+    try {
+      await this._hass.callWS({ type: "light_show_studio/schedules/delete", schedule_id: s.id });
+      this._schError = "";
+    } catch (err) {
+      this._schError = this._err(err, "Couldn't delete the schedule.");
+    }
+    this._loadSchedules();
+  }
+
+  // --- schedule editor ------------------------------------------------------------
+  _speakerIds() {
+    const own = this._findPlayerId();
+    return Object.keys(this._hass.states)
+      .filter((id) => id.startsWith("media_player.") && id !== own)
+      .sort((a, b) => this._fname(a).localeCompare(this._fname(b)));
+  }
+
+  _fname(id) {
+    return this._hass.states[id]?.attributes.friendly_name || id;
+  }
+
+  _effectNames() {
+    const names = new Set();
+    for (const id of this._lights()) for (const n of this._hass.states[id]?.attributes.effect_list || []) if (n !== SHOW) names.add(n);
+    return [...names];
+  }
+
+  _openEditor(s) {
+    this._schNotice = "";
+    this._draft = s
+      ? JSON.parse(JSON.stringify({
+          id: s.id, name: s.name, enabled: s.enabled, days: s.days, start: s.start, end: s.end || null,
+          season: !!(s.date_from && s.date_to), date_from: s.date_from || "11-25", date_to: s.date_to || "01-06",
+          playlist_id: s.playlist_id, speakers: s.speakers || [], volume: s.volume ?? null, shuffle: !!s.shuffle,
+          repeat: s.repeat !== false, at_end: s.at_end || "off", end_effect: s.end_effect || "",
+        }))
+      : {
+          id: null, name: "", enabled: true, days: [0, 1, 2, 3, 4, 5, 6], start: { type: "time", time: "18:00", offset_min: 0 },
+          end: { type: "time", time: "22:00", offset_min: 0 }, season: false, date_from: "11-25", date_to: "01-06",
+          playlist_id: this._schPlaylists?.[0]?.id || "", speakers: [], volume: null, shuffle: false, repeat: true,
+          at_end: "off", end_effect: "",
+        };
+    if (!this._schPlaylists?.length) this._loadSchedules();
+    this._draftError = "";
+    this._renderEditor();
+    this._renderSchedules();
+    this._sed.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+    this._sed.querySelector("input")?.focus();
+  }
+
+  _closeEditor() {
+    this._draft = null;
+    this._sed.hidden = true;
+    this._sed.textContent = "";
+    this._renderSchedules();
+  }
+
+  _field(label, ...kids) {
+    const f = this._el("div", "fld");
+    f.append(this._el("span", "lb", label), ...kids);
+    return f;
+  }
+
+  _edgeEditor(label, key, allowNone) {
+    const d = this._draft;
+    const e = d[key];
+    const wrap = this._el("div", "fld");
+    wrap.append(this._el("span", "lb", label));
+    const opts = [...(allowNone ? [["none", "Play once"]] : []), ["time", "Time"], ["sunset", "Sunset"], ["sunrise", "Sunrise"]];
+    wrap.append(this._seg(opts, e ? e.type : "none", label, (v) => {
+      if (v === "none") d[key] = null;
+      else d[key] = { type: v, time: e?.time || (key === "start" ? "18:00" : "22:00"), offset_min: e?.offset_min || 0 };
+      this._renderEditor();
+    }));
+    if (e) {
+      const row = this._el("div", "edge-in");
+      if (e.type === "time") {
+        const t = this._el("input");
+        t.type = "time";
+        t.value = e.time || "";
+        t.required = true;
+        t.setAttribute("aria-label", `${label} time`);
+        t.oninput = () => (e.time = t.value);
+        row.append(t);
+      } else {
+        const n = this._el("input");
+        n.type = "number";
+        n.step = 5;
+        n.min = -720;
+        n.max = 720;
+        n.value = e.offset_min || 0;
+        n.style.width = "90px";
+        n.setAttribute("aria-label", `${label} ${e.type} offset in minutes`);
+        n.oninput = () => (e.offset_min = n.value === "" ? 0 : Math.round(Number(n.value)));
+        row.append(n, this._el("span", "note", `minutes after ${e.type} (negative = before)`));
+      }
+      wrap.append(row);
+    }
+    return wrap;
+  }
+
+  _renderEditor() {
+    const d = this._draft;
+    const ed = this._sed;
+    ed.hidden = false;
+    ed.textContent = "";
+    ed.append(this._el("h2", "", d.id ? "Edit schedule" : "New schedule"));
+    const form = this._el("form", "");
+    form.noValidate = true;
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      this._saveDraft();
+    };
+    // name
+    const name = this._el("input");
+    name.type = "text";
+    name.maxLength = 60;
+    name.value = d.name;
+    name.placeholder = "e.g. Christmas evenings";
+    name.oninput = () => (d.name = name.value);
+    form.append(this._field("Name", name));
+    // days
+    const days = this._el("div", "fld");
+    days.append(this._el("span", "lb", "Days"));
+    const ds = this._el("div", "dsel");
+    ds.setAttribute("role", "group");
+    ds.setAttribute("aria-label", "Days of the week");
+    const FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    LightShowStudioPanel._DAYS.forEach((dn, i) => {
+      const b = this._btn(dn[0], "", () => {
+        d.days = d.days.includes(i) ? d.days.filter((x) => x !== i) : [...d.days, i].sort();
+        b.setAttribute("aria-pressed", String(d.days.includes(i)));
+      });
+      b.title = FULL[i];
+      b.setAttribute("aria-label", FULL[i]);
+      b.setAttribute("aria-pressed", String(d.days.includes(i)));
+      ds.append(b);
+    });
+    days.append(ds);
+    const quick = this._el("div", "inl");
+    quick.append(this._btn("Every day", "btn alt sm", () => { d.days = [0, 1, 2, 3, 4, 5, 6]; this._renderEditor(); }),
+      this._btn("Weekends", "btn alt sm", () => { d.days = [4, 5, 6]; this._renderEditor(); }));
+    days.append(quick);
+    form.append(days);
+    form.append(this._edgeEditor("Start", "start", false));
+    form.append(this._edgeEditor("End", "end", true));
+    // season
+    const season = this._el("div", "fld");
+    const sc = this._el("label", "chk");
+    const scb = this._el("input");
+    scb.type = "checkbox";
+    scb.checked = d.season;
+    scb.onchange = () => {
+      d.season = scb.checked;
+      this._renderEditor();
+    };
+    sc.append(scb, document.createTextNode("Only during a season (repeats every year)"));
+    season.append(sc);
+    if (d.season) {
+      const mk = (label, key) => {
+        const [m, dd] = d[key].split("-").map(Number);
+        const wrap = this._el("div", "md");
+        wrap.append(this._el("span", "", label));
+        const ms = this._el("select");
+        ms.setAttribute("aria-label", `${label} month`);
+        LightShowStudioPanel._MONTHS.forEach((mn, i) => {
+          const o = this._el("option", "", mn);
+          o.value = i + 1;
+          ms.append(o);
+        });
+        ms.value = m;
+        const ds2 = this._el("select");
+        ds2.setAttribute("aria-label", `${label} day`);
+        const fill = () => {
+          const max = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][Number(ms.value) - 1];
+          const cur = Number(ds2.value) || dd;
+          ds2.textContent = "";
+          for (let i = 1; i <= max; i++) {
+            const o = this._el("option", "", String(i));
+            o.value = i;
+            ds2.append(o);
+          }
+          ds2.value = Math.min(cur, max);
+        };
+        fill();
+        const upd = () => (d[key] = `${String(ms.value).padStart(2, "0")}-${String(ds2.value).padStart(2, "0")}`);
+        ms.onchange = () => {
+          fill();
+          upd();
+        };
+        ds2.onchange = upd;
+        wrap.append(ms, ds2);
+        return wrap;
+      };
+      const row = this._el("div", "seas");
+      row.append(mk("From", "date_from"), mk("To", "date_to"));
+      season.append(row, this._el("div", "muted", "A season can cross New Year, like Nov 25 to Jan 6."));
+    }
+    form.append(season);
+    // playlist
+    const pl = this._el("select");
+    pl.setAttribute("aria-label", "Playlist");
+    const lists = this._schPlaylists || [];
+    for (const p of lists) {
+      const o = this._el("option", "", `${p.name} (${p.show_ids.length})`);
+      o.value = p.id;
+      pl.append(o);
+    }
+    if (d.playlist_id && !lists.some((p) => p.id === d.playlist_id)) {
+      const o = this._el("option", "", "(missing playlist)");
+      o.value = d.playlist_id;
+      pl.append(o);
+    }
+    if (!pl.options.length) pl.append(Object.assign(this._el("option", "", "No playlists: make one in the Library tab"), { value: "" }));
+    pl.value = d.playlist_id;
+    d.playlist_id = pl.value;
+    pl.onchange = () => (d.playlist_id = pl.value);
+    form.append(this._field("Playlist", pl));
+    // speakers
+    const spk = this._el("details", "spk");
+    if (d.speakers.length) spk.open = true;
+    const sum = this._el("summary", "", d.speakers.length ? `Speakers (${d.speakers.length} selected)` : "Speakers (the player's current output)");
+    spk.append(sum);
+    const sl = this._el("div", "spk-l");
+    const ids = this._speakerIds();
+    d.speakers.filter((id) => !ids.includes(id)).forEach((id) => ids.unshift(id));
+    if (!ids.length) sl.append(this._el("div", "muted", "No speakers found"));
+    for (const id of ids) {
+      const l = this._el("label", "chk");
+      const cb = this._el("input");
+      cb.type = "checkbox";
+      cb.checked = d.speakers.includes(id);
+      cb.onchange = () => {
+        d.speakers = d.speakers.filter((x) => x !== id);
+        if (cb.checked) d.speakers.push(id);
+        sum.textContent = d.speakers.length ? `Speakers (${d.speakers.length} selected)` : "Speakers (the player's current output)";
+      };
+      l.append(cb, this._el("span", "", this._fname(id)));
+      sl.append(l);
+    }
+    spk.append(sl, this._el("div", "muted", "Leave all unchecked to use whatever the player is set to. The first speaker you pick leads."));
+    form.append(spk);
+    // volume
+    const vol = this._el("div", "fld");
+    const vl = this._el("label", "chk");
+    const vcb = this._el("input");
+    vcb.type = "checkbox";
+    vcb.checked = d.volume !== null;
+    vcb.onchange = () => {
+      d.volume = vcb.checked ? (d.volume ?? 40) : null;
+      this._renderEditor();
+    };
+    vl.append(vcb, document.createTextNode("Set the speaker volume when it starts"));
+    vol.append(vl);
+    if (d.volume !== null) {
+      const row = this._el("div", "vrow");
+      const r = this._el("input");
+      r.type = "range";
+      r.min = 0;
+      r.max = 100;
+      r.value = d.volume;
+      r.setAttribute("aria-label", "Volume");
+      const bv = this._el("span", "bv", `${d.volume}%`);
+      r.oninput = () => {
+        d.volume = Number(r.value);
+        bv.textContent = `${d.volume}%`;
+      };
+      row.append(r, bv);
+      vol.append(row);
+    }
+    form.append(vol);
+    // shuffle / repeat
+    const opts = this._el("div", "fld");
+    const chk = (text, key) => {
+      const l = this._el("label", "chk");
+      const c = this._el("input");
+      c.type = "checkbox";
+      c.checked = !!d[key];
+      c.onchange = () => (d[key] = c.checked);
+      l.append(c, document.createTextNode(text));
+      return l;
+    };
+    opts.append(chk("Shuffle", "shuffle"));
+    if (d.end) opts.append(chk("Repeat the playlist while the window is open", "repeat"));
+    form.append(opts);
+    // at end
+    const at = this._el("div", "fld");
+    at.append(this._el("span", "lb", "When it ends"));
+    at.append(this._seg([["off", "Lights off"], ["effect", "Effect"], ["leave", "Leave as is"]], d.at_end, "When it ends", (v) => {
+      d.at_end = v;
+      this._renderEditor();
+    }));
+    if (d.at_end === "effect") {
+      const fx = this._el("select");
+      fx.setAttribute("aria-label", "Effect at the end");
+      const names = this._effectNames();
+      if (d.end_effect && !names.includes(d.end_effect)) names.unshift(d.end_effect);
+      if (!names.length) fx.append(Object.assign(this._el("option", "", "No effects found: is a light online?"), { value: "" }));
+      for (const n of names) fx.append(Object.assign(this._el("option", "", n), { value: n }));
+      if (!d.end_effect && names.length) d.end_effect = names[0];
+      fx.value = d.end_effect;
+      fx.onchange = () => (d.end_effect = fx.value);
+      at.append(fx);
+    }
+    form.append(at);
+    const err = this._el("div", "serr", this._draftError);
+    err.setAttribute("role", "alert");
+    err.hidden = !this._draftError;
+    form.append(err);
+    const btns = this._el("div", "btnrow");
+    const save = this._btn("Save", "btn sm");
+    save.type = "submit";
+    save.className = "btn sm save-sched";
+    btns.append(save, this._btn("Cancel", "btn alt sm", () => this._closeEditor()));
+    form.append(btns);
+    ed.append(form);
+  }
+
+  async _saveDraft() {
+    const d = this._draft;
+    const fail = (t) => {
+      this._draftError = t;
+      const e = this._sed.querySelector(".serr");
+      if (e) {
+        e.textContent = t;
+        e.hidden = !t;
+      }
+    };
+    const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+    const name = d.name.trim();
+    if (!name) return fail("Give the schedule a name.");
+    if (!d.days.length) return fail("Pick at least one day.");
+    if (d.start.type === "time" && !HHMM.test(d.start.time || "")) return fail("Enter a start time.");
+    if (d.end && d.end.type === "time" && !HHMM.test(d.end.time || "")) return fail("Enter an end time.");
+    if (!d.playlist_id) return fail("Pick a playlist (make one in the Library tab first).");
+    if (d.at_end === "effect" && !d.end_effect) return fail("Pick the effect to show at the end.");
+    const edge = (e) => (e.type === "time" ? { type: "time", time: e.time, offset_min: 0 } : { type: e.type, offset_min: Number(e.offset_min) || 0 });
+    const msg = {
+      type: "light_show_studio/schedules/save", name, enabled: d.enabled, days: d.days, start: edge(d.start),
+      end: d.end ? edge(d.end) : null, date_from: d.season ? d.date_from : null, date_to: d.season ? d.date_to : null,
+      playlist_id: d.playlist_id, speakers: d.speakers, volume: d.volume, shuffle: d.shuffle, repeat: d.end ? d.repeat : false,
+      at_end: d.at_end,
+    };
+    if (d.id) msg.schedule_id = d.id;
+    if (d.at_end === "effect") msg.end_effect = d.end_effect;
+    const btn = this._sed.querySelector(".save-sched");
+    if (btn) btn.disabled = true;
+    fail("");
+    try {
+      const r = await this._hass.callWS(msg);
+      const c = r.schedule?.conflicts || [];
+      this._schNotice = c.length ? `Saved. It overlaps ${c.map((x) => x.name).join(", ")}: whichever window starts later takes over.` : "";
+      this._closeEditor();
+      this._loadSchedules();
+    } catch (err) {
+      fail(this._err(err, "Couldn't save the schedule."));
+      if (btn) btn.disabled = false;
+    }
+  }
+
   // --- live updates ------------------------------------------------------
   _update() {
     const player = this._findPlayer();
@@ -928,10 +1904,14 @@ class LightShowStudioPanel extends HTMLElement {
     this._renderBanner(status);
   }
 
-  _findPlayer() {
-    const id = Object.keys(this._hass.states).find(
+  _findPlayerId() {
+    return Object.keys(this._hass.states).find(
       (k) => k.startsWith("media_player.") && this._hass.states[k].attributes.queue !== undefined
     );
+  }
+
+  _findPlayer() {
+    const id = this._findPlayerId();
     return id ? this._hass.states[id] : null;
   }
 

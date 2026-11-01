@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_TYPE, DOMAIN, TYPE_PLAYER
+from .const import SCHEDULER_KEY, CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_TYPE, DOMAIN, TYPE_PLAYER
 from .effects import EFFECT_LIST
 from .library import SHOW_PLAYER_KEY, Show, library_for
 from .outputs import normalize_speakers
@@ -58,7 +58,7 @@ async def ws_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnect
                     msg: dict[str, Any]) -> None:
     player = hass.data.get(SHOW_PLAYER_KEY)
     if player and player.show and player.show.id == msg["show_id"] and player.state != "idle":
-        await player.async_stop()
+        await player.async_stop(reason="show_deleted")
     try:
         found = await hass.async_add_executor_job(library_for(hass).delete, msg["show_id"])
     except (OSError, ValueError) as err:
@@ -67,6 +67,8 @@ async def ws_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnect
     if not found:
         connection.send_error(msg["id"], "not_found", f"No show {msg['show_id']}")
         return
+    if scheduler := hass.data.get(SCHEDULER_KEY):
+        scheduler.remove_show(msg["show_id"])  # gone from every playlist
     await _refresh(hass)
     connection.send_result(msg["id"], {})
 

@@ -5,7 +5,7 @@ Changes to Light Show Studio, newest first.
 ## [2.0.0] - 2026-11-01
 
 ### Changed
-- The Light Shows app now has five tabs: Play, Library, Schedule (placeholder), Lights and Studio. Shows
+- The Light Shows app now has five tabs: Play, Library, Schedule, Lights and Studio. Shows
   are added in a collapsible section of the Library; the Add shows and Setup tabs are gone, replaced by a
   dismissible first-run banner. The Lights tab is just the strands list (live views are in Studio).
 - The player's options keep only the light delay and the pause between shows; speakers and the
@@ -16,6 +16,19 @@ Changes to Light Show Studio, newest first.
 - Wording no longer assumes Govee lights; removed the stale build specs from docs.
 
 ### Added
+- Playlists: named, ordered lists of shows, built in Library -> Playlists (create, rename, delete, add,
+  remove, reorder with up/down). The Play tab has a selector (All shows or a playlist) above the queue.
+  Deleting a show removes it from playlists. Websocket: `playlists/list`, `playlists/save`, `playlists/delete`,
+  `player/set_playlist`; the media player has `playlist` and `playlist_id` attributes.
+- Scheduler (Schedule tab): run a playlist on chosen days from a time, sunset or sunrise (with offsets) to an
+  end or once, within an optional season that may cross New Year, with speakers, volume, shuffle, repeat and
+  an end action (lights off, an effect, or leave). Windows can cross midnight; a window that is open at
+  startup starts then; the later-starting of two overlapping windows wins; stopping a scheduled show pauses
+  it until the window ends (Resume in the app); Skip today. Adds a switch per schedule,
+  `sensor.light_show_next_show`, `sensor.light_show_schedule_status`, and the events
+  `light_show_studio_schedule_started` / `_ended`. Websocket: `schedules/list`, `save`, `delete`, `toggle`,
+  `skip_today`, `resume` and `schedule/subscribe`. Playlists and schedules are stored in
+  `.storage/light_show_studio.schedule`.
 - 25 new effects: Vintage Pastel, Retro Christmas, Icy Blue & White, Gold & White, Red/Green/White, Rainbow Bands,
   Ombre, Snowy (still); Rainbow Twinkle, Vintage Twinkle, Christmas Twinkle, Sparkle, Starfield, Snowfall, Icicle Drip,
   Candle Flicker, Aurora, Lava, Red & Blue, Color Wipe, Larson Scanner, Rainbow Breathe, Peppermint Swirl, Heartbeat,

@@ -37,8 +37,8 @@ the Light Show Player, shows) with a button for each; dismiss it once you're set
   output, the between-shows look and the queue. Shows play with their song, or pick **No music**
   to run the lights alone. **Light delay** (player options) shifts the lights if the speaker lags.
 - **Library**: your shows, with play, reorder and delete, and a collapsible **Add shows** section to
-  upload the `.fseq` and its song. Playlists will appear here.
-- **Schedule**: coming next (run playlists on a schedule).
+  upload the `.fseq` and its song, and your **Playlists** (see below).
+- **Schedule**: run a playlist automatically (see **Schedules** below).
 - **Lights**: the strands list, one row per light: status (online, offline, or checking), name,
   model, IP address, and the pixels and channels it uses. **Identify** flashes the light so you can
   find it. Two strands with overlapping pixels show a warning. Tap a row to open it in Studio.
@@ -59,6 +59,55 @@ Assistant with Music Assistant). Others can't play in sync, so they are skipped 
 picker. If the leader is unavailable, the next speaker leads. Changes made during a show apply from
 the next show. No speakers means lights only. The player's options hold only the light delay and
 the pause between shows.
+
+### Playlists
+
+A playlist is a named, ordered list of shows, such as "Halloween" or "Christmas". In **Library →
+Playlists** (admins) create one, rename it, add shows, and move them up or down or remove them with the
+buttons. Deleting a show from the library takes it out of every playlist; a playlist that a schedule uses
+can't be deleted until you change the schedule.
+
+On the **Play** tab, the selector above the show list switches between **All shows** (the whole library,
+as before) and a playlist. With a playlist chosen the queue is just its shows, in its order (shuffle still
+applies); switching while a show plays stops it unless that show is in the new playlist. The player's
+`playlist` attribute holds the name (`playlist_id` the id); `source_list` stays the shows.
+
+### Schedules
+
+The **Schedule** tab plays a playlist for you. Each schedule has:
+
+- **Days** of the week it may start on, and a **start**: a clock time, **sunset** or **sunrise** (with an
+  offset in minutes, e.g. sunset -15 min).
+- An **end** (same choices) or **Play once**, which plays the playlist through a single time. A window may
+  cross midnight (6 PM to 1 AM). Clock times are local, so they follow daylight saving changes.
+- An optional **season** by month and day, repeating every year and allowed to cross New Year (Nov 25 to Jan 6).
+- The **playlist**, optional **speakers** (none = the player's current output) and **volume**, **shuffle**
+  and **repeat** (the playlist repeats while the window is open).
+- **When it ends**: lights off, an effect on every light, or leave as is.
+
+At the start the scheduler sets the playlist, speakers, volume, shuffle and repeat, and presses play. At
+the end it stops the player, gives back the speakers it changed (if you haven't changed them since), and
+does the end action. After a restart, a window that is open right now starts from the beginning of the
+playlist. If two windows overlap, the one that started later takes over, and the app warns you.
+
+If you press stop during a scheduled show, that window is **paused**: it stays off until the window ends
+(or until you press **Resume** on the Schedule tab), and no end action runs. **Skip today** skips (or stops)
+today's window. Each schedule has an on/off switch in the app and as an entity.
+
+The banner at the top shows the next start ("Next: Fri 6:00 PM · Christmas (until 10:00 PM)") and
+whether a schedule is running, paused or idle.
+
+Entities (on the Light Show Player device):
+
+| Entity | What it is |
+| --- | --- |
+| `switch.light_show_schedule_<name>` | One per schedule: on = enabled. Created and removed as you add and delete schedules. |
+| `sensor.light_show_next_show` | When the next show starts (timestamp), with `schedule`, `playlist` and `ends` attributes. |
+| `sensor.light_show_schedule_status` | `idle`, `running`, `paused` or `off` (no schedule is turned on). |
+
+Events: `light_show_studio_schedule_started` and `light_show_studio_schedule_ended` (data: `schedule_id`,
+`name`, and for started the `playlist`, `start`, `end`; for ended the `reason`: `window_end`, `preempted`,
+`skipped`, `disabled`, `deleted`, `edited`, `finished` or `stopped`).
 
 ## Twinkly lights
 

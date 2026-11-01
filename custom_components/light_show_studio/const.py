@@ -23,3 +23,7 @@ CONF_DEVICE_ID = "device_id"  # Govee device id / Twinkly or WLED MAC: finds the
 CONF_LED_PROFILE = "led_profile"  # Twinkly: "RGB" or "RGBW"
 CONF_TRANSITION = "transition"  # between shows: none, fade, crossfade or effect
 CONF_TRANSITION_EFFECT = "transition_effect"
+SCHEDULER_KEY = f"{DOMAIN}_scheduler"  # hass.data key of the Scheduler (playlists + schedules), made in async_setup
+SCHEDULE_STORE_KEY = f"{DOMAIN}.schedule"
+EVENT_SCHEDULE_STARTED = f"{DOMAIN}_schedule_started"
+EVENT_SCHEDULE_ENDED = f"{DOMAIN}_schedule_ended"

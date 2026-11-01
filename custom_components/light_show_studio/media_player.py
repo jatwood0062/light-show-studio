@@ -115,6 +115,8 @@ class ShowPlayerEntity(MediaPlayerEntity):
             "ungrouped": list(self._player.outputs.ungrouped),
             "transition": self._player.transition,
             "queue": list(self._player.queue),
+            "playlist": self._player.playlist_name,
+            "playlist_id": self._player.playlist_id,
         }
 
     # --- controls -------------------------------------------------------------

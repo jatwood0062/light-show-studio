@@ -41,14 +41,15 @@ from .health import HealthMonitor
 from .library import SHOW_PLAYER_KEY
 from .outputs import normalize_speakers
 from .playback import SequencePlayer
-from . import upload, websocket, ws_shows
+from . import upload, websocket, ws_schedule, ws_shows
 from .receiver import PixelReceiver
+from .scheduler import async_setup_scheduler
 from .showplayer import async_setup_player, async_unload_player
 from .twinkly import TwinklyController, async_gestalt
 from .wled import WledController, async_info
 
 PLATFORMS = [Platform.LIGHT]
-PLAYER_PLATFORMS = [Platform.MEDIA_PLAYER]
+PLAYER_PLATFORMS = [Platform.MEDIA_PLAYER, Platform.SWITCH, Platform.SENSOR]
 FRONTEND_URL = "/light_show_studio"
 CARDS = ("light-show-studio-card.js", "light-show-studio-player-card.js")
 PANEL = "light-show-studio-panel"  # the "Light Shows" sidebar app
@@ -83,6 +84,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         receiver.show, lambda coro: hass.async_create_background_task(coro, "light_show_studio sequence"))
     websocket.async_register(hass)
     ws_shows.async_register(hass)
+    ws_schedule.async_register(hass)
+    scheduler = await async_setup_scheduler(hass)  # playlists + schedules, loaded once
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: scheduler.async_stop_timers())
     upload.async_register(hass)
     health = hass.data[HEALTH] = HealthMonitor(hass)
     health.start()

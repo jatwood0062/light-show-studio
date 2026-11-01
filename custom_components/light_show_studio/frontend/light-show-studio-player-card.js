@@ -71,6 +71,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
     if (this._upload_only()) return;
     this._subscribe();
     if (!this._shows) this._loadShows();
+    if (!this._playlists) this._loadPlaylists();
   }
 
   _upload_only() {
@@ -91,6 +92,8 @@ class LightShowStudioPlayerCard extends HTMLElement {
 
   connectedCallback() {
     this._retryAt = 0;
+    this._onPl = () => this._loadPlaylists();
+    window.addEventListener("light-show-studio-playlists-changed", this._onPl);
     if (this._hass && !this._upload_only()) {
       this._subscribe();
       this._startTimer();
@@ -98,6 +101,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    window.removeEventListener("light-show-studio-playlists-changed", this._onPl);
     this._unsubscribe();
     clearInterval(this._timer);
     this._timer = null;
@@ -166,6 +170,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
     this._noPlayerErr = false;
     const queueChanged = !prev || JSON.stringify(prev.queue) !== JSON.stringify(m.queue);
     if (queueChanged && this._shows) this._loadShows();
+    if (!prev || prev.playlist_id !== m.playlist_id) this._loadPlaylists();
     this._renderState();
   }
 
@@ -195,13 +200,65 @@ class LightShowStudioPlayerCard extends HTMLElement {
   _ordered() {
     const shows = this._shows || [];
     const queue = this._state?.queue;
-    if (!queue || !queue.length) return shows;
+    const playlist = !!this._state?.playlist_id;
+    if (playlist && this._config?.mode === "library") return shows; // the library list is always every show
+    if (!queue || (!queue.length && !playlist)) return shows;
     const byId = new Map(shows.map((s) => [s.id, s]));
     const out = queue.map((id) => byId.get(id)).filter(Boolean);
-    shows.forEach((s) => {
-      if (!queue.includes(s.id)) out.push(s);
-    });
+    if (!playlist)
+      shows.forEach((s) => {
+        if (!queue.includes(s.id)) out.push(s);
+      });
     return out;
+  }
+
+  // --- playlists ------------------------------------------------------------
+  async _loadPlaylists() {
+    if (!this._hass || this._plLoading) return;
+    this._plLoading = true;
+    try {
+      const r = await this._hass.callWS({ type: "light_show_studio/playlists/list" });
+      this._playlists = r.playlists || [];
+    } catch (err) {
+      this._playlists = this._playlists || [];
+    }
+    this._plLoading = false;
+    this._renderPlaylistSelect();
+  }
+
+  _renderPlaylistSelect() {
+    const sel = this.shadowRoot?.querySelector(".plsel");
+    if (!sel) return;
+    const lists = this._playlists || [];
+    const want = this._state?.playlist_id || "";
+    const sig = JSON.stringify([lists.map((p) => [p.id, p.name]), want]);
+    if (sig !== this._plSig) {
+      this._plSig = sig;
+      sel.textContent = "";
+      const add = (value, text) => {
+        const o = document.createElement("option");
+        o.value = value;
+        o.textContent = text;
+        sel.append(o);
+      };
+      add("", "All shows");
+      lists.forEach((p) => add(p.id, p.name));
+      if (want && !lists.some((p) => p.id === want)) add(want, this._state?.playlist || want);
+    }
+    if (this.shadowRoot.activeElement !== sel) sel.value = want;
+    sel.disabled = !this._isAdmin();
+    sel.title = this._isAdmin() ? "" : "Only admins can change the playlist";
+    sel.hidden = !lists.length && !want;
+  }
+
+  async _setPlaylist(value) {
+    try {
+      await this._hass.callWS({ type: "light_show_studio/player/set_playlist", playlist_id: value || null });
+      this._clearError("playlist");
+    } catch (err) {
+      this._error(this._msg(err, "Couldn't change the playlist"), "playlist");
+      this._renderPlaylistSelect();
+    }
   }
 
   _position() {
@@ -456,6 +513,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
       (s.state === "paused" ? "Paused" : s.state === "playing" ? "Now playing" : "Press play to start the first show") +
       ` · ${this._outputLabel()}`;
     this._renderOutput();
+    this._renderPlaylistSelect();
     r.querySelector(".pp").innerHTML = icon(playing ? "pause" : "play", 40);
     r.querySelector(".pp").setAttribute("aria-label", playing ? "Pause" : "Play");
     const sh = r.querySelector(".shuf");
@@ -466,7 +524,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
     rp.classList.toggle("on", !!s.repeat && s.repeat !== "off");
     rp.title = `Repeat: ${s.repeat || "off"}`;
     rp.setAttribute("aria-label", rp.title);
-    const tr = r.querySelector(".trsel");
+    const tr = r.querySelector("#trsel");
     if (tr) {
       if (this.shadowRoot.activeElement !== tr) tr.value = s.transition || "fade";
       tr.disabled = !this._isAdmin();
@@ -732,7 +790,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
       }`;
       info.append(nm, meta);
       row.append(play, info);
-      if (!admin) {
+      if (!admin || (this._state?.playlist_id && this._config?.mode !== "library")) { // a playlist is arranged in the Library, not here
         list.append(row);
         return;
       }
@@ -826,6 +884,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
                  padding: 4px 8px; border-radius: 8px; border: 1px solid var(--divider-color, rgba(127,127,127,.4));
                  background: var(--card-background-color, transparent); }
         .trsel:disabled { opacity: 0.5; }
+        .plsel { max-width: 60%; min-width: 0; text-transform: none; letter-spacing: 0; }
         .outrow { display: flex; justify-content: center; margin-top: 6px; }
         .outbtn { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; max-width: 100%; padding: 4px 10px;
                   border-radius: 18px; font-size: 13px; color: var(--primary-text-color);
@@ -946,7 +1005,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
               </select>
             </div>
           </div>
-          <div class="sec"><span class="t">Shows</span></div>
+          <div class="sec"><span class="t">Shows</span><select class="trsel plsel" aria-label="Playlist" hidden></select></div>
           <div class="list"></div>
         </div>
         <div class="addpart drop">
@@ -971,7 +1030,10 @@ class LightShowStudioPlayerCard extends HTMLElement {
     r.querySelector(".shuf").onclick = () => this._toggleShuffle();
     r.querySelector(".rep").onclick = () => this._cycleRepeat();
     r.querySelector(".outbtn").onclick = () => this._togglePicker();
-    r.querySelector(".trsel").onchange = (e) => this._setTransition(e.target.value);
+    r.querySelector("#trsel").onchange = (e) => this._setTransition(e.target.value);
+    const pl = r.querySelector(".plsel");
+    pl.onchange = () => this._setPlaylist(pl.value);
+    pl.onpointerdown = pl.onfocus = () => this._loadPlaylists();
 
     const bar = r.querySelector(".bar");
     const barFill = () => r.querySelector(".fill");

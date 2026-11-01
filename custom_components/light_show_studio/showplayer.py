@@ -26,6 +26,7 @@ from .const import (
     CONF_TRANSITION,
     CONF_TRANSITION_EFFECT,
     DOMAIN,
+    SCHEDULER_KEY,
     SEQUENCER_KEY,
 )
 from .controller import enable_shows
@@ -62,6 +63,8 @@ class ShowPlayer:
         self.shuffle = False
         self.repeat = REPEAT_OFF
         self.entity_id: str | None = None  # set by the media_player entity
+        self.playlist_id: str | None = None  # None = "All shows"
+        self.stop_reason = "user"  # why the player last went idle: "user", "ended" (queue over), "scheduler", ...
         self.shows: dict[str, Show] = {}
         self.order: list[str] = []  # library order
         self.queue: list[str] = []  # play order (shuffled or not)
@@ -182,15 +185,67 @@ class ShowPlayer:
         self.shows = {s.id: s for s in shows}
         self.order = [s.id for s in shows]
         current = self.show.id if self.show else None
+        base = self._base_ids()
         if self.shuffle:
-            kept = [i for i in self.queue if i in self.shows]
-            self.queue = kept + [i for i in self.order if i not in kept]
+            kept = [i for i in self.queue if i in base]
+            self.queue = kept + [i for i in base if i not in kept]
         else:
-            self.queue = list(self.order)
+            self.queue = list(base)
         if current in self.queue:
             self._index = self.queue.index(current)
         elif self.state == IDLE:
             self.show, self._index = None, 0
+        self._changed()
+
+    # --- playlists ----------------------------------------------------------
+    def _scheduler(self):
+        return self.hass.data.get(SCHEDULER_KEY)
+
+    def _base_ids(self) -> list[str]:
+        """The shows the queue is made of: the active playlist's shows that still exist, in its order, or all shows."""
+        if self.playlist_id is not None and (sched := self._scheduler()) is not None:
+            if (playlist := sched.get_playlist(self.playlist_id)) is not None:
+                return [i for i in playlist["show_ids"] if i in self.shows]
+            self.playlist_id = None  # it was deleted: back to all shows
+        return list(self.order)
+
+    @property
+    def playlist_name(self) -> str | None:
+        if self.playlist_id is not None and (sched := self._scheduler()) is not None:
+            if (playlist := sched.get_playlist(self.playlist_id)) is not None:
+                return playlist["name"]
+        return None
+
+    def _rebuild_queue(self) -> None:
+        base = self._base_ids()
+        current = self.show.id if self.show and self.state != IDLE else None
+        if self.shuffle:
+            rest = [i for i in base if i != current]
+            random.shuffle(rest)
+            self.queue = ([current] if current in base else []) + rest
+        else:
+            self.queue = list(base)
+        self._index = self.queue.index(current) if current in self.queue else 0
+
+    async def async_set_playlist(self, playlist_id: str | None, remember: bool = True) -> None:
+        """Play from a playlist (None = all shows). A show that is playing and isn't in it stops."""
+        sched = self._scheduler()
+        if playlist_id is not None and (sched is None or sched.get_playlist(playlist_id) is None):
+            raise HomeAssistantError(f"No playlist {playlist_id}")
+        self.playlist_id = playlist_id
+        if not self.shows:
+            await self.async_refresh()
+        self._rebuild_queue()
+        if self.state != IDLE and (self.show is None or self.show.id not in self.queue):
+            await self.async_stop(reason="playlist")
+        if remember and sched is not None:
+            sched.set_active_playlist(playlist_id)
+        self._changed()
+
+    def playlists_changed(self) -> None:
+        """A playlist was edited or deleted: rebuild the queue if it is the active one."""
+        if self.playlist_id is not None:
+            self._rebuild_queue()  # (a deleted active playlist falls back to all shows in _base_ids)
         self._changed()
 
     # --- listeners ----------------------------------------------------------
@@ -233,6 +288,8 @@ class ShowPlayer:
             "transition": self.transition,
             "transition_effect": self.transition_effect,
             "queue": list(self.queue),
+            "playlist_id": self.playlist_id,
+            "playlist": self.playlist_name,
             "entity_id": self.entity_id,
         }
 
@@ -252,7 +309,7 @@ class ShowPlayer:
         if show_id is not None and show_id not in self.shows:
             raise HomeAssistantError(f"No show called {show_id}")
         if not self.queue:
-            raise HomeAssistantError("There are no shows in the library")
+            raise HomeAssistantError("There are no shows in this playlist" if self.playlist_id else "There are no shows in the library")
         if show_id is None:
             show_id = self.show.id if self.show and self.show.id in self.queue else self.queue[0]
         if self.shuffle and show_id in self.queue:  # the chosen show leads, the rest stay shuffled
@@ -296,7 +353,8 @@ class ShowPlayer:
         self.state = PLAYING
         self._changed()
 
-    async def async_stop(self) -> None:
+    async def async_stop(self, reason: str = "user") -> None:
+        self.stop_reason = reason  # the scheduler tells a person's stop from its own and from a queue that ran out
         self._cancel_runner()
         await self._finish()
 
@@ -319,7 +377,7 @@ class ShowPlayer:
     async def async_next(self) -> None:
         nxt = self._next_index(auto=False)
         if nxt is None:
-            await self.async_stop()
+            await self.async_stop(reason="ended")
         else:
             self._start(nxt)
 
@@ -345,14 +403,7 @@ class ShowPlayer:
         if shuffle == self.shuffle:
             return
         self.shuffle = shuffle
-        current = self.show.id if self.show and self.state != IDLE else None
-        if shuffle:
-            rest = [i for i in self.order if i != current]
-            random.shuffle(rest)
-            self.queue = ([current] if current else []) + rest
-        else:
-            self.queue = list(self.order)
-        self._index = self.queue.index(current) if current in self.queue else 0
+        self._rebuild_queue()
         self._changed()
 
     async def async_set_repeat(self, repeat: str) -> None:
@@ -414,6 +465,7 @@ class ShowPlayer:
             raise
         except Exception:  # noqa: BLE001
             _LOGGER.exception("Show queue stopped")
+        self.stop_reason = "ended"
         await self._finish()  # the queue is over
 
     async def _between(self, nxt: Show | None) -> float:
@@ -524,8 +576,12 @@ async def async_setup_player(hass: HomeAssistant, entry: ConfigEntry) -> ShowPla
     await hass.async_add_executor_job(os.makedirs, library.root, 0o777, True)
     player = ShowPlayer(hass, library)
     player.configure(entry)
+    if (sched := hass.data.get(SCHEDULER_KEY)) is not None:
+        player.playlist_id = sched.active_playlist if sched.get_playlist(sched.active_playlist or "") else None
     hass.data[SHOW_PLAYER_KEY] = player
     await player.async_refresh()
+    if (sched := hass.data.get(SCHEDULER_KEY)) is not None:
+        sched.async_player_ready()
     return player
 
 
@@ -533,5 +589,5 @@ async def async_unload_player(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Stop playback and drop the player."""
     player: ShowPlayer | None = hass.data.pop(SHOW_PLAYER_KEY, None)
     if player is not None:
-        await player.async_stop()
+        await player.async_stop(reason="unload")
         player._listeners.clear()
