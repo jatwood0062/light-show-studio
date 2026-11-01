@@ -241,6 +241,7 @@ class LightShowStudioPanel extends HTMLElement {
         .narrow nav button[aria-selected=true] { color: var(--primary-color); box-shadow: inset 0 3px 0 var(--primary-color); }
         .narrow nav .dot { position: absolute; top: 8px; left: calc(50% + 8px); }
         .narrow main { padding: 12px 12px calc(76px + env(safe-area-inset-bottom)); }
+              .btn.rm { color: var(--error-color, #db4437); border-color: var(--error-color, #db4437); margin-left: auto; }
       </style>
       <div class="root">
         <header>
@@ -665,7 +666,8 @@ class LightShowStudioPanel extends HTMLElement {
           <div class="warns"></div>
           <div class="serr" role="alert" hidden></div>
           <div class="btnrow"><button class="btn sm save" type="submit">Save</button>
-            <button class="btn alt sm reset" type="button">Reset</button></div>
+            <button class="btn alt sm reset" type="button">Reset</button>
+            <button class="btn alt sm rm" type="button">Remove light</button></div>
           <div class="free note">Changing the IP address reloads the light.</div>
         </form>
         <div class="serr st-err" role="alert" hidden></div>
@@ -677,7 +679,9 @@ class LightShowStudioPanel extends HTMLElement {
       sws: q(".sws"), groups: q(".groups"), fx: q(".st-fx"), ctl: q(".st-ctl"), form: q(".st-set"), err: q(".st-err"),
       nm: q(".f-nm"), ip: q(".f-ip"), st: q(".f-st"), bl: q(".f-bl"), liveTxt: q(".st-set .live"),
       use: q(".use"), warns: q(".warns"), ferr: q(".st-set .serr"), save: q(".save"), reset: q(".reset"),
+      rm: q(".rm"),
     };
+    st.rm.onclick = () => this._studioRemove();
     const st = this._st;
     st.pick.onchange = () => {
       const s = this._resolveStrand(st.pick.value);
@@ -888,6 +892,28 @@ class LightShowStudioPanel extends HTMLElement {
     } catch (err) {
       fail((typeof err === "string" ? err : err?.message) || "Couldn't save.");
       st.save.disabled = false;
+    }
+  }
+
+  async _studioRemove() {
+    const st = this._st;
+    const s = this._currentStrand();
+    if (!s) return;
+    const what = `"${s.title}"${s.host ? ` (${s.host})` : ""}`;
+    if (!window.confirm(`Remove ${what} from Light Show Studio? Its device and lights are deleted. You can add it again later.`)) return;
+    st.rm.disabled = true;
+    try {
+      await this._hass.callWS({ type: "light_show_studio/strand/remove", entry_id: s.entry_id });
+      this._formDirty = false;
+      this._formKey = null;
+      await this._loadStrands();
+      const next = (this._strands || [])[0];
+      if (next) this._openStudio(next);
+    } catch (err) {
+      st.ferr.textContent = (typeof err === "string" ? err : err?.message) || "Couldn't remove the light.";
+      st.ferr.hidden = false;
+    } finally {
+      st.rm.disabled = false;
     }
   }
 

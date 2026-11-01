@@ -36,6 +36,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_strands)
     websocket_api.async_register_command(hass, ws_identify)
     websocket_api.async_register_command(hass, ws_strand_update)
+    websocket_api.async_register_command(hass, ws_strand_remove)
 
 
 def _controller(hass: HomeAssistant, entity_id: str) -> C9Controller | None:
@@ -213,3 +214,21 @@ def ws_strand_update(hass: HomeAssistant, connection: websocket_api.ActiveConnec
             options[key] = msg[key]
     hass.config_entries.async_update_entry(entry, title=msg.get("title", entry.title), data=data, options=options)
     connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "light_show_studio/strand/remove",
+    vol.Required("entry_id"): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_strand_remove(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
+                           msg: dict[str, Any]) -> None:
+    """Remove a light (its config entry, device and entities). The player can't be removed here."""
+    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    if entry is None or entry.domain != DOMAIN or entry.data.get(CONF_TYPE) == TYPE_PLAYER:
+        connection.send_error(msg["id"], "not_found", "That light is not set up")
+        return
+    await hass.config_entries.async_remove(entry.entry_id)
+    connection.send_result(msg["id"], {})
+
