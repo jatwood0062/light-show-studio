@@ -5,6 +5,10 @@ Changes to Light Show Studio, newest first.
 ## [2.0.0] - 2026-11-01
 
 ### Added
+- 25 new effects: Vintage Pastel, Retro Christmas, Icy Blue & White, Gold & White, Red/Green/White, Rainbow Bands,
+  Ombre, Snowy (still); Rainbow Twinkle, Vintage Twinkle, Christmas Twinkle, Sparkle, Starfield, Snowfall, Icicle Drip,
+  Candle Flicker, Aurora, Lava, Red & Blue, Color Wipe, Larson Scanner, Rainbow Breathe, Peppermint Swirl, Heartbeat,
+  Meteor Shower (animated). They scale with the bulb count and none flash faster than about 1 Hz.
 - Studio tab in the Light Shows app: one light at a time, with a big live view, power, brightness, colour,
   effect chips ("Follow the show" first), a show-mode line with a hand-back button, Identify, and admin
   settings (name, IP address, start pixel, bulb count) with live pixel and channel ranges. Tap a strand
