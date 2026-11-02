@@ -11,6 +11,7 @@ from homeassistant.helpers.event import async_call_later
 
 from .const import CONF_DEVICE_ID, CONF_TYPE, DOMAIN, TYPE_PLAYER, TYPE_TWINKLY, TYPE_WLED
 from .controller import C9Controller
+from .hosts import is_lan_ipv4
 from .protocol import async_probe, async_scan
 from .twinkly import TwinklyController, async_discover, async_gestalt
 from .wled import async_info
@@ -72,6 +73,8 @@ class HealthMonitor:
             await self._check_wled(wled)
 
     def _move(self, entry: ConfigEntry, new_host: str) -> None:
+        if not is_lan_ipv4(new_host):  # the address came off the network: never follow one to the internet
+            return
         _LOGGER.info("%s moved from %s to %s", entry.title, entry.data.get(CONF_HOST), new_host)
         self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_HOST: new_host})
 

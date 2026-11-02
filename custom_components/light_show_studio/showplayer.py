@@ -20,6 +20,7 @@ from homeassistant.util import dt as dt_util
 
 from . import transitions
 from .const import (
+    CONF_ALLOWED_SOURCES,
     CONF_AUDIO_OFFSET,
     CONF_GAP,
     CONF_SPEAKERS,
@@ -81,6 +82,8 @@ class ShowPlayer:
         def opt(key: str, default: Any) -> Any:
             return entry.options.get(key, entry.data.get(key, default))
 
+        if (receiver := self.hass.data.get(DOMAIN)) is not None:  # who may send xLights / E1.31 data
+            receiver.set_allowed_sources(opt(CONF_ALLOWED_SOURCES, ""))
         self._speakers = normalize_speakers(opt(CONF_SPEAKERS, []))
         self.audio_offset = float(opt(CONF_AUDIO_OFFSET, 0.0) or 0.0)
         gap = opt(CONF_GAP, DEFAULT_GAP)

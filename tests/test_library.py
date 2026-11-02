@@ -133,9 +133,8 @@ def test_symlink_out_of_root_is_refused(lib, tmp_path):
     (outside / "a.fseq").write_bytes(fseq_bytes())
     os.makedirs(lib.root, exist_ok=True)
     os.symlink(outside, os.path.join(lib.root, "Linked"))
-    assert [s.id for s in lib.scan()] == ["Linked"]
-    with pytest.raises(ValueError):
-        lib.delete("Linked")
+    assert lib.scan() == []  # links are never followed, so the show isn't even listed
+    assert lib.delete("Linked") is False
     assert (outside / "a.fseq").exists()
 
 

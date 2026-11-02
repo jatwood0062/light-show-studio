@@ -27,19 +27,25 @@ from .effects import EFFECT_LIST, EFFECTS
 from .protocol import Colour
 
 
+MAX_COLOURS = 1020  # a string never has more bulbs
+
+
 def _colour(value: Any) -> Colour:
-    if isinstance(value, str):
-        v = value.lstrip("#")
-        if len(v) != 6:
-            raise vol.Invalid(f"expected #rrggbb, got {value}")
-        return int(v[0:2], 16), int(v[2:4], 16), int(v[4:6], 16)
-    if isinstance(value, (list, tuple)) and len(value) == 3:
-        return tuple(max(0, min(255, int(x))) for x in value)
-    raise vol.Invalid(f"expected #rrggbb or [r, g, b], got {value}")
+    try:
+        if isinstance(value, str):
+            v = value.lstrip("#")
+            if len(v) != 6:
+                raise vol.Invalid("expected #rrggbb")
+            return int(v[0:2], 16), int(v[2:4], 16), int(v[4:6], 16)
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            return tuple(max(0, min(255, int(x))) for x in value)
+    except (ValueError, TypeError, OverflowError) as err:
+        raise vol.Invalid("expected #rrggbb or [r, g, b]") from err
+    raise vol.Invalid("expected #rrggbb or [r, g, b]")
 
 
 SET_PIXELS_SCHEMA = {
-    vol.Required("colors"): vol.All(cv.ensure_list, [_colour]),
+    vol.Required("colors"): vol.All(cv.ensure_list, vol.Length(min=1, max=MAX_COLOURS), [_colour]),
     vol.Optional("repeat", default=True): cv.boolean,
 }
 

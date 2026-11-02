@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -19,6 +20,8 @@ FSEQ_EXT = ".fseq"
 PLAYLIST = "playlist.json"
 STAGING = ".uploading"  # temp files for uploads, hidden from scans
 EXTRA_NAME_CHARS = " -_.,'()&!"
+MAX_NAME_LEN = 120  # of a file or folder name
+STALE_STAGING = 24 * 3600  # seconds before a leftover temp upload is swept away
 
 
 @dataclass
@@ -34,11 +37,13 @@ class Show:
 
 def sanitize_name(name: str) -> str:
     """A safe single file or folder name: path parts stripped, odd characters dropped."""
+    if "\0" in name:
+        raise ValueError("invalid name")
     name = name.replace("\\", "/").rsplit("/", 1)[-1].strip()
     if name.startswith("."):
         raise ValueError(f"invalid name {name!r}")
     name = "".join(c for c in name if c.isalnum() or c in EXTRA_NAME_CHARS).strip()
-    if not name or name.startswith("."):
+    if not name or name.startswith(".") or len(name) > MAX_NAME_LEN:
         raise ValueError("invalid name")
     return name
 
@@ -84,6 +89,8 @@ class ShowLibrary:
     def media_source_id(self, path: str) -> str:
         """media-source:// id for a file in the library, for resolving a URL a speaker can fetch."""
         rel = os.path.relpath(os.path.realpath(path), os.path.realpath(self.media_dir))
+        if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+            raise ValueError(f"{path} is outside the media folder")
         return f"media-source://media_source/{self.source_id}/{rel.replace(os.sep, '/')}"
 
     # --- reading ----------------------------------------------------------
@@ -114,8 +121,11 @@ class ShowLibrary:
             if entry.startswith(".") or entry == PLAYLIST:
                 continue
             path = os.path.join(root, entry)
+            if os.path.islink(path):  # a link could lead anywhere: never followed
+                continue
             if os.path.isdir(path):
-                files = sorted(f for f in os.listdir(path) if not f.startswith(".") and os.path.isfile(os.path.join(path, f)))
+                files = sorted(f for f in os.listdir(path) if not f.startswith(".") and not os.path.islink(os.path.join(path, f))
+                               and os.path.isfile(os.path.join(path, f)))
                 fseq = next((f for f in files if f.lower().endswith(FSEQ_EXT)), None)
                 audio = next((f for f in files if f.lower().endswith(AUDIO_EXTS)), None)
                 if fseq:
@@ -188,9 +198,22 @@ class ShowLibrary:
         """Path of an empty temp file for an upload, on the same filesystem as the library."""
         staging = os.path.join(self._real_root(), STAGING)
         os.makedirs(staging, exist_ok=True)
+        self._sweep(staging)
         fd, tmp = tempfile.mkstemp(dir=staging)
         os.close(fd)
         return tmp
+
+    @staticmethod
+    def _sweep(staging: str) -> None:
+        """Remove temp uploads left behind by a crash or a dropped connection."""
+        now = time.time()
+        for name in os.listdir(staging):
+            path = os.path.join(staging, name)
+            try:
+                if os.path.isfile(path) and not os.path.islink(path) and now - os.path.getmtime(path) > STALE_STAGING:
+                    os.unlink(path)
+            except OSError:
+                pass
 
     def commit_upload(self, tmp: str, filename: str, show: str | None = None) -> str:
         """Move a finished temp file into its show folder (replacing that show's old file of the
@@ -204,7 +227,10 @@ class ShowLibrary:
         folder = self._inside(os.path.join(self._real_root(), show_id))
         os.makedirs(folder, exist_ok=True)
         kinds = (FSEQ_EXT,) if ext == FSEQ_EXT else AUDIO_EXTS
-        dest = self._inside(os.path.join(folder, stem + ext))
+        dest_path = os.path.join(folder, stem + ext)
+        if os.path.islink(dest_path) or os.path.islink(folder):
+            raise ValueError("refusing to write through a symbolic link")
+        dest = self._inside(dest_path)
         os.replace(tmp, dest)  # the new file is in place before the old one goes
         for old in os.listdir(folder):
             path = os.path.join(folder, old)

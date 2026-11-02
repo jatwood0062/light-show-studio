@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ipaddress
 from typing import Any
 
 import voluptuous as vol
@@ -12,6 +11,7 @@ from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
+    CONF_ALLOWED_SOURCES,
     CONF_AUDIO_OFFSET,
     CONF_BULB_ENTITIES,
     CONF_BULBS,
@@ -28,6 +28,7 @@ from .const import (
     TYPE_TWINKLY,
     TYPE_WLED,
 )
+from .hosts import is_lan_ipv4, parse_sources, valid_ipv4
 from .protocol import async_scan
 from .twinkly import async_discover, async_gestalt
 from .wled import async_info, format_mac
@@ -47,7 +48,7 @@ def _model(sku: str):
 def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, name: str = "Light") -> vol.Schema:
     fields: dict = {}
     if with_name:
-        fields[vol.Required(CONF_NAME, default=cur.get(CONF_NAME, name))] = str
+        fields[vol.Required(CONF_NAME, default=cur.get(CONF_NAME, name))] = vol.All(str, vol.Length(min=1, max=100))
     fields[vol.Required(CONF_BULBS, default=cur.get(CONF_BULBS, DEFAULT_BULBS))] = vol.All(
         int, vol.Range(min=1, max=1020 if twinkly else 255))
     if not twinkly:
@@ -57,9 +58,20 @@ def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, n
     return vol.Schema(fields)
 
 
+def _sources(value: Any) -> str:
+    """Validate the allowed-senders text and tidy it into 'a, b, c'."""
+    text = str(value or "").strip()
+    try:
+        nets = parse_sources(text)
+    except ValueError as err:
+        raise vol.Invalid(str(err)) from err
+    return ", ".join(str(n.network_address) if n.prefixlen == 32 else str(n) for n in nets)
+
+
 def _player_schema(cur: dict[str, Any]) -> vol.Schema:
-    """Speakers and the between-shows look are chosen in the app; only the timing lives here."""
+    """Speakers and the between-shows look are chosen in the app; the timing and who may send live here."""
     return vol.Schema({
+        vol.Optional(CONF_ALLOWED_SOURCES, default=cur.get(CONF_ALLOWED_SOURCES, "")): _sources,
         vol.Required(CONF_AUDIO_OFFSET, default=cur.get(CONF_AUDIO_OFFSET, 0.0)): vol.Coerce(float),
         vol.Required(CONF_GAP, default=cur.get(CONF_GAP, 3.0)): vol.All(vol.Coerce(float), vol.Range(min=0, max=120)),
     })
@@ -92,7 +104,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
             found = self._found.get(host, {})
             return await self._start_light(host, found.get("sku", ""), found.get("device", ""))
         known = {e.data.get(CONF_HOST) for e in self._async_current_entries()}
-        self._found = {ip: d for ip, d in (await async_scan() or {}).items() if ip not in known}
+        self._found = {ip: d for ip, d in (await async_scan() or {}).items() if ip not in known and is_lan_ipv4(ip)}
         options = [selector.SelectOptionDict(value=ip, label=f"{d['sku'] or 'Light'} at {ip}")
                    for ip, d in sorted(self._found.items())]
         options.append(selector.SelectOptionDict(value=MANUAL, label="Enter an IP address"))
@@ -106,8 +118,8 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             host = user_input[CONF_HOST].strip()
-            try:  # a name would be resolved inside the event loop when sending
-                ipaddress.IPv4Address(host)
+            try:  # a name would be resolved inside the event loop when sending; only LAN addresses
+                host = valid_ipv4(host)
             except ValueError:
                 errors[CONF_HOST] = "invalid_host"
             else:
@@ -116,6 +128,10 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
                                     errors=errors)
 
     async def _start_light(self, host: str, sku: str, device: str) -> ConfigFlowResult:
+        try:
+            host = valid_ipv4(host)
+        except ValueError:
+            return self.async_abort(reason="invalid_host")
         await self.async_set_unique_id(host)
         self._abort_if_unique_id_configured()
         model = _model(sku)
@@ -159,7 +175,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
             errors["base"] = "cannot_connect"
         else:
             known = {e.data.get(CONF_HOST) for e in self._async_current_entries()}
-            self._tw_found = {ip: n for ip, n in (await async_discover()).items() if ip not in known}
+            self._tw_found = {ip: n for ip, n in (await async_discover()).items() if ip not in known and is_lan_ipv4(ip)}
             if not self._tw_found:
                 return await self.async_step_twinkly_manual()
         options = [selector.SelectOptionDict(value=ip, label=f"{name} at {ip}")
@@ -174,7 +190,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             host = user_input[CONF_HOST].strip()
             try:
-                ipaddress.IPv4Address(host)
+                host = valid_ipv4(host)
             except ValueError:
                 errors[CONF_HOST] = "invalid_host"
             else:
@@ -187,6 +203,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _start_twinkly(self, host: str) -> ConfigFlowResult | None:
         """Ask the light about itself; None if it doesn't answer."""
         try:
+            host = valid_ipv4(host)
             info = await async_gestalt(async_get_clientsession(self.hass), host)
             mac = str(info["mac"]).lower()
         except Exception:  # unreachable, or not a Twinkly
@@ -197,8 +214,8 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         self._light = {CONF_HOST: host, CONF_TYPE: TYPE_TWINKLY, CONF_SKU: info.get("product_code", ""),
                        CONF_DEVICE_ID: mac, CONF_LED_PROFILE: profile}
         self._defaults = {
-            CONF_NAME: info.get("device_name") or "Twinkly",
-            CONF_BULBS: int(info.get("number_of_led") or 1),
+            CONF_NAME: str(info.get("device_name") or "Twinkly")[:100],
+            CONF_BULBS: max(1, min(int(info.get("number_of_led") or 1), 1020)),
             CONF_BULB_ENTITIES: False,
             CONF_START_PIXEL: self._next_pixel(),
         }
@@ -226,7 +243,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         else:
             known = {e.data.get(CONF_HOST) for e in self._async_current_entries()}
             self._wled_found = {e.data[CONF_HOST]: e.title for e in self.hass.config_entries.async_entries("wled")
-                                if e.data.get(CONF_HOST) and e.data[CONF_HOST] not in known}
+                                if is_lan_ipv4(e.data.get(CONF_HOST)) and e.data[CONF_HOST] not in known}
             if not self._wled_found:
                 return await self.async_step_wled_manual()
         options = [selector.SelectOptionDict(value=ip, label=f"{name} at {ip}")
@@ -241,7 +258,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             host = user_input[CONF_HOST].strip()
             try:
-                ipaddress.IPv4Address(host)
+                host = valid_ipv4(host)
             except ValueError:
                 errors[CONF_HOST] = "invalid_host"
             else:
@@ -254,6 +271,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _start_wled(self, host: str) -> ConfigFlowResult | None:
         """Ask the light about itself; None if it doesn't answer."""
         try:
+            host = valid_ipv4(host)
             info = await async_info(async_get_clientsession(self.hass), host)
             mac = format_mac(info["mac"])
             count = int(info["leds"]["count"])
@@ -264,7 +282,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         self._light = {CONF_HOST: host, CONF_TYPE: TYPE_WLED, CONF_SKU: info.get("arch") or "WLED",
                        CONF_DEVICE_ID: mac}
         self._defaults = {
-            CONF_NAME: info.get("name") or "WLED",
+            CONF_NAME: str(info.get("name") or "WLED")[:100],
             CONF_BULBS: max(1, min(count, 1020)),
             CONF_BULB_ENTITIES: False,
             CONF_START_PIXEL: self._next_pixel(),

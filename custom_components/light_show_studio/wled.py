@@ -14,6 +14,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .controller import C9Controller
+from .hosts import valid_ipv4
+from .netutil import check, read_json
 from .protocol import Colour
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,9 +54,11 @@ def format_mac(raw: str) -> str:
 # --- network ---------------------------------------------------------------------
 async def async_info(session: aiohttp.ClientSession, ip: str) -> dict[str, Any]:
     """The device's /json/info (name, ver, leds, mac, arch...). Raises."""
-    async with session.get(f"http://{ip}/json/info", timeout=aiohttp.ClientTimeout(total=3)) as resp:
-        resp.raise_for_status()
-        data = await resp.json(content_type=None)
+    ip = valid_ipv4(ip)
+    async with session.get(f"http://{ip}/json/info", timeout=aiohttp.ClientTimeout(total=3),
+                           allow_redirects=False) as resp:
+        check(resp)
+        data = await read_json(resp)
     if not isinstance(data, dict) or "leds" not in data:
         raise ValueError("not a WLED device")
     return data
@@ -147,8 +151,9 @@ class WledController(C9Controller):
     async def _post_state(self, body: dict[str, Any]) -> None:
         try:
             async with self._state_lock:
-                async with self.session.post(f"http://{self.host}/json/state", json=body, timeout=TIMEOUT) as resp:
-                    resp.raise_for_status()
+                async with self.session.post(f"http://{self.host}/json/state", json=body, timeout=TIMEOUT,
+                                             allow_redirects=False) as resp:
+                    check(resp)
         except NET_ERRORS as err:
             _LOGGER.debug("WLED %s: can't set %s: %s", self.host, body, err)
         except Exception:  # never let a background task raise

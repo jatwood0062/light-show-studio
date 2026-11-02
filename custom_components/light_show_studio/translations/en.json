@@ -85,16 +85,19 @@
         "description": "Plays your xLights / Light-O-Rama .fseq shows on all your lights. Pick the speakers and the look between shows in the Light Shows app.",
         "data": {
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
-          "gap": "Pause between shows (seconds)"
+          "gap": "Pause between shows (seconds)",
+          "allowed_sources": "Only accept xLights / sequencer data from these IPs (optional, comma separated; empty = any device on your home network)"
         }
       }
     },
     "abort": {
-      "already_configured": "This is already set up."
+      "already_configured": "This is already set up.",
+      "invalid_host": "That isn't a private (home network) IPv4 address."
     },
     "error": {
-      "invalid_host": "Enter the light's IPv4 address, like 192.168.1.50.",
-      "cannot_connect": "Can't reach a Twinkly or WLED light at that address."
+      "invalid_host": "Enter the light's home-network IPv4 address, like 192.168.1.50 (public, loopback and multicast addresses aren't allowed).",
+      "cannot_connect": "Can't reach a Twinkly or WLED light at that address.",
+      "invalid_sources": "Enter private IPv4 addresses or networks separated by commas, like 192.168.1.20, 10.0.0.0/24."
     }
   },
   "options": {
@@ -106,9 +109,13 @@
           "bulb_entities": "Create a light for every bulb",
           "start_pixel": "First pixel in xLights / Light-O-Rama output",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
-          "gap": "Pause between shows (seconds)"
+          "gap": "Pause between shows (seconds)",
+          "allowed_sources": "Only accept xLights / sequencer data from these IPs (optional, comma separated; empty = any device on your home network)"
         }
       }
+    },
+    "error": {
+      "invalid_sources": "Enter private IPv4 addresses or networks separated by commas, like 192.168.1.20, 10.0.0.0/24."
     }
   },
   "services": {

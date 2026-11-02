@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN, EXTERNAL_MAX_FPS, FLUSH_DELAY, FPS, WHOLE_LIGHT_FPS
 from .effects import ANIMATED, EFFECTS
+from .hosts import valid_ipv4
 from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
 
 SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive the string
@@ -32,7 +33,7 @@ def enable_shows(hass: HomeAssistant) -> None:
 class C9Controller:
     def __init__(self, hass: HomeAssistant, host: str, bulbs: int, segmented: bool = True) -> None:
         self.hass = hass
-        self.host = host
+        self.host = valid_ipv4(host)  # only LAN addresses; ValueError otherwise
         self.lan = self._make_link(host)
         self.bulbs = bulbs
         self.segmented = segmented  # False: the light takes one colour, the frame's average

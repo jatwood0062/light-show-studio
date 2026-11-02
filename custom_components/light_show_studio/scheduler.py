@@ -45,6 +45,12 @@ STATUSES = [STATUS_IDLE, STATUS_RUNNING, STATUS_PAUSED, STATUS_OFF]
 AT_END = ("off", "effect", "leave")
 MAX_REARM = timedelta(hours=6)  # wake at least this often, in case the clock or the sun moved under us
 SAVE_DELAY = 1.0
+MAX_PLAYLISTS = 100
+MAX_SCHEDULES = 100
+MAX_SHOWS_PER_PLAYLIST = 500
+MAX_SPEAKERS = 16
+MAX_ID = 64
+MAX_NAME = 60
 
 
 # --- validation ---------------------------------------------------------------------
@@ -84,13 +90,13 @@ def _days(value: list[int]) -> list[int]:
 SCHEDULE_FIELDS: dict[Any, Any] = {
     vol.Required("name"): vol.All(cv.string, vol.Strip, vol.Length(min=1, max=60)),
     vol.Optional("enabled", default=True): cv.boolean,
-    vol.Required("days"): vol.All([vol.All(vol.Coerce(int), vol.Range(min=0, max=6))], vol.Length(min=1), _days),
+    vol.Required("days"): vol.All([vol.All(vol.Coerce(int), vol.Range(min=0, max=6))], vol.Length(min=1, max=14), _days),
     vol.Required("start"): _edge,
     vol.Optional("end", default=None): vol.Any(None, _edge),
     vol.Optional("date_from", default=None): vol.Any(None, _mmdd),
     vol.Optional("date_to", default=None): vol.Any(None, _mmdd),
-    vol.Required("playlist_id"): cv.string,
-    vol.Optional("speakers", default=list): vol.All(cv.ensure_list, [cv.entity_id]),
+    vol.Required("playlist_id"): vol.All(cv.string, vol.Length(min=1, max=MAX_ID)),
+    vol.Optional("speakers", default=list): vol.All(cv.ensure_list, [cv.entity_id], vol.Length(max=MAX_SPEAKERS)),
     vol.Optional("volume", default=None): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=0, max=100))),
     vol.Optional("shuffle", default=False): cv.boolean,
     vol.Optional("repeat"): cv.boolean,
@@ -161,19 +167,40 @@ class Scheduler:
 
     # --- storage -------------------------------------------------------------------
     async def async_load(self) -> None:
-        data = await self._store.async_load() or {}
+        """Read the store. Whatever is in it (old schema, hand edits, damage), setup carries on with
+        the entries that are valid, up to the limits."""
+        try:
+            data = await self._store.async_load()
+        except Exception:  # noqa: BLE001  an unreadable store must not stop the integration
+            _LOGGER.exception("Could not read the saved playlists and schedules; starting empty")
+            data = None
+        if not isinstance(data, dict):
+            data = {}
         self.playlists = []
-        for p in data.get("playlists", []):
-            if isinstance(p, dict) and isinstance(p.get("id"), str) and isinstance(p.get("name"), str):
-                ids = [i for i in p.get("show_ids", []) if isinstance(i, str)]
-                self.playlists.append({"id": p["id"], "name": p["name"], "show_ids": list(dict.fromkeys(ids))})
+        seen: set[str] = set()
+        playlists = data.get("playlists")
+        for p in playlists[:MAX_PLAYLISTS] if isinstance(playlists, list) else []:
+            if not (isinstance(p, dict) and isinstance(p.get("id"), str) and isinstance(p.get("name"), str)):
+                continue
+            if not 0 < len(p["id"]) <= MAX_ID or p["id"] in seen:
+                continue
+            seen.add(p["id"])
+            raw = p.get("show_ids")
+            ids = [i for i in (raw if isinstance(raw, list) else []) if isinstance(i, str) and 0 < len(i) <= 255]
+            self.playlists.append({"id": p["id"], "name": p["name"].strip()[:MAX_NAME] or "Playlist",
+                                   "show_ids": list(dict.fromkeys(ids))[:MAX_SHOWS_PER_PLAYLIST]})
         self.schedules = []
-        for s in data.get("schedules", []):
+        seen = set()
+        schedules = data.get("schedules")
+        for s in schedules[:MAX_SCHEDULES] if isinstance(schedules, list) else []:
             try:
-                if not isinstance(s, dict) or not isinstance(s.get("id"), str):
+                if not isinstance(s, dict) or not isinstance(s.get("id"), str) or not 0 < len(s["id"]) <= MAX_ID:
                     raise vol.Invalid("no id")
+                if s["id"] in seen:
+                    raise vol.Invalid("duplicate id")
+                seen.add(s["id"])
                 self.schedules.append({**validate_schedule(s), "id": s["id"]})
-            except vol.Invalid as err:
+            except (vol.Invalid, ValueError, TypeError, KeyError) as err:
                 _LOGGER.warning("Dropping a saved schedule that is no longer valid: %s", err)
         active = data.get("active_playlist")
         self.active_playlist = active if isinstance(active, str) and self.get_playlist(active) else None
@@ -218,6 +245,10 @@ class Scheduler:
         if not name or len(name) > 60:
             raise ValueError("A playlist needs a name of 1 to 60 characters")
         ids = list(dict.fromkeys(show_ids))
+        if len(ids) > MAX_SHOWS_PER_PLAYLIST:
+            raise ValueError(f"A playlist holds at most {MAX_SHOWS_PER_PLAYLIST} shows")
+        if not playlist_id and len(self.playlists) >= MAX_PLAYLISTS:
+            raise ValueError(f"At most {MAX_PLAYLISTS} playlists")
         if playlist_id:
             playlist = self.get_playlist(playlist_id)
             if playlist is None:
@@ -275,6 +306,8 @@ class Scheduler:
                 self.schedules[self.schedules.index(old)] = sched
                 await self._drop_run(schedule_id, "edited", at_end=False)
             else:
+                if len(self.schedules) >= MAX_SCHEDULES:
+                    raise ValueError(f"At most {MAX_SCHEDULES} schedules")
                 sched["id"] = secrets.token_hex(4)
                 self.schedules.append(sched)
             self._save()

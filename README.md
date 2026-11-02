@@ -152,6 +152,27 @@ next one in over 1 s, *Crossfade* blends the last frame into the next show's fir
 and then fades the next show in. Pressing stop, next, previous or a show cuts a transition short.
 Changing the setting from the card doesn't interrupt the show that is playing.
 
+## Security
+
+Light Show Studio opens **two UDP ports on Home Assistant, and only while at least one light is set up**:
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 4048 | DDP | pixel data from xLights and similar |
+| 5568 | E1.31 / sACN (unicast, plus multicast groups 239.255.0.1-12 on your LAN interface) | pixel data from xLights and similar |
+
+Both are bound on all interfaces, so every packet's **source address is checked**: only private / link-local
+IPv4 senders (10/8, 172.16/12, 192.168/16, 169.254/16) are processed. Packets arriving over Tailscale (100.x), from the
+internet or from any other address are dropped. Senders are also rate limited and every packet is parsed strictly.
+
+To accept data from your xLights PC only, open **Settings -> Devices & services -> Light Show Studio -> Light Show Player
+-> Configure** and put its address in *Only accept sequencer data from these IPs* (comma separated; networks such as
+`192.168.4.0/24` work too). Empty means any device on your home network. For defence in depth you can also block
+UDP 4048 and 5568 on your firewall for every interface except the LAN.
+
+Lights are only ever contacted at private / link-local IPv4 addresses; changing a light's address, uploading shows and
+every configuration change need an administrator account. Uploads accept only `.fseq` and common audio files.
+
 ## Live from xLights / Light-O-Rama
 
 Home Assistant listens for pixel data on **DDP (UDP 4048)** and **E1.31/sACN (UDP 5568,

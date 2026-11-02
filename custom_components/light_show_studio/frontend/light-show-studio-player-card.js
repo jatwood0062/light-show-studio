@@ -785,9 +785,19 @@ class LightShowStudioPlayerCard extends HTMLElement {
       nm.textContent = s.name;
       const meta = document.createElement("div");
       meta.className = "meta";
-      meta.innerHTML = `<span>${fmt(s.duration)}</span>${
-        s.has_audio ? `<span class="note" title="Has a song">${icon("note", 13)} song</span>` : `<span>No music</span>`
-      }`;
+      // built from DOM nodes, not markup: nothing from the server is ever parsed as HTML
+      const dur = document.createElement("span");
+      dur.textContent = fmt(Number(s.duration));
+      const song = document.createElement("span");
+      if (s.has_audio) {
+        song.className = "note";
+        song.title = "Has a song";
+        song.innerHTML = icon("note", 13); // a fixed icon
+        song.append(" song");
+      } else {
+        song.textContent = "No music";
+      }
+      meta.append(dur, song);
       info.append(nm, meta);
       row.append(play, info);
       if (!admin || (this._state?.playlist_id && this._config?.mode !== "library")) { // a playlist is arranged in the Library, not here

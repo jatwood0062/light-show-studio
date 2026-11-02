@@ -17,6 +17,8 @@ import json
 import socket
 import struct
 
+from .hosts import is_lan_ipv4, valid_ipv4
+
 CMD_PORT = 4003
 SCAN_ADDR = ("239.255.255.250", 4001)
 REPLY_PORT = 4002
@@ -67,7 +69,7 @@ class GoveeLan:
     device with Home Assistant's own Govee integration."""
 
     def __init__(self, host: str) -> None:
-        self.host = host
+        self.host = valid_ipv4(host)  # ValueError for anything but a LAN address
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setblocking(False)
 
@@ -101,15 +103,19 @@ async def async_scan(timeout: float = 2.5) -> dict[str, dict] | None:
         end = loop.time() + timeout
         while (left := end - loop.time()) > 0:
             try:
-                data, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 2048), left)
+                data, (src, _port) = await asyncio.wait_for(loop.sock_recvfrom(sock, 2048), left)
             except TimeoutError:
                 break
+            if not is_lan_ipv4(src) or len(found) >= 64:
+                continue
             try:
                 msg = json.loads(data)["msg"]
                 if msg.get("cmd") == "scan":
                     d = msg["data"]
-                    found[d["ip"]] = {"sku": d.get("sku", ""), "device": d.get("device", "")}
-            except (ValueError, KeyError, TypeError):
+                    ip = d["ip"]
+                    if is_lan_ipv4(ip):  # the reply names the address: it must be a LAN one too
+                        found[ip] = {"sku": str(d.get("sku", ""))[:32], "device": str(d.get("device", ""))[:64]}
+            except (ValueError, KeyError, TypeError, AttributeError):
                 continue
     except OSError:
         return None
@@ -139,6 +145,7 @@ async def async_probe(hosts: list[str], wait: float = 6.0) -> dict[str, bool] | 
     sock.setblocking(False)
     loop = asyncio.get_running_loop()
     try:
+        hosts = [h for h in hosts if is_lan_ipv4(h)]
         for _ in range(2):  # a stale entry needs traffic to be probed again
             for host in hosts:
                 try:

@@ -12,9 +12,10 @@ from homeassistant.util import dt as dt_util
 
 from .const import SCHEDULER_KEY
 from .library import SHOW_PLAYER_KEY
-from .scheduler import SCHEDULE_FIELDS, Scheduler, finish_schedule
+from .scheduler import MAX_SHOWS_PER_PLAYLIST, SCHEDULE_FIELDS, Scheduler, finish_schedule
 
 P = "light_show_studio"
+ID = vol.All(str, vol.Length(min=1, max=64))  # playlist / schedule ids are short random hex
 
 
 def async_register(hass: HomeAssistant) -> None:
@@ -54,9 +55,9 @@ def ws_playlists_list(hass: HomeAssistant, connection: websocket_api.ActiveConne
 
 @websocket_api.websocket_command({
     vol.Required("type"): f"{P}/playlists/save",
-    vol.Optional("playlist_id"): str,
-    vol.Required("name"): str,
-    vol.Required("show_ids"): [str],
+    vol.Optional("playlist_id"): ID,
+    vol.Required("name"): vol.All(str, vol.Length(min=1, max=60)),
+    vol.Required("show_ids"): vol.All([vol.All(str, vol.Length(min=1, max=255))], vol.Length(max=MAX_SHOWS_PER_PLAYLIST)),
 })
 @websocket_api.require_admin
 @callback
@@ -71,7 +72,7 @@ def ws_playlists_save(hass: HomeAssistant, connection: websocket_api.ActiveConne
     connection.send_result(msg["id"], {"playlist": playlist})
 
 
-@websocket_api.websocket_command({vol.Required("type"): f"{P}/playlists/delete", vol.Required("playlist_id"): str})
+@websocket_api.websocket_command({vol.Required("type"): f"{P}/playlists/delete", vol.Required("playlist_id"): ID})
 @websocket_api.require_admin
 @callback
 def ws_playlists_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
@@ -87,7 +88,7 @@ def ws_playlists_delete(hass: HomeAssistant, connection: websocket_api.ActiveCon
 
 @websocket_api.websocket_command({
     vol.Required("type"): f"{P}/player/set_playlist",
-    vol.Required("playlist_id"): vol.Any(None, str),
+    vol.Required("playlist_id"): vol.Any(None, ID),
 })
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -146,7 +147,7 @@ def ws_schedules_list(hass: HomeAssistant, connection: websocket_api.ActiveConne
 
 @websocket_api.websocket_command({
     vol.Required("type"): f"{P}/schedules/save",
-    vol.Optional("schedule_id"): str,
+    vol.Optional("schedule_id"): ID,
     **SCHEDULE_FIELDS,
 })
 @websocket_api.require_admin
@@ -165,7 +166,7 @@ async def ws_schedules_save(hass: HomeAssistant, connection: websocket_api.Activ
     connection.send_result(msg["id"], {"schedule": _view(scheduler, sched, dt_util.utcnow())})
 
 
-@websocket_api.websocket_command({vol.Required("type"): f"{P}/schedules/delete", vol.Required("schedule_id"): str})
+@websocket_api.websocket_command({vol.Required("type"): f"{P}/schedules/delete", vol.Required("schedule_id"): ID})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_schedules_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
@@ -182,7 +183,7 @@ async def ws_schedules_delete(hass: HomeAssistant, connection: websocket_api.Act
 
 @websocket_api.websocket_command({
     vol.Required("type"): f"{P}/schedules/toggle",
-    vol.Required("schedule_id"): str,
+    vol.Required("schedule_id"): ID,
     vol.Optional("enabled"): bool,
 })
 @websocket_api.require_admin
@@ -202,7 +203,7 @@ async def ws_schedules_toggle(hass: HomeAssistant, connection: websocket_api.Act
 
 @websocket_api.websocket_command({
     vol.Required("type"): f"{P}/schedules/skip_today",
-    vol.Required("schedule_id"): str,
+    vol.Required("schedule_id"): ID,
     vol.Optional("skip", default=True): bool,
 })
 @websocket_api.require_admin

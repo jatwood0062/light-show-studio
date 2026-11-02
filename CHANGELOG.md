@@ -2,6 +2,27 @@
 
 Changes to Light Show Studio, newest first.
 
+## [Unreleased]
+
+### Security
+- DDP (UDP 4048) and E1.31 (UDP 5568) accept packets only from private / link-local IPv4 senders, so
+  nothing arriving over Tailscale or the internet is processed. New player option "allowed senders"
+  restricts them further to listed IPs / networks. Senders are rate limited, packets are parsed
+  strictly (bad headers, lengths and offsets are dropped), pushes are coalesced, and multicast is
+  joined on the LAN interface only. The sockets exist only while a light is set up.
+- Light addresses (manual entry, strand update, discovery replies, stored entries) must be private or
+  link-local IPv4 addresses; public, loopback, multicast and unspecified addresses are refused. HTTP
+  calls to Twinkly and WLED no longer follow redirects and cap the size of replies.
+- Upload: admin only, size limits per file / request / field enforced while streaming, name checks,
+  stale temp files swept. The show library never follows symbolic links, and `play_sequence` only
+  plays real `.fseq` files inside the media / www folders or an allowed external folder.
+- Websocket commands: ids, names and lists are length limited; setting bulbs checks the bulb count;
+  light addresses are shown to admins only. Playlists and schedules are capped and validated on load.
+- `.fseq` files: frame, channel and block-size limits and capped decompression (zstd / zlib bombs).
+- `set_pixels` accepts at most 1020 colours and rejects malformed ones cleanly.
+- Dashboard cards build show rows from DOM nodes instead of markup.
+- `zstandard` requirement raised to `>=0.22,<1` (bundles zstd 1.5.5 or newer).
+
 ## [2.0.0] - 2026-11-01
 
 ### Changed

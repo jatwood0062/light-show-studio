@@ -15,6 +15,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .controller import C9Controller
+from .hosts import is_lan_ipv4, valid_ipv4
+from .netutil import check, read_json
 from .protocol import Colour
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,8 +79,8 @@ async def async_discover(timeout: float = 2.5) -> dict[str, str]:
                 data, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 1024), left)
             except TimeoutError:
                 break
-            if reply := parse_discovery(data):
-                found[reply[0]] = reply[1]
+            if (reply := parse_discovery(data)) and is_lan_ipv4(reply[0]) and len(found) < 64:
+                found[reply[0]] = reply[1][:100]  # the IP comes from the packet: only LAN addresses count
     except OSError as err:
         _LOGGER.debug("Twinkly discovery failed: %s", err)
     finally:
@@ -88,15 +90,20 @@ async def async_discover(timeout: float = 2.5) -> dict[str, str]:
 
 async def async_gestalt(session: aiohttp.ClientSession, ip: str) -> dict[str, Any]:
     """The device's description (name, product_code, number_of_led, led_profile, mac...). Raises."""
-    async with session.get(f"http://{ip}/xled/v1/gestalt", timeout=aiohttp.ClientTimeout(total=3)) as resp:
-        resp.raise_for_status()
-        return await resp.json(content_type=None)
+    ip = valid_ipv4(ip)
+    async with session.get(f"http://{ip}/xled/v1/gestalt", timeout=aiohttp.ClientTimeout(total=3),
+                           allow_redirects=False) as resp:
+        check(resp)
+        data = await read_json(resp)
+    if not isinstance(data, dict):
+        raise ValueError("not a Twinkly device")
+    return data
 
 
 class TwinklyClient:
     def __init__(self, session: aiohttp.ClientSession, host: str) -> None:
         self.session = session
-        self.host = host
+        self.host = valid_ipv4(host)
         self._token = ""
         self._expires = 0.0  # monotonic
         self._lock = asyncio.Lock()
@@ -115,13 +122,17 @@ class TwinklyClient:
     async def async_login(self) -> None:
         base = f"http://{self.host}/xled/v1"
         challenge = base64.b64encode(os.urandom(32)).decode()
-        async with self.session.post(f"{base}/login", json={"challenge": challenge}, timeout=TIMEOUT) as resp:
-            resp.raise_for_status()
-            data = await resp.json(content_type=None)
+        async with self.session.post(f"{base}/login", json={"challenge": challenge}, timeout=TIMEOUT,
+                                     allow_redirects=False) as resp:
+            check(resp)
+            data = await read_json(resp)
         token = data["authentication_token"]
+        if not isinstance(token, str) or not 0 < len(token) <= 256:
+            raise ValueError("unexpected login reply")
         async with self.session.post(f"{base}/verify", json={"challenge-response": data["challenge-response"]},
-                                     headers={"X-Auth-Token": token}, timeout=TIMEOUT) as resp:
-            resp.raise_for_status()
+                                     headers={"X-Auth-Token": token}, timeout=TIMEOUT,
+                                     allow_redirects=False) as resp:
+            check(resp)
         self._token = token
         self._expires = time.monotonic() + float(data.get("authentication_token_expires_in", 14400))
 
@@ -135,12 +146,14 @@ class TwinklyClient:
         for attempt in (0, 1):
             async with self.session.request(
                     method, f"http://{self.host}/xled/v1/{path.lstrip('/')}", json=json, timeout=TIMEOUT,
-                    headers={"X-Auth-Token": self._token, "Content-Type": "application/json"}) as resp:
+                    headers={"X-Auth-Token": self._token, "Content-Type": "application/json"},
+                    allow_redirects=False) as resp:
                 if resp.status == 401 and attempt == 0:
                     pass
                 else:
-                    resp.raise_for_status()
-                    return await resp.json(content_type=None)
+                    check(resp)
+                    data = await read_json(resp)
+                    return data if isinstance(data, dict) else {}
             await self._login_once()
         return {}
 

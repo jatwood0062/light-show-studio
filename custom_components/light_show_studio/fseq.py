@@ -5,6 +5,7 @@ as absolute channel data (channel 1 = byte 0), with sparse ranges put back in pl
 """
 from __future__ import annotations
 
+import io
 import struct
 import threading
 import zlib
@@ -13,6 +14,9 @@ from dataclasses import dataclass
 PRELOAD_LIMIT = 32 * 1024 * 1024  # decode the whole show up front when it is at most this big
 RAW_BLOCK_FRAMES = 256  # uncompressed files are read in chunks of this many frames
 CACHE_BLOCKS = 4
+MAX_FRAMES = 10_000_000  # ~110 hours at 25 fps
+MAX_CHANNELS = 4 * 1024 * 1024  # per frame (1.4 million pixels); far more than the receiver ever uses
+MAX_BLOCK_BYTES = 64 * 1024 * 1024  # decoded size of one block, whatever the header claims
 
 
 class FseqError(Exception):
@@ -51,6 +55,8 @@ class FseqFile:
             raise FseqError("not an .fseq file")
         data_off, minor, major, _hdr_len, chans, frames, step = struct.unpack_from("<HBBHIIB", h, 4)
         self.version = f"{major}.{minor}"
+        if frames > MAX_FRAMES:
+            raise FseqError(f"too many frames ({frames})")
         self.frames, self.step_ms = frames, step or 50
         self.ranges: list[tuple[int, int]] = []
         codec, entries = 0, []
@@ -83,19 +89,24 @@ class FseqFile:
         self.channels = max(s + c for s, c in self.ranges) if self.ranges else chans
         if self.stride <= 0:
             raise FseqError("sequence has no channels")
+        if self.stride > MAX_CHANNELS or self.channels > MAX_CHANNELS:
+            raise FseqError("sequence has too many channels")
+        self.raw_block_frames = max(1, min(RAW_BLOCK_FRAMES, MAX_BLOCK_BYTES // self.stride))
 
         self._blocks: list[_Block] = []
         if codec == 0:
             if data_off + frames * self.stride > size:
                 raise FseqError("file is shorter than its header says")
-            for first in range(0, frames, RAW_BLOCK_FRAMES):
-                n = min(RAW_BLOCK_FRAMES, frames - first)
+            for first in range(0, frames, self.raw_block_frames):
+                n = min(self.raw_block_frames, frames - first)
                 self._blocks.append(_Block(first, n, data_off + first * self.stride, n * self.stride, 0))
         else:
             entries = [e for e in entries if e[1] > 0]  # xLights pads the index with empty entries
             off = data_off
             for i, (first, length) in enumerate(entries):
                 nxt = entries[i + 1][0] if i + 1 < len(entries) else frames
+                if not 0 < nxt - first <= frames or (nxt - first) * self.stride > MAX_BLOCK_BYTES:
+                    raise FseqError("block index is not valid")
                 self._blocks.append(_Block(first, nxt - first, off, length, codec))
                 off += length
             if off > size:
@@ -127,13 +138,16 @@ class FseqFile:
             with open(self.path, "rb") as f:
                 f.seek(b.offset)
                 raw = f.read(b.length)
+        need = b.count * self.stride  # never decode more than this, whatever the data says
         if b.codec == 1:
-            out = _zstd().ZstdDecompressor().decompressobj().decompress(raw)
+            out = _zstd_decode(raw, need)
         elif b.codec == 2:
-            out = zlib.decompress(raw)
+            d = zlib.decompressobj()
+            out = d.decompress(raw, need + 1)
+            if len(out) > need or d.unconsumed_tail:
+                raise FseqError("block decompresses to more than its header says")
         else:
             out = raw
-        need = b.count * self.stride
         if len(out) < need:
             out += bytes(need - len(out))
         return out
@@ -186,6 +200,22 @@ def _zstd():
             "export it uncompressed from xLights (Preferences > Output > FSEQ compression: None)"
         ) from err
     return zstandard
+
+
+def _zstd_decode(raw: bytes, limit: int) -> bytes:
+    """Decompress a zstd frame, refusing to produce more than `limit` bytes (decompression bombs)."""
+    try:
+        with _zstd().ZstdDecompressor().stream_reader(io.BytesIO(raw)) as reader:
+            out = bytearray()
+            while len(out) <= limit and (piece := reader.read(min(1 << 20, limit + 1 - len(out)))):
+                out += piece
+    except FseqError:
+        raise
+    except Exception as err:  # noqa: BLE001  zstandard.ZstdError and friends
+        raise FseqError(f"damaged zstd block: {err}") from err
+    if len(out) > limit:
+        raise FseqError("block decompresses to more than its header says")
+    return bytes(out)
 
 
 def load(path: str) -> FseqFile:

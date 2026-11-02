@@ -19,6 +19,9 @@ from .outputs import normalize_speakers
 from .transitions import MODES
 
 TICK = timedelta(seconds=1)
+MAX_SPEAKERS = 16
+SHOW_ID = vol.All(str, vol.Length(min=1, max=255))  # a file or folder name
+MAX_SHOWS = 2000
 
 
 def async_register(hass: HomeAssistant) -> None:
@@ -51,7 +54,7 @@ async def ws_list(hass: HomeAssistant, connection: websocket_api.ActiveConnectio
     connection.send_result(msg["id"], {"shows": [_row(s) for s in shows]})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "light_show_studio/shows/delete", vol.Required("show_id"): str})
+@websocket_api.websocket_command({vol.Required("type"): "light_show_studio/shows/delete", vol.Required("show_id"): SHOW_ID})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
@@ -75,7 +78,7 @@ async def ws_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnect
 
 @websocket_api.websocket_command({
     vol.Required("type"): "light_show_studio/shows/reorder",
-    vol.Required("order"): [str],
+    vol.Required("order"): vol.All([SHOW_ID], vol.Length(max=MAX_SHOWS)),
 })
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -147,7 +150,7 @@ async def ws_set_transition(hass: HomeAssistant, connection: websocket_api.Activ
 
 @websocket_api.websocket_command({
     vol.Required("type"): "light_show_studio/player/set_speakers",
-    vol.Required("speakers"): [cv.entity_id],
+    vol.Required("speakers"): vol.All([cv.entity_id], vol.Length(max=MAX_SPEAKERS)),
 })
 @websocket_api.require_admin
 @websocket_api.async_response

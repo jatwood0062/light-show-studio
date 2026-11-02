@@ -11,7 +11,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
@@ -38,7 +38,8 @@ from .controller import C9Controller, enable_shows
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
 from .health import HealthMonitor
-from .library import SHOW_PLAYER_KEY
+from .hosts import valid_ipv4
+from .library import FSEQ_EXT, SHOW_PLAYER_KEY
 from .outputs import normalize_speakers
 from .playback import SequencePlayer
 from . import upload, websocket, ws_schedule, ws_shows
@@ -58,12 +59,18 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 C9ConfigEntry = ConfigEntry[C9Controller]
 HEALTH = f"{DOMAIN}_health"  # hass.data key of the HealthMonitor
 
+def _no_nul(value: str) -> str:
+    if "\0" in value:
+        raise vol.Invalid("invalid characters")
+    return value
+
+
 PLAY_SCHEMA = vol.Schema({
-    vol.Required("file"): cv.string,
+    vol.Required("file"): vol.All(cv.string, vol.Length(min=1, max=512), _no_nul),
     vol.Optional("loop", default=False): cv.boolean,
     vol.Optional("media_player"): cv.entity_id,
-    vol.Optional("audio"): cv.string,
-    vol.Optional("audio_offset", default=0.0): vol.Coerce(float),
+    vol.Optional("audio"): vol.All(cv.string, vol.Length(max=2048)),
+    vol.Optional("audio_offset", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=-3600, max=3600)),
 })
 
 
@@ -78,7 +85,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         hass, frontend_url_path="light-shows", webcomponent_name=PANEL, sidebar_title="Light Shows",
         sidebar_icon="mdi:string-lights", module_url=f"{FRONTEND_URL}/{PANEL}.js?v={integration.version}",
         require_admin=False)
-    receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver())  # before any entry, so the show player can use it
+    receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver(hass))  # before any entry, so the show player can use it
     # the one SequencePlayer: play_sequence, stop_sequence and the show player all drive this one
     sequencer = hass.data[SEQUENCER_KEY] = SequencePlayer(
         receiver.show, lambda coro: hass.async_create_background_task(coro, "light_show_studio sequence"))
@@ -87,6 +94,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     ws_schedule.async_register(hass)
     scheduler = await async_setup_scheduler(hass)  # playlists + schedules, loaded once
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: scheduler.async_stop_timers())
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: receiver.close())
     upload.async_register(hass)
     health = hass.data[HEALTH] = HealthMonitor(hass)
     health.start()
@@ -118,16 +126,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 def _resolve(hass: HomeAssistant, name: str) -> str:
     """A name in <media>/xlights or /config/www/xlights, or an absolute path Home Assistant
-    allows (allowlist_external_dirs). Blocking."""
+    allows (allowlist_external_dirs). Always an existing .fseq file, as a real path (symlinks
+    resolved and checked, so none can lead out of the folder). Blocking."""
+    if not name.lower().endswith(FSEQ_EXT):
+        raise ServiceValidationError(f"{name} is not an {FSEQ_EXT} file")
     if os.path.isabs(name):
         if not hass.config.is_allowed_path(name):
             raise ServiceValidationError(f"{name} is not in an allowed folder (allowlist_external_dirs)")
-        return name
+        path = os.path.realpath(name)
+        if not hass.config.is_allowed_path(path) or not os.path.isfile(path):  # a symlink must not lead out
+            raise ServiceValidationError(f"{name} is not an allowed file")
+        return path
     dirs = [os.path.join(d, "xlights") for d in hass.config.media_dirs.values()]
     dirs.append(hass.config.path("www", "xlights"))
     for d in dirs:
-        path = os.path.realpath(os.path.join(d, name))
-        if path.startswith(os.path.realpath(d) + os.sep) and os.path.isfile(path):
+        root = os.path.realpath(d)
+        path = os.path.realpath(os.path.join(root, name))
+        if path.startswith(root + os.sep) and os.path.isfile(path):
             return path
     raise ServiceValidationError(f"{name} not found in {', '.join(dirs)}")
 
@@ -160,6 +175,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
         entry.async_on_unload(entry.add_update_listener(_reload_on_change(entry)))
         return True
     bulbs = _opt(entry, CONF_BULBS, DEFAULT_BULBS)
+    try:  # a host edited in storage must still be a LAN address
+        valid_ipv4(entry.data[CONF_HOST])
+    except (KeyError, ValueError) as err:
+        raise ConfigEntryError(f"{entry.data.get(CONF_HOST)!r} is not a private (LAN) IPv4 address") from err
     if entry.data.get(CONF_TYPE) == TYPE_TWINKLY:
         try:
             info = await async_gestalt(async_get_clientsession(hass), entry.data[CONF_HOST])
@@ -178,7 +197,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
         ctl.mark_seen()
     else:
         ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], bulbs, _opt(entry, CONF_SEGMENTED, True))
-    receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver())
+    receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver(hass))
     await receiver.subscribe(entry.entry_id, _opt(entry, CONF_START_PIXEL, 1), ctl.bulbs, ctl.show_external)
     entry.async_on_unload(lambda: receiver.unsubscribe(entry.entry_id))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
