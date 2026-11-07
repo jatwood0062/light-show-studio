@@ -27,6 +27,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_subscribe)
     websocket_api.async_register_command(hass, ws_scan_start)
     websocket_api.async_register_command(hass, ws_scan_frame)
+    websocket_api.async_register_command(hass, ws_scan_segment)
     websocket_api.async_register_command(hass, ws_scan_stop)
 
 
@@ -183,6 +184,26 @@ async def ws_scan_frame(hass: HomeAssistant, connection: websocket_api.ActiveCon
         return
     try:
         await manager.async_scan_frame(msg["entry_id"], msg["frame"])
+    except HomeAssistantError as err:
+        connection.send_error(msg["id"], "failed", str(err))
+        return
+    connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "light_show_studio/map/scan/segment",
+    vol.Required("entry_id"): ENTRY_ID,
+    vol.Required("start"): vol.All(int, vol.Range(min=0, max=mapping.MAX_PIXELS - 1)),  # a pixel of the light
+    vol.Required("count"): vol.All(int, vol.Range(min=1, max=mapping.MAX_PIXELS)),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_scan_segment(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Glow scan frame: only pixels start..start+count-1 lit, the rest dark (scan/frame 0 is the dark reference)."""
+    if not (manager := _manager(hass, connection, msg)):
+        return
+    try:
+        await manager.async_scan_segment(msg["entry_id"], msg["start"], msg["count"])
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "failed", str(err))
         return

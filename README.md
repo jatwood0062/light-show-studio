@@ -185,6 +185,12 @@ data:
 code (22 flashes for 904 LEDs) at a fixed white level; when you finish, stop, close the app, or nothing happens for
 two minutes, it goes back to what it showed before.
 
+**Glow scan (hidden strips)** is the second way to scan, for strips the camera can't see as dots (under cabinets,
+behind covers; the camera only sees a soft glow on the counter, floor or ceiling). A few pixels light at a time and
+step along each run while the camera follows the glow; the pixels between are interpolated. If a spot can't be found
+you tap where the glow is on the frozen picture, or skip it. The wizard recommends it for WLED lights and offers it
+after a point scan that finds few lights.
+
 The map is stored in `.storage/light_show_studio.map`. A map saved by an earlier version is moved to the new
 format when Home Assistant starts (its runs go into one area called House, so zones behave as before); the old
 copy is kept in `.storage/light_show_studio.map.v1`.

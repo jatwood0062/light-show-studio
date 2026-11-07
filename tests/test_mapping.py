@@ -360,8 +360,8 @@ def test_map_websocket_writes_are_admin_only():
     """The reads are open to every user; every command that changes the map or a light needs an admin."""
     src = (mapping.__file__ and open(mapping.__file__.replace("mapping.py", "ws_map.py")).read())
     blocks = src.split("@websocket_api.websocket_command")[1:]
-    assert len(blocks) == 9
+    assert len(blocks) == 10
     for block in blocks:
         name = block.split("def ", 1)[1].split("(", 1)[0]
-        admin = ("ws_set", "ws_start", "ws_stop", "ws_speed", "ws_scan_start", "ws_scan_frame", "ws_scan_stop")
+        admin = ("ws_set", "ws_start", "ws_stop", "ws_speed", "ws_scan_start", "ws_scan_frame", "ws_scan_segment", "ws_scan_stop")
         assert ("require_admin" in block.split("def ", 1)[0]) == (name in admin), name

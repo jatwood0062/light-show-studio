@@ -119,3 +119,11 @@ As built in 2.3.0. Deviations and details the frontend needs:
   speed use that id in `zone_id`. It is never saved, follows `map/set`, and ends if its area is removed.
 - **Services**: `start_zone` and `stop_zone` take `zone` or `area` (one of them).
 - The light entity gets a `scanning` attribute.
+
+### Glow scan (2.4.0)
+
+For hidden strips. `map/scan/segment {entry_id, start, count}` (admin only) -> `{}` lights pixels `start..start+count-1`
+of the light at the scan level, all others dark; `start` is a pixel of the light and the stretch must lie inside the
+range given to `scan/start` (else `failed`). Dark reference = `scan/frame` 0. Ownership, 120 s idle timeout and restore
+are as for `scan/frame`. The panel does the rest (`glow*` functions in `light-show-studio-scan.js`, tests in
+`tests/js/test_glow.mjs`): anchors per run, per-anchor glow centroid, interpolation, manual taps.

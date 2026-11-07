@@ -449,3 +449,82 @@ async def test_v1_store_is_migrated_and_backed_up_on_load(hass):
     assert m.model.runs[0].area == "main" and m.model.zones[0].axis["dir"] == [0.0, 1.0, 0.0]
     assert m._store.saved["version"] == 2  # and the migrated one is written
     assert not m.is_default
+
+
+# --- glow scan: one lit stretch at a time ---------------------------------------------------------------------
+@aio
+async def test_manager_scan_segment_lights_only_that_stretch(hass):
+    ctl = FakeLight(hass, 20)
+    ctl.colour, ctl.show_mode = tz.G, False
+    ctl.brightness = 20  # the scan level doesn't follow the brightness setting
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    await m.async_scan_start("e1", object())
+    await m.async_scan_segment("e1", 4, 3)
+    assert ctl.sent[-1] == [BLACK] * 4 + [LEVEL] * 3 + [BLACK] * 13
+    await m.async_scan_segment("e1", 17, 3)  # up to the very end
+    assert ctl.sent[-1] == [BLACK] * 17 + [LEVEL] * 3
+    await m.async_scan_frame("e1", 0)  # the dark reference is still scan/frame 0
+    assert ctl.sent[-1] == [BLACK] * 20
+    await m.async_scan_frame("e1", 1)  # and the point-scan frames still work next to it
+    assert ctl.sent[-1] == [LEVEL] * 20
+    m.scan_stop("e1")
+    assert not ctl.scanning and ctl.sent[-1][0] != LEVEL  # the light is given back
+
+
+@aio
+async def test_scan_segment_is_checked_against_the_scanned_range(hass):
+    ctl = FakeLight(hass, 30)
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    with pytest.raises(mapmanager.HomeAssistantError, match="isn't being scanned"):
+        await m.async_scan_segment("e1", 0, 1)
+    await m.async_scan_start("e1", object(), first=10, count=12)  # pixels 10-21 of the light
+    await m.async_scan_segment("e1", 10, 12)  # the whole range is fine
+    assert ctl.sent[-1] == [BLACK] * 10 + [LEVEL] * 12 + [BLACK] * 8
+    await m.async_scan_segment("e1", 21, 1)
+    assert ctl.sent[-1][21] == LEVEL and ctl.sent[-1].count(LEVEL) == 1
+    n = len(ctl.sent)
+    for start, count in ((9, 2), (20, 3), (0, 5), (22, 1), (10, 13), (15, 0), (15, -2), (30, 1)):
+        with pytest.raises(mapmanager.HomeAssistantError, match="within pixels 10 to 21"):
+            await m.async_scan_segment("e1", start, count)
+    assert len(ctl.sent) == n and m.scanning == ["e1"]  # nothing was shown for a refused stretch
+    m.scan_stop("e1", restore=False)
+
+
+@aio
+async def test_scan_segment_restarts_the_idle_timer_and_stops_when_the_light_is_taken(hass):
+    ctl = FakeLight(hass, 8)
+    ctl.colour, ctl.show_mode = tz.G, False
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    mapmanager.SCAN_IDLE = 0.15
+    try:
+        await m.async_scan_start("e1", object())
+        await asyncio.sleep(0.1)
+        await m.async_scan_segment("e1", 0, 2)
+        await asyncio.sleep(0.1)
+        assert ctl.scanning  # the segment counted as activity
+        await asyncio.sleep(0.2)
+        assert not ctl.scanning and m.scanning == [] and ctl.sent[-1] == [tz.G] * 8
+    finally:
+        mapmanager.SCAN_IDLE = 120.0
+    await m.async_scan_start("e1", object())
+    await ctl.async_turn_on(colour=R)  # a person takes the light
+    with pytest.raises(mapmanager.HomeAssistantError, match="taken"):
+        await m.async_scan_segment("e1", 0, 2)
+    assert m.scanning == []
+
+
+def test_scan_segment_command_is_admin_only_with_a_strict_schema():
+    """ws_map needs Home Assistant, so read its source: the command is registered, admin-only, and every field is bounded."""
+    import ast
+    src = (tz.PKG / "ws_map.py").read_text()
+    tree = ast.parse(src)
+    fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "ws_scan_segment")
+    decorators = [ast.unparse(d) for d in fn.decorator_list]
+    assert any(d.startswith("websocket_api.websocket_command") for d in decorators)
+    assert "websocket_api.require_admin" in decorators
+    assert decorators.index("websocket_api.require_admin") < decorators.index("websocket_api.async_response")
+    schema = next(d for d in decorators if d.startswith("websocket_api.websocket_command"))
+    for part in ("'light_show_studio/map/scan/segment'", "ENTRY_ID", "mapping.MAX_PIXELS - 1", "mapping.MAX_PIXELS"):
+        assert part in schema
+    assert schema.count("vol.Range(min=") >= 2 and "vol.Required('start')" in schema and "vol.Required('count')" in schema
+    assert "websocket_api.async_register_command(hass, ws_scan_segment)" in src

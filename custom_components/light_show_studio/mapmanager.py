@@ -363,6 +363,21 @@ class MapManager:
             raise ZoneError("The light was taken by something else, so the scan stopped")
         self._arm_idle(entry_id, scan)
 
+    async def async_scan_segment(self, entry_id: str, start: int, count: int) -> None:
+        """Glow scan: light only pixels start..start+count-1 of the light (at the scan level), everything else off.
+        start is a pixel of the light, not of the scan, and the stretch must lie inside the scanned pixels."""
+        scan = self._scans.get(entry_id)
+        if scan is None:
+            raise ZoneError("That light isn't being scanned")
+        if count < 1 or start < scan.first or start + count > scan.first + scan.count:
+            raise ZoneError(f"The lit stretch must lie within pixels {scan.first} to {scan.first + scan.count - 1}")
+        colours = [scan_codes.OFF] * scan.ctl.bulbs
+        colours[start : start + count] = [scan_codes.SCAN_COLOUR] * count
+        if not scan.ctl.push_scan_frame(colours):  # a person took the light
+            self.scan_stop(entry_id, restore=False)
+            raise ZoneError("The light was taken by something else, so the scan stopped")
+        self._arm_idle(entry_id, scan)
+
     @callback
     def scan_stop(self, entry_id: str, token: object | None = None, restore: bool = True) -> None:
         """End a scan and put the light back. With a token, only the scan that token started (a connection

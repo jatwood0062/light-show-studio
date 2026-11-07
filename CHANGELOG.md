@@ -4,6 +4,22 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-06
+
+### Added
+- Glow scan (hidden strips): a second way to map a light, for strips the camera never sees as dots (under cabinets,
+  behind covers) where only a soft glow lands on the counter, floor or ceiling. The wizard lights a short stretch of a
+  run at a time (about 16-24 spots per run, 6-10 pixels each, both adjustable under More options), with dark reference
+  pictures in between, finds the brightness-weighted centre of the biggest glow for each, and interpolates the pixels
+  between the spots in string order. Spots it can't find are shown frozen and you tap where the glow is, or skip them.
+  The review shows how sure each spot was. Saves into the runs' positions like the point scan; an optional side scan
+  adds depth; without a secure context it falls back to a filmed video like the point scan.
+- The wizard offers both methods, recommends Glow for WLED lights, and offers a one-tap switch to Glow after a point
+  scan that finds few lights.
+- `light_show_studio/map/scan/segment {entry_id, start, count}` (admin only): lights only pixels start to
+  start+count-1 of the light at the scan level and everything else off; must lie inside the scanned range. Same
+  ownership, idle timeout and restore rules as `scan/frame` (frame 0 is still the dark reference).
+
 ## [2.3.0] - 2026-11-06
 
 ### Added
