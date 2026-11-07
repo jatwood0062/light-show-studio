@@ -74,13 +74,16 @@ PLAY_SCHEMA = vol.Schema({
     vol.Optional("audio"): vol.All(cv.string, vol.Length(max=2048)),
     vol.Optional("audio_offset", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=-3600, max=3600)),
 })
-START_ZONE_SCHEMA = vol.Schema({
-    vol.Required("zone"): vol.All(cv.string, vol.Strip, vol.Length(min=1, max=64)),  # a zone's name or id
+_NAME = vol.All(cv.string, vol.Strip, vol.Length(min=1, max=64))
+START_ZONE_SCHEMA = vol.All(vol.Schema({
+    vol.Exclusive("zone", "target"): _NAME,  # a zone's name or id
+    vol.Exclusive("area", "target"): _NAME,  # or an area's name or id: every run in it, no saved zone needed
     vol.Optional("pattern"): vol.In(patterns.PATTERN_LIST),
     vol.Optional("effect"): vol.In(patterns.PATTERN_EFFECTS),
     vol.Optional("speed"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
-})
-STOP_ZONE_SCHEMA = vol.Schema({vol.Required("zone"): vol.All(cv.string, vol.Strip, vol.Length(min=1, max=64))})
+}), cv.has_at_least_one_key("zone", "area"))
+STOP_ZONE_SCHEMA = vol.All(vol.Schema({vol.Exclusive("zone", "target"): _NAME, vol.Exclusive("area", "target"): _NAME}),
+                           cv.has_at_least_one_key("zone", "area"))
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -133,10 +136,17 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             await shows.async_stop()
 
     async def start_zone(call: ServiceCall) -> None:
+        if "area" in call.data:
+            await zones.async_start_area(call.data["area"], call.data.get("pattern"), call.data.get("effect"),
+                                         call.data.get("speed"))
+            return
         await zones.async_start_zone(call.data["zone"], call.data.get("pattern"), call.data.get("effect"),
                                      call.data.get("speed"))
 
     async def stop_zone(call: ServiceCall) -> None:
+        if "area" in call.data:
+            await zones.async_stop_area(call.data["area"])
+            return
         await zones.async_stop_zone(call.data["zone"])
 
     hass.services.async_register(DOMAIN, "start_zone", start_zone, schema=START_ZONE_SCHEMA)

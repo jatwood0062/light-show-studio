@@ -81,7 +81,7 @@ class ZoneRunner:
         try:
             while not self._ended:
                 now = time.monotonic()
-                t += (now - last) * patterns.speed_factor(self.speed)
+                t += min(now - last, 0.25) * patterns.speed_factor(self.speed)  # a long stall doesn't leap ahead
                 last = now
                 self._t = t
                 self._tick(t)

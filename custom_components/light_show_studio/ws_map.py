@@ -1,4 +1,4 @@
-"""Websocket API for the Map tab: read and replace the map, start, stop and speed up zones."""
+"""Websocket API for the Map tab: read and replace the map, start, stop and speed up zones, and the camera scan."""
 from __future__ import annotations
 
 from typing import Any
@@ -9,11 +9,13 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
-from . import patterns
+from . import mapping, patterns, scan_codes
 from .mapmanager import MapManager, get_manager
 from .mapping import MapError, to_dict
 
-ZONE_ID = vol.All(str, vol.Length(min=1, max=64))
+ZONE_ID = vol.All(str, vol.Length(min=1, max=70))  # a zone id, or "area:<area id>" for an area's own
+AREA_REF = vol.All(str, vol.Length(min=1, max=64))  # an area's id or name
+ENTRY_ID = vol.All(str, vol.Length(min=1, max=64))
 
 
 def async_register(hass: HomeAssistant) -> None:
@@ -23,6 +25,9 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_stop)
     websocket_api.async_register_command(hass, ws_speed)
     websocket_api.async_register_command(hass, ws_subscribe)
+    websocket_api.async_register_command(hass, ws_scan_start)
+    websocket_api.async_register_command(hass, ws_scan_frame)
+    websocket_api.async_register_command(hass, ws_scan_stop)
 
 
 def _manager(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> MapManager | None:
@@ -33,7 +38,9 @@ def _manager(hass: HomeAssistant, connection: websocket_api.ActiveConnection, ms
 
 
 def _snapshot(manager: MapManager) -> dict[str, Any]:
-    return {"map": to_dict(manager.model), "lights": manager.lights(), "running": manager.running}
+    data = to_dict(manager.model)
+    return {"map": data, "areas": data["areas"], "lights": manager.lights(), "running": manager.running,
+            "scanning": manager.scanning}
 
 
 @websocket_api.websocket_command({vol.Required("type"): "light_show_studio/map/get"})
@@ -62,18 +69,28 @@ async def ws_set(hass: HomeAssistant, connection: websocket_api.ActiveConnection
 
 @websocket_api.websocket_command({
     vol.Required("type"): "light_show_studio/map/zone/start",
-    vol.Required("zone_id"): ZONE_ID,
+    vol.Exclusive("zone_id", "target"): ZONE_ID,
+    vol.Exclusive("area", "target"): AREA_REF,  # an ad-hoc zone over every run in an area (not saved)
     vol.Optional("pattern"): vol.In(patterns.PATTERN_LIST),
     vol.Optional("effect"): vol.In(patterns.PATTERN_EFFECTS),
     vol.Optional("speed"): vol.All(int, vol.Range(min=1, max=100)),
+    vol.Optional("mode"): vol.In(mapping.MODES),  # area zones only
+    vol.Optional("axis"): dict,  # area zones only; checked by mapping.parse_axis
 })
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_start(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     if not (manager := _manager(hass, connection, msg)):
         return
+    if ("zone_id" in msg) == ("area" in msg):
+        connection.send_error(msg["id"], "invalid_format", "Give either zone_id or area")
+        return
     try:
-        await manager.async_start_zone(msg["zone_id"], msg.get("pattern"), msg.get("effect"), msg.get("speed"))
+        if "area" in msg:
+            await manager.async_start_area(msg["area"], msg.get("pattern"), msg.get("effect"), msg.get("speed"),
+                                           msg.get("mode", "string"), msg.get("axis"))
+        else:
+            await manager.async_start_zone(msg["zone_id"], msg.get("pattern"), msg.get("effect"), msg.get("speed"))
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "failed", str(err))
         return
@@ -126,3 +143,56 @@ def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection
     connection.subscriptions[msg["id"]] = manager.add_listener(send)
     connection.send_result(msg["id"])
     send()
+
+
+# --- camera scan: the light shows a code sequence while the phone records it ----------------------
+@websocket_api.websocket_command({
+    vol.Required("type"): "light_show_studio/map/scan/start",
+    vol.Required("entry_id"): ENTRY_ID,
+    vol.Optional("first"): vol.All(int, vol.Range(min=0, max=mapping.MAX_PIXELS - 1)),  # scan just a run's pixels
+    vol.Optional("count"): vol.All(int, vol.Range(min=1, max=mapping.MAX_PIXELS)),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_scan_start(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """Take the light for a scan. It is let go (and restored) on scan/stop, after 120 s without a frame, or
+    when this connection closes."""
+    if not (manager := _manager(hass, connection, msg)):
+        return
+    token = object()
+    entry_id = msg["entry_id"]
+    connection.subscriptions[msg["id"]] = lambda: manager.scan_stop(entry_id, token)  # runs when the socket closes
+    try:
+        result = await manager.async_scan_start(entry_id, token, msg.get("first", 0), msg.get("count"))
+    except HomeAssistantError as err:
+        connection.subscriptions.pop(msg["id"], None)
+        connection.send_error(msg["id"], "failed", str(err))
+        return
+    connection.send_result(msg["id"], {**result, "level": scan_codes.SCAN_LEVEL})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "light_show_studio/map/scan/frame",
+    vol.Required("entry_id"): ENTRY_ID,
+    vol.Required("frame"): vol.All(int, vol.Range(min=0, max=scan_codes.frame_count(mapping.MAX_PIXELS) - 1)),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_scan_frame(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    if not (manager := _manager(hass, connection, msg)):
+        return
+    try:
+        await manager.async_scan_frame(msg["entry_id"], msg["frame"])
+    except HomeAssistantError as err:
+        connection.send_error(msg["id"], "failed", str(err))
+        return
+    connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "light_show_studio/map/scan/stop", vol.Required("entry_id"): ENTRY_ID})
+@websocket_api.require_admin
+@callback
+def ws_scan_stop(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    if manager := _manager(hass, connection, msg):
+        manager.scan_stop(msg["entry_id"])
+        connection.send_result(msg["id"], {})

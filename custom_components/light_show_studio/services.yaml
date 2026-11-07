@@ -93,8 +93,11 @@ stop_sequence:
 start_zone:
   fields:
     zone:
-      required: true
       example: Kitchen
+      selector:
+        text:
+    area:
+      example: Porch
       selector:
         text:
     pattern:
@@ -140,7 +143,10 @@ start_zone:
 stop_zone:
   fields:
     zone:
-      required: true
       example: Kitchen
+      selector:
+        text:
+    area:
+      example: Porch
       selector:
         text:

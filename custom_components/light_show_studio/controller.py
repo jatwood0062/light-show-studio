@@ -73,6 +73,11 @@ class C9Controller:
         self._zones: dict[str, tuple[str, list[tuple[int, list[Colour]]]]] = {}
         self._zone_prev_show = False  # show mode before the first zone took over
         self._zone_powered = False  # the first zone turned the light on
+        # camera scan (see mapmanager): the scan owns the light like a zone does, and puts it back when it ends
+        self._scanning = False
+        self._scan_prev_show = False
+        self._scan_powered = False
+        self._scan_before: list[Colour] = []
 
     # --- hardware hooks (a subclass for another brand overrides these) ----
     def _make_link(self, host: str) -> GoveeLan | None:
@@ -137,12 +142,14 @@ class C9Controller:
             return [tuple(v * lvl // 255 for v in c) for c, lvl in zip(self.bulb_colour, self.bulb_level)]
         return [self.colour] * self.bulbs
 
-    def _send_frame(self, frame: list[Colour]) -> None:
+    def _send_frame(self, frame: list[Colour], scaled: bool = True) -> None:
+        """Show a frame; `scaled` applies the brightness setting (a scan frame must not depend on it)."""
         if not self.segmented:
             self._send_whole(frame)
             return
-        f = self.brightness / 255
-        frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
+        if scaled:
+            f = self.brightness / 255
+            frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
         self._hw_frame(frame)
         self._set_frame(frame)
 
@@ -176,8 +183,8 @@ class C9Controller:
 
     def _render(self) -> None:
         self._stop_animation()
-        if not self.is_on or self.show_mode or self._zones:
-            return  # in show mode the sequencer's frames are the picture; with a zone, the zone's
+        if not self.is_on or self.show_mode or self._zones or self._scanning:
+            return  # in show mode the sequencer's frames are the picture; with a zone, the zone's; a scan, its own
         if self._is_animated():
             self._task = self.hass.async_create_background_task(self._animate(), "light_show_studio effect")
         else:
@@ -194,7 +201,7 @@ class C9Controller:
         integration driving the same light) is overridden at startup."""
         def _go() -> None:
             self._resume_handle = None
-            if self.is_on and not self.show_mode and not self._zones and not self._identifying \
+            if self.is_on and not self.show_mode and not self._zones and not self._identifying and not self._scanning \
                     and self._task is None and self._is_animated():
                 self._render()
         if self._resume_handle is None:
@@ -256,6 +263,13 @@ class C9Controller:
             self._whole = None
             self.is_on = True
             await asyncio.sleep(0.3)
+        if self._scanning:
+            if colour is None and effect is None:  # brightness, or a plain "on": the scan carries on, at its own level
+                if brightness is not None:
+                    self.brightness = brightness
+                self._notify()
+                return
+            self.release_scan()  # a colour or effect was picked: the light is the person's again
         if self._zones:
             if colour is None and effect is None:  # brightness, or a plain "on": the zone keeps the picture
                 if brightness is not None:
@@ -300,6 +314,7 @@ class C9Controller:
         await self.async_turn_on(effect=PATTERN)
 
     async def async_turn_off(self) -> None:
+        self.release_scan()
         self.release_zone()
         self._stop_animation()
         if self._whole_handle:
@@ -312,6 +327,7 @@ class C9Controller:
         self._notify()
 
     async def async_set_pixels(self, colours: list[Colour], repeat: bool = True) -> None:
+        self.release_scan()
         self.release_zone()
         self._seed_bulbs()
         for i in range(self.bulbs):
@@ -326,6 +342,7 @@ class C9Controller:
     # --- single bulbs ----------------------------------------------------
     async def async_set_bulb(self, index: int, on: bool, colour: Colour | None = None,
                              level: int | None = None) -> None:
+        self.release_scan()
         self.release_zone()
         self._seed_bulbs()
         if colour is not None:
@@ -349,6 +366,8 @@ class C9Controller:
 
     async def async_claim_zone(self, zone_id: str, name: str) -> None:
         """A zone takes the light: it is turned on if needed, and the zone's frames become the picture."""
+        if self._scanning:
+            raise RuntimeError("the light is being scanned")
         was_on = self.is_on
         if not was_on:
             await self.async_turn_on()
@@ -369,7 +388,7 @@ class C9Controller:
         if cur is None or not self.is_on:
             return False
         self._zones[zone_id] = (cur[0], slices)
-        if not self._identifying:
+        if not self._identifying and not self._scanning:
             self._send_frame(self._zone_frame())
         return True
 
@@ -383,7 +402,7 @@ class C9Controller:
         return frame
 
     def _resend_zone(self) -> None:
-        if self._zones and self.is_on and not self._identifying:
+        if self._zones and self.is_on and not self._identifying and not self._scanning:
             self._send_frame(self._zone_frame())
 
     @callback
@@ -403,9 +422,70 @@ class C9Controller:
                 self._render()
         self._notify()
 
+    # --- camera scan: the light shows code frames so a phone can find each pixel --------
+    @property
+    def scanning(self) -> bool:
+        return self._scanning
+
+    async def async_claim_scan(self) -> None:
+        """The scan takes the light: it is turned on if needed, any effect or zone on it stops, sequencer frames
+        are ignored. release_scan(restore=True) puts back what it showed before."""
+        if self._scanning:
+            return
+        was_on = self.is_on
+        if not was_on:
+            await self.async_turn_on()
+        if self._scanning:  # another scan started while the light was turning on
+            return
+        if self._zones:  # a zone had it: what it showed before the zone is what to go back to
+            prev_show, powered = self._zone_prev_show, self._zone_powered
+        else:
+            prev_show, powered = self.show_mode, not was_on
+        self._scan_before = list(self.frame)
+        self._stop_animation()
+        self.release_zone()
+        self._scan_prev_show, self._scan_powered, self._scanning = prev_show, powered, True
+        self.show_mode = False
+        self._notify()
+
+    def push_scan_frame(self, frame: list[Colour]) -> bool:
+        """Show one code frame, at exactly the colours given (not dimmed by the brightness setting).
+        False when the light isn't being scanned any more (a person took it, or it was turned off)."""
+        if not self._scanning or not self.is_on:
+            return False
+        self._send_frame(frame, scaled=False)
+        return True
+
+    @callback
+    def release_scan(self, restore: bool = False) -> None:
+        """End the scan. restore: put back what the light showed before (or turn it off if the scan turned
+        it on); otherwise a person or a show is taking over and brings its own picture."""
+        if not self._scanning:
+            return
+        self._scanning = False
+        if restore:
+            self.show_mode = self._scan_prev_show
+            before, self._scan_before = self._scan_before, []
+            if self._scan_powered:
+                self.hass.async_create_background_task(self.async_turn_off(), "light_show_studio scan off")
+                return
+            self._whole = None
+            self._realtime = False
+            if self._zones:
+                self._resend_zone()
+            elif self.show_mode:  # the sequencer isn't sending: put the last picture back until it does
+                if self.segmented:
+                    self._hw_frame(before)
+                    self._set_frame(before)
+                self._ext_sent = 0.0
+            else:
+                self._render()
+        self._notify()
+
     # --- frames from a sequencer (xLights / Light-O-Rama) ----------------
     @callback
     def enable_show(self) -> None:
+        self.release_scan()
         self.release_zone()
         self._stop_animation()
         if not self.is_on:
@@ -421,7 +501,7 @@ class C9Controller:
     def show_external(self, rgb: bytes) -> None:
         now = time.monotonic()
         self._ext_seen = now
-        if self._identifying:
+        if self._identifying or self._scanning:
             return
         if not self.show_mode or not self.is_on:
             return  # an effect or colour was picked, or the light was turned off; ignore the sequencer
@@ -438,6 +518,7 @@ class C9Controller:
 
     def shutdown(self) -> None:
         self._zones.clear()
+        self._scanning = False
         self._stop_animation()
         if self._identify_task:  # don't let a flash wake a light that's being removed
             self._identify_task.cancel()
@@ -455,7 +536,7 @@ class C9Controller:
 
     async def async_identify(self) -> None:
         """Flash the whole light white three times, then put it back as it was."""
-        if self._identifying:
+        if self._identifying or self._scanning:
             return
         self._identifying = True
         was_on, was_show, before = self.is_on, self.show_mode, list(self.frame)

@@ -4,6 +4,27 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-06
+
+### Added
+- Areas (backend): every run belongs to an area, a Home Assistant area or a name of your own, defaulting to the
+  light's device area, else the light's name. Each area is its own 3D space. A zone can list areas as well as runs.
+- 3D positions: runs keep a position per pixel once mapped (compact, 0-1000 per axis), otherwise they sit along a 3D
+  polyline. Twinkly layouts are imported per pixel (z too when the strip reports one). Zones "by position" take any
+  3D direction (presets: left to right, right to left, rise, fall, front to back, back to front) or sweep out from a
+  point, worked out within each area.
+- Camera scan (backend): `light_show_studio/map/scan/start`, `scan/frame` and `scan/stop` (admin only) make a light
+  flash a binary code (2 + 2 x ceil(log2 N) frames) at a fixed white so the phone can read where each pixel is. The
+  scan takes the light like a zone and gives it back, restoring what it showed, on stop, after 120 s without a
+  frame, or when the connection closes.
+- `light_show_studio.start_zone` and `stop_zone` take an `area` instead of a zone; `map/zone/start` takes `area` too.
+- The light has a `scanning` attribute.
+
+### Changed
+- A saved map from 2.2.0 is migrated to the new format on load (y now points up, runs go in one area called House, the
+  old file is kept as `light_show_studio.map.v1`). Zones behave as before.
+- Zones keep the same fixed frame beat as effects, and a long stall no longer makes them jump ahead.
+
 ## [2.2.0] - 2026-11-06
 
 ### Added

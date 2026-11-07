@@ -135,15 +135,19 @@ data:
 
 ## Zones and the map
 
-A **run** is a stretch of pixels on one light (all of it, or part: the toe-kick of a kitchen strip),
-placed on a plain 0-1 map. A **zone** is an ordered list of runs that shows one pattern, effect and
-speed as one thing, in sync, across several lights. Set them up in the Light Shows app's **Map** tab.
+An **area** is a place: a Home Assistant area (Porch, Kitchen) or a name of your own ("Garage roofline").
+Each area is its own 3D space (x left to right, y bottom to top, z towards the viewer, all 0-1). A **run** is a
+stretch of pixels on one light (all of it, or part: the toe-kick of a kitchen strip) in one area; it starts
+in the light's Home Assistant device area, else an area named after the light. Until its pixels are
+mapped, a run sits along a line you place; **Scan** (the phone camera) or a Twinkly layout gives every
+pixel its own position. A **zone** is an ordered list of runs, or of whole areas, that shows one pattern,
+effect and speed as one thing, in sync, across several lights. Set them up in the Light Shows app's **Map** tab.
 Per-light effects stay the default; a zone is opt-in, and xLights shows are unaffected.
 
 - **Along the string**: the runs are joined in the order you list them (each run can be reversed), and the
   pattern runs through the joins as if they were one long string.
-- **By position**: the pattern follows where the pixels are: a sweep across the house at an angle
-  (0 = left to right, 90 = bottom to top), or out from a centre point.
+- **By position**: the pattern follows where the pixels are, within each area's own space: a sweep in any 3D
+  direction (left to right, rise, front to back, or one of your own), or out from a point.
 - A zone keeps its lights until you pick a colour or effect on one of them, turn it off, or a show
   starts. Changing the brightness keeps the zone. Stopping a zone puts each light back as it was.
 - Until you save a map, each light is one run. A WLED light with exactly 904 LEDs gets the kitchen
@@ -151,8 +155,8 @@ Per-light effects stay the default; a zone is opt-in, and xLights shows are unaf
   positions from the layout the strip reports.
 - Lights without per-segment control (some Govee models) show a zone as one average colour.
 
-Automations can start and stop a zone by name or id. Pattern, effect and speed are optional and are kept
-as the zone's own.
+Automations can start and stop a zone by name or id, or start a pattern on a whole area (`area` instead of
+`zone`; nothing is saved). Pattern, effect and speed are optional and are kept as the zone's own.
 
 ```yaml
 action: light_show_studio.start_zone
@@ -164,12 +168,26 @@ data:
 ```
 
 ```yaml
+action: light_show_studio.start_zone
+data:
+  area: Porch
+  pattern: Rainbow
+  effect: Twinkle
+```
+
+```yaml
 action: light_show_studio.stop_zone
 data:
   zone: Kitchen
 ```
 
-The map is stored in `.storage/light_show_studio.map`.
+**Scan** needs a light that shows separate bulbs. While scanning, the light stops what it was doing and flashes a
+code (22 flashes for 904 LEDs) at a fixed white level; when you finish, stop, close the app, or nothing happens for
+two minutes, it goes back to what it showed before.
+
+The map is stored in `.storage/light_show_studio.map`. A map saved by an earlier version is moved to the new
+format when Home Assistant starts (its runs go into one area called House, so zones behave as before); the old
+copy is kept in `.storage/light_show_studio.map.v1`.
 
 ## Twinkly lights
 

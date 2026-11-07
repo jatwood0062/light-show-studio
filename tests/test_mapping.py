@@ -14,9 +14,9 @@ patterns = _load("patterns")
 MapError, LightSpec = mapping.MapError, mapping.LightSpec
 
 
-def run(id="r1", entry="e1", name="Run", first=0, count=10, reverse=False, pts=None):
+def run(id="r1", entry="e1", name="Run", first=0, count=10, reverse=False, pts=None, **extra):
     return {"id": id, "entry_id": entry, "name": name, "first": first, "count": count, "reverse": reverse,
-            "pts": [] if pts is None else pts}
+            "pts": [] if pts is None else pts, **extra}
 
 
 def zone(id="z1", name="Zone", runs=("r1",), **kw):
@@ -29,8 +29,10 @@ def mp_of(runs, zones=()):
 
 # --- validation ------------------------------------------------------------------------
 def test_round_trip():
-    data = {"version": 1, "runs": [run(pts=[[0.1, 0.9], [0.6, 0.9]])],
-            "zones": [zone(mode="spatial", axis={"angle": 90.0}, pattern="Rainbow", effect="Wave", speed=70)],
+    data = {"version": 2, "areas": [{"id": "porch", "name": "Porch", "ha_area_id": "porch_ha"}],
+            "runs": [{**run(pts=[[0.1, 0.9, 0.5], [0.6, 0.9, 0.2]]), "area": "porch", "positions": [10, 20, 30] * 10}],
+            "zones": [zone(mode="spatial", axis={"dir": [0.0, 1.0, 0.0], "preset": "rise"}, areas=["porch"],
+                           pattern="Rainbow", effect="Wave", speed=70)],
             "backdrop": {"kind": "grid", "w": 1999.0, "h": 1500.0}}
     model = mapping.from_dict(data, {"e1": 50})
     assert mapping.to_dict(model) == data
@@ -40,7 +42,7 @@ def test_round_trip():
 def test_zone_defaults():
     z = mp_of([run()], [{"id": "z", "name": "A"}]).zones[0]
     assert (z.mode, z.pattern, z.effect, z.speed, z.runs) == ("string", patterns.DEFAULT_PATTERN, "Chase", 50, ())
-    assert dict(z.axis) == {"angle": 0.0}
+    assert dict(z.axis) == {"dir": [1.0, 0.0, 0.0], "preset": "left_right"} and z.areas == ()
 
 
 @pytest.mark.parametrize("bad, text", [
@@ -57,7 +59,13 @@ def test_zone_defaults():
     (run(id="x" * 65), "run id"),
     (run(entry=""), "pick a light"),
     (run(reverse="yes"), "true or false"),
-    (run(pts=[[0.1]]), "pairs"),
+    (run(pts=[[0.1]]), "x, y"),
+    (run(pts=[[0.1, 0.2, 0.3, 0.4]]), "x, y"),
+    (run(area="has space"), "area"),
+    (run(positions=[1, 2, 3]), "need 10 positions"),
+    (run(positions=[1, 2, "a"] * 10), "numbers"),
+    (run(positions=[[1, 2]] * 10), "triples"),
+    (run(positions=[1] * 6200), "at most"),
     (run(pts=[[0.1, float("nan")]]), "number"),
     (run(pts=[[0.1, "a"]]), "number"),
     (run(pts=[[0.1, 99]]), "between"),
@@ -136,7 +144,7 @@ def test_prune_dangling():
 
 def test_pts_clamped():
     model = mp_of([run(pts=[[-0.2, 1.3], [0.5, 0.5]])])
-    assert model.runs[0].pts == ((0.0, 1.0), (0.5, 0.5))
+    assert model.runs[0].pts == ((0.0, 1.0, 0.5), (0.5, 0.5, 0.5))  # z defaults to the middle
 
 
 def test_zone_lookup_by_id_or_name():
@@ -167,25 +175,29 @@ def test_default_twinkly_uses_layout():
     layout = [[0, 0], [10, 0], [10, 20], [0, 20]]
     r = mapping.default_map([LightSpec("t", "Tree", 4, "twinkly", layout)]).runs[0]
     pos = mapping.run_positions(r)
-    assert len(r.pts) == 4 and pos[0][0] < pos[1][0] and pos[1][1] < pos[2][1]
-    assert all(0 <= x <= 1 and 0 <= y <= 1 for x, y in pos)
+    assert mapping.is_mapped(r) and pos[0][0] < pos[1][0]
+    assert pos[1][1] > pos[2][1]  # the layout is y down (the card), the map y up
+    assert all(0 <= x <= 1 and 0 <= y <= 1 and z == pytest.approx(0.5) for x, y, z in pos)
     # a layout that doesn't match the bulb count is ignored
-    assert len(mapping.default_map([LightSpec("t", "Tree", 5, "twinkly", layout)]).runs[0].pts) == 2
+    r5 = mapping.default_map([LightSpec("t", "Tree", 5, "twinkly", layout)]).runs[0]
+    assert not mapping.is_mapped(r5) and len(r5.pts) == 2
 
 
 # --- geometry -----------------------------------------------------------------------------
 def test_run_positions_spread_along_polyline():
     r = mp_of([run(count=5, pts=[[0, 0], [1, 0]])]).runs[0]
-    assert [round(x, 3) for x, _ in mapping.run_positions(r)] == [0, 0.25, 0.5, 0.75, 1.0]
+    assert [round(x, 3) for x, _, _ in mapping.run_positions(r)] == [0, 0.25, 0.5, 0.75, 1.0]
     bent = mp_of([run(count=3, pts=[[0, 0], [0.5, 0], [0.5, 0.5]])]).runs[0]
-    assert [tuple(round(v, 3) for v in p) for p in mapping.run_positions(bent)] == [(0, 0), (0.5, 0), (0.5, 0.5)]
+    assert [tuple(round(v, 3) for v in p) for p in mapping.run_positions(bent)] == [(0, 0, 0.5), (0.5, 0, 0.5), (0.5, 0.5, 0.5)]
     one = mp_of([run(count=1, pts=[[0, 0], [1, 0]])]).runs[0]
-    assert mapping.run_positions(one) == [(0.5, 0.0)]
+    assert mapping.run_positions(one) == [(0.5, 0.0, 0.5)]
+    deep = mp_of([run(count=3, pts=[[0, 0, 0], [0, 0, 1]])]).runs[0]  # a line going towards the viewer
+    assert [round(p[2], 3) for p in mapping.run_positions(deep)] == [0, 0.5, 1]
 
 
 def test_run_positions_one_point_per_pixel_kept():
     pts = [[0.1, 0.1], [0.9, 0.2], [0.3, 0.8]]
-    assert mapping.run_positions(mp_of([run(count=3, pts=pts)]).runs[0]) == [tuple(p) for p in pts]
+    assert mapping.run_positions(mp_of([run(count=3, pts=pts)]).runs[0]) == [(*p, 0.5) for p in pts]
     assert len(mapping.run_positions(mp_of([run(count=7)]).runs[0])) == 7  # no points: a default line
 
 
@@ -256,18 +268,18 @@ def test_spatial_u_orders_by_x():
     plan = _spatial([run("a", count=20, pts=[[0.9, 0.5], [0.5, 0.5]]), run("b", entry="e2", count=20, pts=[[0.4, 0.5], [0.0, 0.5]])],
                     axis={"angle": 0})
     assert min(plan.u) == pytest.approx(0) and max(plan.u) == pytest.approx(1)
-    xs = [x for s in plan.slices for x, _ in mapping.run_positions(s.run)]
+    xs = [p[0] for s in plan.slices for p in mapping.run_positions(s.run)]
     order = sorted(range(40), key=lambda i: xs[i])
     assert [plan.u[i] for i in order] == sorted(plan.u)
 
 
 def test_spatial_angle_directions():
-    pts = [[0.0, 1.0], [1.0, 0.0]]
+    pts = [[0.0, 0.0], [1.0, 1.0]]  # from the bottom left to the top right (y is up)
     right = _spatial([run(count=11, pts=pts)], axis={"angle": 0}).u
     up = _spatial([run(count=11, pts=pts)], axis={"angle": 90}).u
     left = _spatial([run(count=11, pts=pts)], axis={"angle": 180}).u
     assert right[0] == pytest.approx(0) and right[-1] == pytest.approx(1)
-    assert up[0] == pytest.approx(0) and up[-1] == pytest.approx(1)  # bottom to top: y = 1 is the bottom
+    assert up[0] == pytest.approx(0) and up[-1] == pytest.approx(1)  # bottom to top
     assert left[0] == pytest.approx(1) and left[-1] == pytest.approx(0)
 
 
@@ -348,7 +360,8 @@ def test_map_websocket_writes_are_admin_only():
     """The reads are open to every user; every command that changes the map or a light needs an admin."""
     src = (mapping.__file__ and open(mapping.__file__.replace("mapping.py", "ws_map.py")).read())
     blocks = src.split("@websocket_api.websocket_command")[1:]
-    assert len(blocks) == 6
+    assert len(blocks) == 9
     for block in blocks:
         name = block.split("def ", 1)[1].split("(", 1)[0]
-        assert ("require_admin" in block.split("def ", 1)[0]) == (name in ("ws_set", "ws_start", "ws_stop", "ws_speed")), name
+        admin = ("ws_set", "ws_start", "ws_stop", "ws_speed", "ws_scan_start", "ws_scan_frame", "ws_scan_stop")
+        assert ("require_admin" in block.split("def ", 1)[0]) == (name in admin), name

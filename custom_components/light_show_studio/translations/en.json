@@ -183,11 +183,15 @@
     },
     "start_zone": {
       "name": "Start zone",
-      "description": "Show a pattern across the runs of a zone (set up in the Light Shows app, Map tab) as one thing, in sync. A zone keeps its lights until you pick a colour or effect on one, turn it off, or a show starts.",
+      "description": "Show a pattern across the runs of a zone (set up in the Light Shows app, Map tab) as one thing, in sync. Give a zone, or an area to use every run in it without a saved zone. A zone keeps its lights until you pick a colour or effect on one, turn it off, or a show starts.",
       "fields": {
         "zone": {
           "name": "Zone",
-          "description": "The zone's name or id."
+          "description": "The zone's name or id. Give this or an area."
+        },
+        "area": {
+          "name": "Area",
+          "description": "An area's name or id: the pattern runs across every run in that area (nothing is saved). Give this or a zone."
         },
         "pattern": {
           "name": "Pattern",
@@ -209,7 +213,11 @@
       "fields": {
         "zone": {
           "name": "Zone",
-          "description": "The zone's name or id."
+          "description": "The zone's name or id. Give this or an area."
+        },
+        "area": {
+          "name": "Area",
+          "description": "An area whose pattern was started with the area field."
         }
       }
     }

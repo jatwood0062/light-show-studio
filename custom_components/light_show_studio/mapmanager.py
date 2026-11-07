@@ -1,4 +1,5 @@
-"""The map of runs and zones: stored, edited, and played (one ZoneRunner per running zone)."""
+"""The map of areas, runs and zones: stored, edited, and played (one ZoneRunner per running zone), and the
+camera scan sessions that borrow a light to flash its pixel codes."""
 from __future__ import annotations
 
 import asyncio
@@ -10,21 +11,35 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
-from . import mapping, patterns
+from . import mapping, patterns, scan_codes
 from .const import CONF_BULBS, CONF_SEGMENTED, CONF_TYPE, DEFAULT_BULBS, DOMAIN, MAP_KEY, MAP_STORE_KEY, TYPE_PLAYER, TYPE_TWINKLY, TYPE_WLED
 from .controller import C9Controller
 from .mapped_patterns import ZonePlan
-from .mapping import LightSpec, MapError, MapModel, Zone
+from .mapping import Area, LightSpec, MapError, MapModel, Zone
 from .zoneplayer import ZoneRunner
 
 _LOGGER = logging.getLogger(__name__)
 SAVE_DELAY = 1.0
+AD_HOC = "area:"  # id prefix of the zone made on the fly for "this area" (never saved)
+SCAN_IDLE = 120.0  # seconds without a frame (or a stop) after which a scan lets the light go
 
 
 class ZoneError(HomeAssistantError):
     """A zone can't be started or found; the message is shown to the person."""
+
+
+class _Scan:
+    """One light lent to a camera scan."""
+
+    def __init__(self, ctl: C9Controller, first: int, count: int, token: object) -> None:
+        self.ctl, self.first, self.count, self.token = ctl, first, count, token
+        self.frames = scan_codes.frame_count(count)
+        self.handle: asyncio.TimerHandle | None = None
 
 
 def _kind(entry: ConfigEntry) -> str:
@@ -34,7 +49,10 @@ def _kind(entry: ConfigEntry) -> str:
 class MapManager:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
+        # the store's own version stays 1; the map inside carries its version (see mapping.migrate)
         self._store: Store[dict[str, Any]] = Store(hass, 1, MAP_STORE_KEY)
+        self._backup: Store[dict[str, Any]] = Store(hass, 1, f"{MAP_STORE_KEY}.v1")  # a version 1 map, kept when migrated
+        self._scans: dict[str, _Scan] = {}
         self._model: MapModel | None = None  # None until a map is saved: the defaults follow the lights
         self.runners: dict[str, ZoneRunner] = {}
         self._listeners: list[Callable[[], None]] = []
@@ -52,15 +70,36 @@ class MapManager:
         ctl = getattr(entry, "runtime_data", None)
         return ctl if isinstance(ctl, C9Controller) else None
 
+    def _ha_area(self, entry: ConfigEntry) -> tuple[str | None, str | None]:
+        """(area id, name) of the light's Home Assistant area: its device's, else one of its entities'."""
+        try:
+            area_id = next((d.area_id for d in dr.async_entries_for_config_entry(dr.async_get(self.hass), entry.entry_id)
+                            if d.area_id), None)
+            if area_id is None:
+                area_id = next((x.area_id for x in er.async_entries_for_config_entry(er.async_get(self.hass), entry.entry_id)
+                                if x.area_id), None)
+            if area_id is None:
+                return None, None
+            area = ar.async_get(self.hass).async_get_area(area_id)
+            return area_id, (area.name if area else area_id)
+        except Exception:  # noqa: BLE001  a registry hiccup must not hide the map
+            _LOGGER.debug("Could not look up the area of %s", entry.entry_id, exc_info=True)
+            return None, None
+
     def light_specs(self) -> list[LightSpec]:
         out = []
         for e in self._entries():
             o = {**e.data, **e.options}
             ctl = self.controller(e.entry_id)
             layout = getattr(ctl, "layout", None) if ctl else None
+            area_id, area_name = self._ha_area(e)
             out.append(LightSpec(e.entry_id, e.title, ctl.bulbs if ctl else int(o.get(CONF_BULBS, DEFAULT_BULBS)),
-                                 _kind(e), layout))
+                                 _kind(e), layout, area_id, area_name))
         return out
+
+    def default_areas(self) -> dict[str, Area]:
+        """Where a run that names no area goes: its light's Home Assistant area, else an area named after it."""
+        return {s.entry_id: mapping.light_area(s) for s in self.light_specs()}
 
     def lights(self) -> list[dict[str, Any]]:
         """The lights the map can use, for the panel."""
@@ -73,6 +112,8 @@ class MapManager:
                 "entry_id": spec.entry_id, "title": spec.title, "bulbs": spec.bulbs, "kind": spec.kind,
                 "segmented": ctl.segmented if ctl else bool(o.get(CONF_SEGMENTED, True)), "loaded": ctl is not None,
             }
+            area = mapping.light_area(spec)
+            row["area"] = {"id": area.id, "name": area.name, **({"ha_area_id": area.ha_area_id} if area.ha_area_id else {})}
             if spec.layout is not None:
                 row["layout"] = spec.layout
             out.append(row)
@@ -88,8 +129,16 @@ class MapManager:
         if not isinstance(data, dict):
             return
         try:
+            if data.get("version", mapping.VERSION) == 1:  # keep the old map as it was, then move it to version 2
+                await self._backup.async_save(data)
+                migrated = True
+            else:
+                migrated = False
             # lights may not be set up yet, so only config entries that are gone count as missing
-            self._model = mapping.from_dict(data, {s.entry_id: s.bulbs for s in self.light_specs()}, strict=False)
+            self._model = mapping.from_dict(data, {s.entry_id: s.bulbs for s in self.light_specs()}, strict=False,
+                                            default_areas=self.default_areas())
+            if migrated:
+                self._save()
         except MapError:
             _LOGGER.exception("The saved light map is damaged; using the defaults")
 
@@ -122,13 +171,17 @@ class MapManager:
     async def async_set_map(self, data: Any) -> MapModel:
         """Replace the map with a validated copy (MapError says what is wrong). Running zones that are
         still in the map restart with their new definition; the others stop."""
-        model = mapping.from_dict(data, {s.entry_id: s.bulbs for s in self.light_specs()})
+        model = mapping.from_dict(data, {s.entry_id: s.bulbs for s in self.light_specs()},
+                                  default_areas=self.default_areas())
         async with self._lock:
             self._model = model
             self._save()
             for zone_id in list(self.runners):
                 old = self.runners.pop(zone_id)
-                zone = next((z for z in model.zones if z.id == zone_id), None)
+                if zone_id.startswith(AD_HOC):  # the zone made for an area follows that area's runs
+                    zone = old.plan.zone if model.area(zone_id[len(AD_HOC):]) else None
+                else:
+                    zone = next((z for z in model.zones if z.id == zone_id), None)
                 plan = ZonePlan(zone, model.run_map()) if zone else None
                 if plan is None or plan.n == 0:
                     old.stop()
@@ -182,7 +235,7 @@ class MapManager:
             if changes:
                 zone = replace(zone, **changes)
                 base = self.model
-                self._model = MapModel(base.runs, tuple(zone if z.id == zone.id else z for z in base.zones), base.backdrop)
+                self._model = replace(base, zones=tuple(zone if z.id == zone.id else z for z in base.zones))
                 self._save()
             model = self.model
             plan = ZonePlan(zone, model.run_map())
@@ -195,28 +248,147 @@ class MapManager:
             await self._launch(plan, zone.speed)
         self._notify()
 
+    async def async_start_area(self, ref: str, pattern: str | None = None, effect: str | None = None,
+                               speed: int | None = None, mode: str = "string", axis: Any = None) -> None:
+        """Start (or restart) a pattern on every run in an area, without saving a zone. Stopped with the zone
+        id "area:<area id>"."""
+        if pattern is not None and pattern not in patterns.PATTERNS:
+            raise ZoneError(f"Unknown pattern {pattern}")
+        if effect is not None and effect not in patterns.PATTERN_EFFECTS:
+            raise ZoneError(f"Unknown effect {effect}")
+        if mode not in mapping.MODES:
+            raise ZoneError("Mode must be string or spatial")
+        try:
+            ax = mapping.parse_axis(axis if axis is not None else mapping.default_axis())
+        except MapError as err:
+            raise ZoneError(str(err)) from err
+        async with self._lock:
+            model = self.model
+            if (area := model.area(ref)) is None:
+                raise ZoneError(f"No area called {ref}")
+            zone = Zone(AD_HOC + area.id, area.name, (), mode, ax, pattern or patterns.DEFAULT_PATTERN,
+                        effect or patterns.CHASE, max(1, min(100, int(speed))) if speed is not None else patterns.DEFAULT_SPEED,
+                        (area.id,))
+            plan = ZonePlan(zone, model.run_map())
+            if plan.n == 0:
+                raise ZoneError(f"{area.name} has no runs")
+            if not any(self.controller(s.run.entry_id) for s in plan.slices):
+                raise ZoneError(f"None of the lights in {area.name} are set up")
+            if old := self.runners.pop(zone.id, None):
+                old.stop(keep={s.run.entry_id for s in plan.slices})
+            await self._launch(plan, zone.speed)
+        self._notify()
+
     async def async_stop_zone(self, ref: str) -> None:
-        zone = self.zone(ref)
-        if runner := self.runners.pop(zone.id, None):
+        if ref not in self.runners and not ref.startswith(AD_HOC):
+            ref = self.zone(ref).id
+        if runner := self.runners.pop(ref, None):
             runner.stop()
             self._notify()
+
+    async def async_stop_area(self, ref: str) -> None:
+        area = self.model.area(ref)
+        await self.async_stop_zone(AD_HOC + (area.id if area else ref))
 
     def async_stop_all(self) -> None:
         for runner in list(self.runners.values()):
             runner.stop(restore=False)
         self.runners.clear()
+        for entry_id in list(self._scans):
+            self.scan_stop(entry_id, restore=False)
 
     async def async_set_speed(self, ref: str, speed: int) -> None:
         """Change the speed of a zone, live when it is running; it is kept as the zone's speed."""
-        zone = self.zone(ref)
         speed = max(1, min(100, int(speed)))
+        if ref.startswith(AD_HOC):  # a zone made for an area isn't saved: just the running one
+            if (runner := self.runners.get(ref)) is None:
+                raise ZoneError(f"No zone called {ref}")
+            runner.set_speed(speed)
+            return
+        zone = self.zone(ref)
         if self._model is None:  # defaults have no zones, so zone() has already raised
             return
-        self._model = MapModel(self._model.runs, tuple(replace(z, speed=speed) if z.id == zone.id else z
-                                                       for z in self._model.zones), self._model.backdrop)
+        self._model = replace(self._model, zones=tuple(replace(z, speed=speed) if z.id == zone.id else z
+                                                       for z in self._model.zones))
         self._save()
         if runner := self.runners.get(zone.id):
             runner.set_speed(speed)
+
+
+    # --- camera scan --------------------------------------------------------------------------
+    @property
+    def scanning(self) -> list[str]:
+        return list(self._scans)
+
+    async def async_scan_start(self, entry_id: str, token: object, first: int = 0, count: int | None = None) -> dict[str, Any]:
+        """Take a light for a scan: any effect or zone on it stops and it goes dark, ready for code frames. Only
+        pixels first..first+count-1 are coded (the rest stay dark); the whole light by default. Returns the
+        number of pixels coded and of frames. The scan ends on scan_stop, SCAN_IDLE seconds without a frame,
+        or when something else takes the light."""
+        ctl = self.controller(entry_id)
+        if ctl is None:
+            raise ZoneError("That light isn't set up")
+        if not ctl.segmented:
+            raise ZoneError("This light can't show separate bulbs, so it can't be scanned")
+        if not 0 <= first < ctl.bulbs:
+            raise ZoneError(f"First pixel must be between 0 and {ctl.bulbs - 1}")
+        count = ctl.bulbs - first if count is None else count
+        if not 1 <= count <= ctl.bulbs - first:
+            raise ZoneError(f"Pixel count must be between 1 and {ctl.bulbs - first}")
+        if old := self._scans.pop(entry_id, None):
+            self._cancel_idle(old)
+        scan = _Scan(ctl, first, count, token)
+        self._scans[entry_id] = scan
+        self._arm_idle(entry_id, scan)  # from now on, whatever happens, the light is let go
+        try:
+            await ctl.async_claim_scan()
+            if self._scans.get(entry_id) is not scan:  # stopped or replaced while the light was turning on
+                return {"bulbs": count, "frames": scan.frames, "first": first}
+            ctl.push_scan_frame([scan_codes.OFF] * ctl.bulbs)
+        except BaseException:
+            self.scan_stop(entry_id, token)
+            raise
+        return {"bulbs": count, "frames": scan.frames, "first": first}
+
+    async def async_scan_frame(self, entry_id: str, frame: int) -> None:
+        scan = self._scans.get(entry_id)
+        if scan is None:
+            raise ZoneError("That light isn't being scanned")
+        if not 0 <= frame < scan.frames:
+            raise ZoneError(f"Frame must be between 0 and {scan.frames - 1}")
+        colours = [scan_codes.OFF] * scan.ctl.bulbs
+        colours[scan.first : scan.first + scan.count] = scan_codes.frame_colours(scan.count, frame)
+        if not scan.ctl.push_scan_frame(colours):  # a person took the light
+            self.scan_stop(entry_id, restore=False)
+            raise ZoneError("The light was taken by something else, so the scan stopped")
+        self._arm_idle(entry_id, scan)
+
+    @callback
+    def scan_stop(self, entry_id: str, token: object | None = None, restore: bool = True) -> None:
+        """End a scan and put the light back. With a token, only the scan that token started (a connection
+        that closes late must not end a newer scan). Safe to call when nothing is scanned."""
+        scan = self._scans.get(entry_id)
+        if scan is None or (token is not None and scan.token is not token):
+            return
+        del self._scans[entry_id]
+        self._cancel_idle(scan)
+        scan.ctl.release_scan(restore)
+
+    def _arm_idle(self, entry_id: str, scan: _Scan) -> None:
+        self._cancel_idle(scan)
+        scan.handle = self.hass.loop.call_later(SCAN_IDLE, self._scan_idle, entry_id, scan)
+
+    @staticmethod
+    def _cancel_idle(scan: _Scan) -> None:
+        if scan.handle:
+            scan.handle.cancel()
+            scan.handle = None
+
+    def _scan_idle(self, entry_id: str, scan: _Scan) -> None:
+        scan.handle = None
+        if self._scans.get(entry_id) is scan:
+            _LOGGER.debug("Scan of %s timed out; letting the light go", entry_id)
+            self.scan_stop(entry_id, scan.token)
 
 
 def get_manager(hass: HomeAssistant) -> MapManager | None:

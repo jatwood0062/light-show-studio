@@ -73,3 +73,49 @@ How it works:
 | `light_show_studio/map/scan/frame` | `{entry_id, frame}` | `{}` |
 | `light_show_studio/map/scan/stop` | `{entry_id}` | `{}` |
 | `light_show_studio/map/zone/start` | adds optional `area` instead of `zone_id` (ad-hoc zone) | `{}` |
+
+## Backend notes
+
+As built in 2.3.0. Deviations and details the frontend needs:
+
+- **Coordinates**: y is now UP (1 = top), z towards the viewer. Version 1 had y down; migration flips every `pts` y
+  and a `centre`. Polyline `pts` entries are `[x, y]` (z = 0.5) or `[x, y, z]` on input, always `[x, y, z]` on output.
+- **Store**: still a Home Assistant `Store` of version 1; the map inside carries `"version": 2`. A map with
+  `"version": 1` (store or `map/set`) is migrated by `mapping.migrate`; a map with no version is read as 2. On load,
+  a v1 store is first copied to `light_show_studio.map.v1`, then written back as v2. Migration puts ALL v1 runs in one
+  area `{id: "main", name: "House"}` (their coordinates shared one space, so zones sweep exactly as before); angle
+  axes become the same direction vector.
+- **Areas** are in `map.areas` (`[{id, name, ha_area_id?}]`, also copied to the top-level `areas` of `map/get`). Every
+  run has `area` (an area id). A run sent without `area` gets its light's default area (added to `areas`); an unknown
+  area is an error on `map/set`. Default ids: `ha_<ha area id>` (name = HA area name, `ha_area_id` set), else
+  `light_<entry id>` (name = light title). Limits: 64 areas, unique ids and names (any case), 64 areas per zone.
+  `map/get` `lights[]` rows gain `area` (`{id, name, ha_area_id?}`: where a run of that light starts).
+- **Run positions**: `positions` on a run is a flat list `[x0, y0, z0, x1, ...]` of ints 0-1000 (floats are rounded,
+  out-of-range clamped; `[[x, y, z], ...]` is accepted on input). It must be exactly `3 * count` long or empty (empty =
+  not mapped, the polyline is used); a wrong length is an error on `map/set` (drop `positions` when you change `count`).
+  A saved map with damaged `positions` keeps the run and loses the positions. Unmapped runs omit the key.
+- **Twinkly**: unsaved defaults give a Twinkly run `positions` from `ctl.layout`. The layout may have `[x, y, z]` rows
+  and then z is used; `twinkly.flip_layout` currently emits `[x, y]` only (not changed here), so z needs that one-liner.
+- **Zones** gain `areas: [area id]`. Slices = the listed `runs` first, then every run of each listed area in the map's
+  run order, none twice. A zone may have no runs and only areas.
+- **Axis** is stored as `{"dir": [x, y, z]}` (a unit vector) or `{"centre": [x, y, z]}`, plus `"preset"` when the
+  vector is one of `left_right`, `right_left`, `rise`, `fall`, `front_back` (dir 0,0,-1), `back_front`, or `outward`
+  (with `centre`). Accepted on input: `{"preset": name}`, `{"dir": [...]}` (any non-zero length), v1 `{"angle": deg}`
+  (0 = left to right, 90 = up), `{"centre": [x, y]}` (z = 0.5). Default is `left_right`.
+- **Spatial u is per area**: each area's pixels are projected on the direction (or distance from the centre) and
+  scaled to 0-1 within that area, so a zone over several areas sweeps through all of them at once.
+- **Scan** (all admin only; errors are `failed`):
+  - `map/scan/start {entry_id, first?, count?}` -> `{bulbs, frames, first, level}`. `first`/`count` code only that stretch
+    of the light (pixel `first + i` is code index `i`; the rest stay dark); the whole light by default. Lights without
+    per-segment control are refused. The light goes dark at once. Closing the websocket ends the scan.
+  - `map/scan/frame {entry_id, frame}` -> `{}`; frame 0 = all dark, 1 = all lit, then bit pairs (see `scan_codes.py`,
+    least significant bit first). Lit pixels are `(128,128,128)`, never dimmed by the light's brightness setting. Errors
+    if the light is no longer being scanned (a person took it).
+  - `map/scan/stop {entry_id}` -> `{}`; restores what the light showed (off if the scan turned it on). Safe to repeat.
+  - 120 s without a frame (or start) also stops it. Frames can be sent as fast as the light takes them.
+  - `map/get` also returns `scanning: [entry_id]`.
+- **Ad-hoc area zone**: `map/zone/start {area, pattern?, effect?, speed?, mode?, axis?}` (give `area` or `zone_id`, not
+  both); `area` is an area's id, name or HA area id. The zone id is `area:<area id>` and appears in `running`; stop and
+  speed use that id in `zone_id`. It is never saved, follows `map/set`, and ends if its area is removed.
+- **Services**: `start_zone` and `stop_zone` take `zone` or `area` (one of them).
+- The light entity gets a `scanning` attribute.
