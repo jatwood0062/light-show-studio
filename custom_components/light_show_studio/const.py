@@ -33,3 +33,7 @@ MAP_STORE_KEY = f"{DOMAIN}.map"
 ZONE_FPS = 25  # frames a second for a zone
 ZONE_FPS_LARGE = 20  # ... when it has more than ZONE_LARGE pixels
 ZONE_LARGE = 1000
+LIGHT_SCHEDULER_KEY = f"{DOMAIN}_light_scheduler"  # hass.data key of the LightScheduler (lights/areas on at a time), made in async_setup
+LIGHT_SCHEDULE_STORE_KEY = f"{DOMAIN}.light_schedules"
+EVENT_LIGHT_SCHEDULE_STARTED = f"{DOMAIN}_light_schedule_started"
+EVENT_LIGHT_SCHEDULE_ENDED = f"{DOMAIN}_light_schedule_ended"

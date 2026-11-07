@@ -66,6 +66,7 @@ class Area:
     id: str
     name: str
     ha_area_id: str | None = None  # the Home Assistant area this stands for, if any
+    outdoor: bool = False  # lights in an outdoor area are what a light schedule's "outdoor" target means
 
 
 @dataclass(frozen=True)
@@ -248,7 +249,7 @@ def parse_area(v: Any) -> Area:
     ha = d.get("ha_area_id")
     if ha is not None and (not isinstance(ha, str) or not 0 < len(ha) <= MAX_ID or "\0" in ha):
         raise MapError(f"{name}: bad Home Assistant area")
-    return Area(_id(d.get("id"), "area id"), name, ha)
+    return Area(_id(d.get("id"), "area id"), name, ha, _bool(d.get("outdoor", False), f"{name}: outdoor"))
 
 
 def default_axis() -> dict[str, Any]:
@@ -517,7 +518,8 @@ def to_dict(model: MapModel) -> dict[str, Any]:
         runs.append(row)
     return {
         "version": VERSION,
-        "areas": [{"id": a.id, "name": a.name, **({"ha_area_id": a.ha_area_id} if a.ha_area_id else {})} for a in model.areas],
+        "areas": [{"id": a.id, "name": a.name, **({"ha_area_id": a.ha_area_id} if a.ha_area_id else {}),
+                   **({"outdoor": True} if a.outdoor else {})} for a in model.areas],
         "runs": runs,
         "zones": [{"id": z.id, "name": z.name, "runs": list(z.runs), "areas": list(z.areas), "mode": z.mode,
                    "axis": _axis_dict(z.axis), "pattern": z.pattern, "effect": z.effect, "speed": z.speed}

@@ -41,10 +41,11 @@ from .fseq import FseqError, FseqFile, load
 from .health import HealthMonitor
 from .hosts import valid_ipv4
 from .library import FSEQ_EXT, SHOW_PLAYER_KEY
+from .light_schedules import async_setup_light_scheduler
 from .mapmanager import MapManager
 from .outputs import normalize_speakers
 from .playback import SequencePlayer
-from . import patterns, upload, websocket, ws_map, ws_schedule, ws_shows
+from . import patterns, upload, websocket, ws_light_schedules, ws_map, ws_schedule, ws_shows
 from .receiver import PixelReceiver
 from .scheduler import async_setup_scheduler
 from .showplayer import async_setup_player, async_unload_player
@@ -105,12 +106,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     ws_shows.async_register(hass)
     ws_schedule.async_register(hass)
     ws_map.async_register(hass)
+    ws_light_schedules.async_register(hass)
     scheduler = await async_setup_scheduler(hass)  # playlists + schedules, loaded once
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: scheduler.async_stop_timers())
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: receiver.close())
     zones = hass.data[MAP_KEY] = MapManager(hass)  # zones across lights; the map is read now, zones start on request
     await zones.async_load()
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: zones.async_stop_all())
+    light_scheduler = await async_setup_light_scheduler(hass)  # lights/areas on at a time; uses the map and the lights
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: light_scheduler.async_stop_timers())
     upload.async_register(hass)
     health = hass.data[HEALTH] = HealthMonitor(hass)
     health.start()

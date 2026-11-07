@@ -16,6 +16,7 @@ from .mapping import MapError, to_dict
 ZONE_ID = vol.All(str, vol.Length(min=1, max=70))  # a zone id, or "area:<area id>" for an area's own
 AREA_REF = vol.All(str, vol.Length(min=1, max=64))  # an area's id or name
 ENTRY_ID = vol.All(str, vol.Length(min=1, max=64))
+COLOUR = vol.All([vol.All(int, vol.Range(min=0, max=255))], vol.Length(min=3, max=3))  # [r, g, b]
 
 
 def async_register(hass: HomeAssistant) -> None:
@@ -152,6 +153,7 @@ def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection
     vol.Required("entry_id"): ENTRY_ID,
     vol.Optional("first"): vol.All(int, vol.Range(min=0, max=mapping.MAX_PIXELS - 1)),  # scan just a run's pixels
     vol.Optional("count"): vol.All(int, vol.Range(min=1, max=mapping.MAX_PIXELS)),
+    vol.Optional("mode"): vol.In(scan_codes.MODES),  # "colour" (default) or "white" flashes
 })
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -164,12 +166,13 @@ async def ws_scan_start(hass: HomeAssistant, connection: websocket_api.ActiveCon
     entry_id = msg["entry_id"]
     connection.subscriptions[msg["id"]] = lambda: manager.scan_stop(entry_id, token)  # runs when the socket closes
     try:
-        result = await manager.async_scan_start(entry_id, token, msg.get("first", 0), msg.get("count"))
+        result = await manager.async_scan_start(entry_id, token, msg.get("first", 0), msg.get("count"),
+                                                 msg.get("mode", scan_codes.DEFAULT_MODE))
     except HomeAssistantError as err:
         connection.subscriptions.pop(msg["id"], None)
         connection.send_error(msg["id"], "failed", str(err))
         return
-    connection.send_result(msg["id"], {**result, "level": scan_codes.SCAN_LEVEL})
+    connection.send_result(msg["id"], result)  # {bulbs, frames, first, level, mode}
 
 
 @websocket_api.websocket_command({
@@ -193,17 +196,30 @@ async def ws_scan_frame(hass: HomeAssistant, connection: websocket_api.ActiveCon
 @websocket_api.websocket_command({
     vol.Required("type"): "light_show_studio/map/scan/segment",
     vol.Required("entry_id"): ENTRY_ID,
-    vol.Required("start"): vol.All(int, vol.Range(min=0, max=mapping.MAX_PIXELS - 1)),  # a pixel of the light
-    vol.Required("count"): vol.All(int, vol.Range(min=1, max=mapping.MAX_PIXELS)),
+    # one stretch (start + count, optional colour: white by default) ...
+    vol.Optional("start"): vol.All(int, vol.Range(min=0, max=mapping.MAX_PIXELS - 1)),  # a pixel of the light
+    vol.Optional("count"): vol.All(int, vol.Range(min=1, max=mapping.MAX_PIXELS)),
+    vol.Optional("colour"): COLOUR,
+    # ... or up to three at once, each in its own colour (red, green, blue by default)
+    vol.Optional("segments"): vol.All([{
+        vol.Required("start"): vol.All(int, vol.Range(min=0, max=mapping.MAX_PIXELS - 1)),
+        vol.Required("count"): vol.All(int, vol.Range(min=1, max=mapping.MAX_PIXELS)),
+        vol.Optional("colour"): COLOUR,
+    }], vol.Length(min=1, max=3)),
 })
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_scan_segment(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """Glow scan frame: only pixels start..start+count-1 lit, the rest dark (scan/frame 0 is the dark reference)."""
+    """Glow scan frame: only pixels start..start+count-1 lit (in `colour`), or up to 3 `segments` lit at once; the rest
+    dark (scan/frame 0 is the dark reference)."""
     if not (manager := _manager(hass, connection, msg)):
         return
+    if "segments" not in msg and not ("start" in msg and "count" in msg):
+        connection.send_error(msg["id"], "invalid_format", "Give start and count, or segments")
+        return
     try:
-        await manager.async_scan_segment(msg["entry_id"], msg["start"], msg["count"])
+        await manager.async_scan_segment(msg["entry_id"], msg.get("start"), msg.get("count"), msg.get("colour"),
+                                         msg.get("segments"))
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "failed", str(err))
         return

@@ -273,8 +273,8 @@ async def test_manager_scan_start_frame_stop(hass):
     ctl.colour, ctl.show_mode = tz.G, False
     m = make_manager(hass, [("e1", ctl, "Roof")])
     tok = object()
-    info = await m.async_scan_start("e1", tok)
-    assert info == {"bulbs": 20, "frames": 2 + 2 * 5, "first": 0} and m.scanning == ["e1"]
+    info = await m.async_scan_start("e1", tok, mode="white")
+    assert info == {"bulbs": 20, "frames": 2 + 2 * 5, "first": 0, "level": 128, "mode": "white"} and m.scanning == ["e1"]
     assert ctl.sent[-1] == [BLACK] * 20  # starts dark
     await m.async_scan_frame("e1", 1)
     assert ctl.sent[-1] == [LEVEL] * 20
@@ -293,8 +293,8 @@ async def test_manager_scan_start_frame_stop(hass):
 async def test_manager_scan_a_stretch_of_the_light(hass):
     ctl = FakeLight(hass, 20)
     m = make_manager(hass, [("e1", ctl, "Roof")])
-    info = await m.async_scan_start("e1", object(), first=5, count=8)
-    assert info == {"bulbs": 8, "frames": 2 + 2 * 3, "first": 5}
+    info = await m.async_scan_start("e1", object(), first=5, count=8, mode="white")
+    assert info == {"bulbs": 8, "frames": 2 + 2 * 3, "first": 5, "level": 128, "mode": "white"}
     await m.async_scan_frame("e1", 1)
     assert ctl.sent[-1] == [BLACK] * 5 + [LEVEL] * 8 + [BLACK] * 7
     for bad in ({"first": 20}, {"first": 15, "count": 6}, {"count": 0}):
@@ -458,7 +458,7 @@ async def test_manager_scan_segment_lights_only_that_stretch(hass):
     ctl.colour, ctl.show_mode = tz.G, False
     ctl.brightness = 20  # the scan level doesn't follow the brightness setting
     m = make_manager(hass, [("e1", ctl, "Roof")])
-    await m.async_scan_start("e1", object())
+    await m.async_scan_start("e1", object(), mode="white")
     await m.async_scan_segment("e1", 4, 3)
     assert ctl.sent[-1] == [BLACK] * 4 + [LEVEL] * 3 + [BLACK] * 13
     await m.async_scan_segment("e1", 17, 3)  # up to the very end
@@ -524,7 +524,154 @@ def test_scan_segment_command_is_admin_only_with_a_strict_schema():
     assert "websocket_api.require_admin" in decorators
     assert decorators.index("websocket_api.require_admin") < decorators.index("websocket_api.async_response")
     schema = next(d for d in decorators if d.startswith("websocket_api.websocket_command"))
-    for part in ("'light_show_studio/map/scan/segment'", "ENTRY_ID", "mapping.MAX_PIXELS - 1", "mapping.MAX_PIXELS"):
+    for part in ("'light_show_studio/map/scan/segment'", "ENTRY_ID", "mapping.MAX_PIXELS - 1", "mapping.MAX_PIXELS",
+                 "vol.Optional('colour'): COLOUR", "vol.Length(min=1, max=3)"):
         assert part in schema
-    assert schema.count("vol.Range(min=") >= 2 and "vol.Required('start')" in schema and "vol.Required('count')" in schema
+    assert schema.count("vol.Range(min=") >= 4 and "vol.Required('start')" in schema and "vol.Required('count')" in schema
+    colour = next(ast.unparse(n.value) for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "COLOUR")
+    assert "min=0, max=255" in colour and "min=3, max=3" in colour
     assert "websocket_api.async_register_command(hass, ws_scan_segment)" in src
+
+
+# --- colour mode: the code sequence --------------------------------------------------------------------------------
+@pytest.mark.parametrize("n", [1, 2, 3, 8, 9, 26, 27, 50, 279, 728, 729, 904, 1404, 2040])
+def test_colour_codes_round_trip_and_are_unique(n):
+    frames = scan_codes.colour_frame_count(n)
+    assert frames == 5 + scan_codes.digit_count(n) and 3 ** scan_codes.digit_count(n) > n >= 3 ** (scan_codes.digit_count(n) - 1) or n < 3
+    seen = set()
+    for i in range(n):
+        classes = scan_codes.simulate_colour(n, i)
+        assert classes[0] is None and classes[1:4] == [0, 1, 2]
+        assert scan_codes.decode_colour_pixel(classes, n) == i
+        seen.add(tuple(classes))
+    assert len(seen) == n
+
+
+def test_904_leds_need_12_colour_frames_against_22_white():
+    assert scan_codes.digit_count(904) == 7 and scan_codes.colour_frame_count(904) == 1 + 3 + 7 + 1 == 12
+    assert scan_codes.frames_for(904) == 12 and scan_codes.frames_for(904, "white") == 22 and scan_codes.DEFAULT_MODE == "colour"
+    assert scan_codes.digit_count(728) == 6 and scan_codes.digit_count(729) == 7  # code 729 = 3**6 needs the 7th digit
+    with pytest.raises(ValueError):
+        scan_codes.frames_for(5, "pink")
+
+
+def test_no_pixel_is_one_colour_in_every_digit_frame_and_index_zero_is_not_all_red():
+    n = 904
+    for i in range(n):
+        digit_classes = scan_codes.simulate_colour(n, i)[4:]
+        assert len(set(digit_classes)) > 1, i
+    zero = scan_codes.simulate_colour(n, 0)
+    assert zero[4:] != [0] * 8 and scan_codes.colour_digits(0, n)[0] == 1  # the first pixel is code 1, not 0
+
+
+def test_colour_frames_are_gentle_primaries():
+    cols = scan_codes.colour_frame_colours(5, 1)
+    assert cols == [(140, 0, 0)] * 5 and scan_codes.colour_frame_colours(4, 2) == [(0, 140, 0)] * 4
+    assert scan_codes.colour_frame_colours(4, 3) == [(0, 0, 140)] * 4 and scan_codes.colour_frame_colours(4, 0) == [BLACK] * 4
+    for f in range(scan_codes.colour_frame_count(904)):
+        for c in scan_codes.colour_frame_colours(904, f):
+            assert max(c) <= 140 and sum(1 for v in c if v) <= 1  # one channel at a time, at most 140
+    assert scan_codes.COLOUR_LEVEL == 140
+
+
+def test_colour_check_digit_catches_a_single_misread_and_range():
+    n = 904
+    for i in (0, 5, 333, 903):
+        good = scan_codes.simulate_colour(n, i)
+        for f in range(4, len(good)):
+            bad = list(good)
+            bad[f] = (bad[f] + 1) % 3
+            assert scan_codes.decode_colour_pixel(bad, n) is None, (i, f)
+        unreadable = list(good)
+        unreadable[6] = None
+        assert scan_codes.decode_colour_pixel(unreadable, n) is None
+    # a code past the last pixel is refused: build digits for code 905 with a matching check
+    digits = [905 // 3**k % 3 for k in range(7)]
+    classes = [None, 0, 1, 2] + [(d + j) % 3 for j, d in enumerate(digits)] + [(sum(digits) % 3 + 7) % 3]
+    assert scan_codes.decode_colour_pixel(classes, 904) is None
+    with pytest.raises(ValueError):
+        scan_codes.decode_colour_pixel([0, 1], 904)
+    with pytest.raises(ValueError):
+        scan_codes.colour_class(0, 99, 5)
+
+
+# --- colour mode: the manager --------------------------------------------------------------------------------------
+@aio
+async def test_manager_colour_scan_is_the_default(hass):
+    ctl = FakeLight(hass, 20)
+    ctl.colour, ctl.show_mode = tz.G, False
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    info = await m.async_scan_start("e1", object())
+    assert info == {"bulbs": 20, "frames": 8, "first": 0, "level": 140, "mode": "colour"}
+    assert ctl.sent[-1] == [BLACK] * 20
+    for frame, want in ((1, (140, 0, 0)), (2, (0, 140, 0)), (3, (0, 0, 140))):
+        await m.async_scan_frame("e1", frame)
+        assert ctl.sent[-1] == [want] * 20
+    await m.async_scan_frame("e1", 4)
+    assert ctl.sent[-1] == scan_codes.colour_frame_colours(20, 4)
+    with pytest.raises(mapmanager.HomeAssistantError, match="Frame must be"):
+        await m.async_scan_frame("e1", 8)  # white mode would have had 12 frames
+    with pytest.raises(mapmanager.HomeAssistantError, match="Scan mode"):
+        await m.async_scan_start("e1", object(), mode="pink")
+    m.scan_stop("e1")
+    assert not ctl.scanning
+
+
+@aio
+async def test_colour_scan_of_a_stretch_codes_only_that_stretch(hass):
+    ctl = FakeLight(hass, 30)
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    info = await m.async_scan_start("e1", object(), first=10, count=12, mode="colour")
+    assert info["bulbs"] == 12 and info["frames"] == 5 + 3 and info["first"] == 10
+    await m.async_scan_frame("e1", 1)
+    assert ctl.sent[-1] == [BLACK] * 10 + [(140, 0, 0)] * 12 + [BLACK] * 8
+    m.scan_stop("e1", restore=False)
+
+
+# --- glow scan with colours -------------------------------------------------------------------------------------------
+@aio
+async def test_glow_segment_in_a_chosen_colour(hass):
+    ctl = FakeLight(hass, 20)
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    await m.async_scan_start("e1", object())
+    await m.async_scan_segment("e1", 4, 3, colour=(0, 140, 0))
+    assert ctl.sent[-1] == [BLACK] * 4 + [(0, 140, 0)] * 3 + [BLACK] * 13
+    await m.async_scan_segment("e1", 0, 2)  # the old call: white
+    assert ctl.sent[-1][:3] == [LEVEL, LEVEL, BLACK]
+    for bad in ((1, 2), (0, 0, 256), (0, 0, -1), (0, 0, 1.5)):
+        with pytest.raises(mapmanager.HomeAssistantError, match="three numbers"):
+            await m.async_scan_segment("e1", 4, 3, colour=bad)
+    m.scan_stop("e1", restore=False)
+
+
+@aio
+async def test_glow_three_segments_at_once(hass):
+    ctl = FakeLight(hass, 30)
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    await m.async_scan_start("e1", object(), first=5, count=20)
+    await m.async_scan_segment("e1", segments=[{"start": 5, "count": 3}, {"start": 12, "count": 2}, {"start": 20, "count": 5}])
+    R, G, B = (140, 0, 0), (0, 140, 0), (0, 0, 140)
+    assert ctl.sent[-1] == [BLACK] * 5 + [R] * 3 + [BLACK] * 4 + [G] * 2 + [BLACK] * 6 + [B] * 5 + [BLACK] * 5
+    await m.async_scan_segment("e1", segments=[{"start": 5, "count": 1, "colour": [10, 20, 30]}])
+    assert ctl.sent[-1][5] == (10, 20, 30) and ctl.sent[-1].count(BLACK) == 29
+    n = len(ctl.sent)
+    bad = ([{"start": 5, "count": 3}] * 2, [{"start": 4, "count": 2}], [{"start": 24, "count": 2}], [],
+           [{"start": 5, "count": 1}, {"start": 7, "count": 1}, {"start": 9, "count": 1}, {"start": 11, "count": 1}])
+    for segs in bad:
+        with pytest.raises(mapmanager.HomeAssistantError):
+            await m.async_scan_segment("e1", segments=segs)
+    with pytest.raises(mapmanager.HomeAssistantError, match="start and count"):
+        await m.async_scan_segment("e1")
+    assert len(ctl.sent) == n
+    m.scan_stop("e1", restore=False)
+
+
+def test_scan_start_command_takes_a_mode_and_segment_a_list_of_three():
+    import ast
+    tree = ast.parse((tz.PKG / "ws_map.py").read_text())
+    for name, parts in (("ws_scan_start", ("vol.Optional('mode'): vol.In(scan_codes.MODES)",)),
+                        ("ws_scan_segment", ("vol.Optional('segments')", "vol.Optional('colour'): COLOUR"))):
+        fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
+        schema = next(ast.unparse(d) for d in fn.decorator_list if ast.unparse(d).startswith("websocket_api.websocket_command"))
+        for part in parts:
+            assert part in schema, (name, part)

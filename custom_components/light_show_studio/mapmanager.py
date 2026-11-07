@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -36,9 +36,9 @@ class ZoneError(HomeAssistantError):
 class _Scan:
     """One light lent to a camera scan."""
 
-    def __init__(self, ctl: C9Controller, first: int, count: int, token: object) -> None:
-        self.ctl, self.first, self.count, self.token = ctl, first, count, token
-        self.frames = scan_codes.frame_count(count)
+    def __init__(self, ctl: C9Controller, first: int, count: int, token: object, mode: str = scan_codes.DEFAULT_MODE) -> None:
+        self.ctl, self.first, self.count, self.token, self.mode = ctl, first, count, token, mode
+        self.frames = scan_codes.frames_for(count, mode)
         self.handle: asyncio.TimerHandle | None = None
 
 
@@ -320,11 +320,15 @@ class MapManager:
     def scanning(self) -> list[str]:
         return list(self._scans)
 
-    async def async_scan_start(self, entry_id: str, token: object, first: int = 0, count: int | None = None) -> dict[str, Any]:
+    async def async_scan_start(self, entry_id: str, token: object, first: int = 0, count: int | None = None,
+                               mode: str = scan_codes.DEFAULT_MODE) -> dict[str, Any]:
         """Take a light for a scan: any effect or zone on it stops and it goes dark, ready for code frames. Only
-        pixels first..first+count-1 are coded (the rest stay dark); the whole light by default. Returns the
-        number of pixels coded and of frames. The scan ends on scan_stop, SCAN_IDLE seconds without a frame,
+        pixels first..first+count-1 are coded (the rest stay dark); the whole light by default. mode: "colour"
+        (default: red/green/blue frames) or "white" (binary white flashes). Returns the number of pixels coded, of
+        frames, the first pixel, the level of a lit channel and the mode. The scan ends on scan_stop, SCAN_IDLE seconds without a frame,
         or when something else takes the light."""
+        if mode not in scan_codes.MODES:
+            raise ZoneError(f"Scan mode must be one of {', '.join(scan_codes.MODES)}")
         ctl = self.controller(entry_id)
         if ctl is None:
             raise ZoneError("That light isn't set up")
@@ -337,18 +341,19 @@ class MapManager:
             raise ZoneError(f"Pixel count must be between 1 and {ctl.bulbs - first}")
         if old := self._scans.pop(entry_id, None):
             self._cancel_idle(old)
-        scan = _Scan(ctl, first, count, token)
+        scan = _Scan(ctl, first, count, token, mode)
+        info = {"bulbs": count, "frames": scan.frames, "first": first, "level": scan_codes.level_for(mode), "mode": mode}
         self._scans[entry_id] = scan
         self._arm_idle(entry_id, scan)  # from now on, whatever happens, the light is let go
         try:
             await ctl.async_claim_scan()
             if self._scans.get(entry_id) is not scan:  # stopped or replaced while the light was turning on
-                return {"bulbs": count, "frames": scan.frames, "first": first}
+                return info
             ctl.push_scan_frame([scan_codes.OFF] * ctl.bulbs)
         except BaseException:
             self.scan_stop(entry_id, token)
             raise
-        return {"bulbs": count, "frames": scan.frames, "first": first}
+        return info
 
     async def async_scan_frame(self, entry_id: str, frame: int) -> None:
         scan = self._scans.get(entry_id)
@@ -357,22 +362,45 @@ class MapManager:
         if not 0 <= frame < scan.frames:
             raise ZoneError(f"Frame must be between 0 and {scan.frames - 1}")
         colours = [scan_codes.OFF] * scan.ctl.bulbs
-        colours[scan.first : scan.first + scan.count] = scan_codes.frame_colours(scan.count, frame)
+        colours[scan.first : scan.first + scan.count] = scan_codes.frame_colours_for(scan.count, frame, scan.mode)
         if not scan.ctl.push_scan_frame(colours):  # a person took the light
             self.scan_stop(entry_id, restore=False)
             raise ZoneError("The light was taken by something else, so the scan stopped")
         self._arm_idle(entry_id, scan)
 
-    async def async_scan_segment(self, entry_id: str, start: int, count: int) -> None:
-        """Glow scan: light only pixels start..start+count-1 of the light (at the scan level), everything else off.
-        start is a pixel of the light, not of the scan, and the stretch must lie inside the scanned pixels."""
+    async def async_scan_segment(self, entry_id: str, start: int | None = None, count: int | None = None,
+                                 colour: Sequence[int] | None = None, segments: Sequence[dict[str, Any]] | None = None) -> None:
+        """Glow scan: light only the given stretch(es) of the light, everything else off. Either start/count (one
+        stretch, in `colour`, white at the scan level by default) or `segments`: up to 3 {start, count, colour}
+        stretches lit at once (colour defaults to red, green, blue in that order), which lets the phone find three
+        anchors per picture. start is a pixel of the light, not of the scan, and every stretch must lie inside the
+        scanned pixels and not overlap another."""
         scan = self._scans.get(entry_id)
         if scan is None:
             raise ZoneError("That light isn't being scanned")
-        if count < 1 or start < scan.first or start + count > scan.first + scan.count:
-            raise ZoneError(f"The lit stretch must lie within pixels {scan.first} to {scan.first + scan.count - 1}")
+        single = segments is None  # the old call: one white stretch
+        if segments is None:
+            if start is None or count is None:
+                raise ZoneError("Give a start and count, or segments")
+            segments = [{"start": start, "count": count, "colour": colour}]
+        if not 1 <= len(segments) <= 3:
+            raise ZoneError("Light between 1 and 3 stretches at a time")
         colours = [scan_codes.OFF] * scan.ctl.bulbs
-        colours[start : start + count] = [scan_codes.SCAN_COLOUR] * count
+        used: set[int] = set()
+        for k, seg in enumerate(segments):
+            s, c = seg["start"], seg["count"]
+            if c < 1 or s < scan.first or s + c > scan.first + scan.count:
+                raise ZoneError(f"The lit stretch must lie within pixels {scan.first} to {scan.first + scan.count - 1}")
+            if used & set(range(s, s + c)):
+                raise ZoneError("The lit stretches must not overlap")
+            used.update(range(s, s + c))
+            col = seg.get("colour")
+            if col is None:
+                col = scan_codes.SCAN_COLOUR if single else scan_codes.primary(k)
+            col = tuple(col)
+            if len(col) != 3 or not all(isinstance(v, int) and 0 <= v <= 255 for v in col):
+                raise ZoneError("A colour is three numbers from 0 to 255")
+            colours[s : s + c] = [col] * c
         if not scan.ctl.push_scan_frame(colours):  # a person took the light
             self.scan_stop(entry_id, restore=False)
             raise ZoneError("The light was taken by something else, so the scan stopped")
