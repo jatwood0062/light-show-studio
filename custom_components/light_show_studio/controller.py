@@ -49,6 +49,7 @@ class C9Controller:
         self.effect: str | None = None
         self.pattern = patterns.DEFAULT_PATTERN
         self.pattern_effect = patterns.DEFAULT_EFFECT
+        self._fx_t, self._fx_effect = 0.0, None  # animation clock, kept across pattern changes
         self.speed = patterns.DEFAULT_SPEED  # 1-100, scales every animated effect
         self.show_mode = True  # accept sequencer frames; picking a colour or effect turns it off
         self.custom = False  # True once single bulbs have been set
@@ -179,11 +180,14 @@ class C9Controller:
 
     async def _animate(self) -> None:
         # effect time runs at the speed setting; accumulating it lets the speed change smoothly mid-effect
-        t, last = 0.0, time.monotonic()
+        # staying on Pattern (new colours or motion) keeps the clock running, so nothing jumps
+        t = self._fx_t if self.effect == PATTERN and self._fx_effect == PATTERN else 0.0
+        self._fx_effect, last = self.effect, time.monotonic()
         while True:
             now = time.monotonic()
             t += (now - last) * patterns.speed_factor(self.speed)
             last = now
+            self._fx_t = t
             self._send_frame(self._base_frame(t))
             await asyncio.sleep(1 / FPS)
 
