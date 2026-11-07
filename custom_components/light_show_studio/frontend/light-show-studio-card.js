@@ -275,6 +275,7 @@ class LightShowStudioCard extends HTMLElement {
         .strip.points .bulb { position: absolute; transform: translate(-50%, -50%); width: var(--b); height: var(--b);
                               --b: inherit; }
         .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+        .pat.dis { opacity: 0.5; pointer-events: none; }
         .tools.dis { opacity: 0.5; pointer-events: none; }
         .sw { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer;
               box-sizing: border-box; padding: 0; box-shadow: inset 0 0 0 1px #0003; }
@@ -290,6 +291,15 @@ class LightShowStudioCard extends HTMLElement {
         .act[aria-pressed=true] { background: var(--primary-color); border-color: var(--primary-color);
                                   color: var(--text-primary-color, #fff); }
         :focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+        .pat { margin-top: 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+        .pat[hidden], .pat .full[hidden] { display: none; }
+        .pat label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--secondary-text-color); min-width: 0; }
+        .pat select { font: inherit; font-size: 14px; min-height: 40px; min-width: 0; width: 100%; box-sizing: border-box; padding: 6px 8px;
+                      border-radius: 8px; border: 1px solid var(--divider-color); background: var(--card-background-color);
+                      color: var(--primary-text-color); }
+        .pat .full { grid-column: 1 / -1; display: flex; flex-direction: row; align-items: center; gap: 8px; }
+        .pat .full input { flex: 1; min-width: 0; height: 40px; accent-color: var(--primary-color); }
+        .pat .full b { min-width: 2.2em; text-align: right; font-weight: 500; color: var(--primary-text-color); }
         .hint { font-size: 12px; color: var(--secondary-text-color); margin-top: 8px; }
         .hint.warn { color: var(--warning-color, #b36b00); }
         .err { color: var(--error-color); font-size: 12px; margin-top: 8px; }
@@ -307,6 +317,11 @@ class LightShowStudioCard extends HTMLElement {
         <div class="strip" role="group" aria-label="Bulbs"></div>
         <div class="hint warn" hidden></div>
         <div class="tools"></div>
+        <div class="pat" hidden>
+          <label>Pattern<select class="pp" aria-label="Pattern"></select></label>
+          <label>Effect<select class="pe" aria-label="Pattern effect"></select></label>
+          <label class="full">Slow<input class="ps" type="range" min="1" max="100" step="1" aria-label="Effect speed, slow to fast">Fast<b class="pv"></b></label>
+        </div>
         <div class="hint paintinfo"></div>
         <div class="err" role="alert" hidden></div>
       </ha-card>`;
@@ -324,6 +339,7 @@ class LightShowStudioCard extends HTMLElement {
       t.onclick = open;
       t.onkeydown = (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), open());
     }
+    this._buildPattern(root.querySelector(".pat"));
     this._strip = root.querySelector(".strip");
     this._buildTools(root.querySelector(".tools"));
     this._count = this._count || this._hass.states[this._config.entity]?.attributes.bulbs || 50;
@@ -449,6 +465,62 @@ class LightShowStudioCard extends HTMLElement {
     tools.append(mode, menu, fill, show);
   }
 
+  // pattern -> effect -> speed, only for lights that offer patterns
+  _buildPattern(box) {
+    this._pat = { box, pp: box.querySelector(".pp"), pe: box.querySelector(".pe"), ps: box.querySelector(".ps"), pv: box.querySelector(".pv") };
+    const { pp, pe, ps, pv } = this._pat;
+    pp.onchange = () => this._setPattern({ pattern: pp.value });
+    pe.onchange = () => this._setPattern({ effect: pe.value });
+    ps.oninput = () => {
+      pv.textContent = ps.value;
+      clearTimeout(this._speedT);
+      this._speedT = setTimeout(() => this._setPattern({ speed: Number(ps.value) }), 200);
+    };
+    ps.onchange = () => {
+      clearTimeout(this._speedT);
+      this._setPattern({ speed: Number(ps.value) });
+    };
+    this._patSig = "";
+  }
+
+  async _setPattern(data) {
+    try {
+      await this._hass.callService("light_show_studio", "set_pattern", data, { entity_id: this._config.entity });
+      this._error("");
+    } catch (err) {
+      this._error(this._msg(err, "Couldn't change the pattern."));
+    }
+  }
+
+  _updatePattern(s) {
+    const p = this._pat;
+    if (!p) return;
+    const a = s?.attributes || {};
+    const pats = Array.isArray(a.pattern_list) ? a.pattern_list : [];
+    const pfx = Array.isArray(a.pattern_effect_list) ? a.pattern_effect_list : [];
+    p.box.hidden = !pats.length;
+    if (!pats.length) return;
+    const sig = pats.join("|") + "#" + pfx.join("|");
+    if (sig !== this._patSig) {
+      this._patSig = sig;
+      const fill = (sel, names, none) => {
+        sel.textContent = "";
+        sel.append(Object.assign(new Option(none, ""), { hidden: true }));
+        for (const n of names) sel.append(new Option(n, n));
+      };
+      fill(p.pp, pats, "Choose…");
+      fill(p.pe, pfx, "Choose…");
+    }
+    const root = this.shadowRoot.activeElement;
+    const live = s.state === "on" && a.effect === "Pattern";
+    if (root !== p.pp) p.pp.value = live && pats.includes(a.pattern) ? a.pattern : "";
+    if (root !== p.pe) p.pe.value = live && pfx.includes(a.pattern_effect) ? a.pattern_effect : "";
+    if (root !== p.ps && a.speed != null) p.ps.value = a.speed;
+    p.pv.textContent = p.ps.value;
+    p.ps.setAttribute("aria-valuetext", `${p.ps.value} of 100`);
+    p.box.classList.toggle("dis", s.state === "unavailable");
+  }
+
   _scale() {
     const n = Number(this._config?.size);
     return n > 0 ? Math.min(3, n) : 1;
@@ -512,6 +584,7 @@ class LightShowStudioCard extends HTMLElement {
     else if (s.state !== "on") st.textContent = "Off";
     else st.textContent = s.attributes.effect || (s.attributes.per_bulb ? "Painted" : "Colour");
     st.classList.toggle("bad", gone);
+    this._updatePattern(s);
     this._strip?.classList.toggle("dis", gone);
     this._tools?.classList.toggle("dis", gone);
     const warn = root.querySelector(".hint.warn");

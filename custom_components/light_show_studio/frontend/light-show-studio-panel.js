@@ -18,6 +18,36 @@ const BANNER_KEY = "light_show_studio_panel_banner"; // the first-run banner was
 const SWATCHES = ["#ff0000", "#ff5000", "#ffc800", "#00ff00", "#00ffc8", "#0040ff", "#8200ff", "#ff1478", "#ffb43c", "#ffffff"];
 const SEASONAL = /Christmas|Candy|Halloween|Valentine|Patrick|Easter|July 4th|Thanksgiving|Hanukkah|Witches|Classic Multicolour|Warm White/;
 const SHOW = "Light show";
+// mirrors PATTERNS in patterns.py: name -> [colours as r,g,b, bulbs per colour]; no colours = rainbow gradient
+const PATTERN_COLOURS = {
+  "Classic Multicolor": [[[255, 0, 0], [255, 150, 0], [0, 200, 0], [0, 40, 255], [255, 70, 0], [255, 20, 120]], 1],
+  "Warm White": [[[255, 150, 40]], 1],
+  "Cool White": [[[200, 220, 255]], 1],
+  "Red & Green": [[[255, 0, 0], [0, 200, 0]], 1],
+  "Red, Green & White": [[[255, 0, 0], [0, 200, 0], [255, 200, 140]], 1],
+  "Candy Cane": [[[255, 0, 0], [255, 255, 255]], 2],
+  "Blue & White": [[[0, 40, 255], [200, 220, 255]], 1],
+  "Gold & White": [[[255, 140, 0], [255, 200, 140]], 1],
+  Pastel: [[[255, 120, 170], [120, 200, 255], [255, 220, 90], [150, 255, 140], [190, 130, 255]], 1],
+  Halloween: [[[255, 70, 0], [140, 0, 255], [40, 255, 0]], 1],
+  "Red, White & Blue": [[[255, 0, 0], [255, 255, 255], [0, 40, 255]], 1],
+  Valentine: [[[255, 0, 0], [255, 20, 110], [255, 200, 200]], 1],
+  Rainbow: [[], 1],
+};
+const RAINBOW_CSS = "linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)";
+const EFFECT_INFO = {
+  Steady: "Colours stay on, no movement",
+  Twinkle: "Each bulb fades up and down on its own",
+  Chase: "The pattern glides along the string",
+  "Twinkle Swap": "Bulbs dim out and return in another colour",
+  Marquee: "Every third bulb lit, stepping along like a theatre sign",
+  Fade: "The whole string breathes in and out",
+  Sparkle: "Quick white glints over the pattern",
+  Alternate: "Odd and even bulbs take turns",
+  Wave: "A soft wave of brightness travels along",
+};
+// the slider only means something while an effect is moving
+const STILL = new Set(["Steady"]);
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
 const svg = (d, size = 24) =>
@@ -230,6 +260,21 @@ class LightShowStudioPanel extends HTMLElement {
                 background: var(--card-background-color, #fff); max-width: 100%; overflow-wrap: anywhere; }
         .chip[aria-pressed=true] { background: var(--primary-color); border-color: var(--primary-color); color: var(--text-primary-color, #fff); }
         .chip.show { font-weight: 500; }
+        .st-pat .chip { min-height: 44px; display: inline-flex; align-items: center; gap: 8px; }
+        .st-pat .dots { display: inline-flex; align-items: center; flex: none; height: 14px; border-radius: 7px; overflow: hidden;
+                        box-shadow: 0 0 0 1px #00000026; background: #0b0b10; }
+        .st-pat .dots i { display: block; width: 8px; height: 14px; }
+        .st-pat .dots.rb { width: 40px; }
+        .st-pat .steps { margin: 0 0 4px; font-size: 12px; color: var(--secondary-text-color); }
+        .st-pat .grp h3 .n { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-right: 6px;
+                             border-radius: 50%; background: var(--primary-color); color: var(--text-primary-color, #fff); font-size: 12px; }
+        .st-pat .fxdesc { margin-top: 8px; font-size: 12px; color: var(--secondary-text-color); min-height: 1.3em; }
+        .st-pat .spdrow { display: flex; align-items: center; gap: 10px; }
+        .st-pat .spdrow input { flex: 1; min-width: 0; height: 44px; accent-color: var(--primary-color); }
+        .st-pat .spdrow span { flex: none; font-size: 13px; color: var(--secondary-text-color); }
+        .st-pat .spdval { display: flex; justify-content: space-between; font-size: 12px; color: var(--secondary-text-color); }
+        .st-pat .spdval .sv { font-weight: 500; color: var(--primary-text-color); }
+        .st-pat .spd-off .spdrow { opacity: .55; }
         .ctl-off { opacity: .5; pointer-events: none; }
         .st-set .edit input { width: 120px; }
         .st-set .edit label.ip input { width: 150px; }
@@ -683,10 +728,15 @@ class LightShowStudioPanel extends HTMLElement {
           <div class="sws" role="group" aria-label="Colour"></div>
         </div>
         <div class="box st-pat"><h2>Pattern</h2>
-          <div class="grp"><h3>1. Pick a pattern</h3><div class="chips pat-chips"></div></div>
-          <div class="grp"><h3>2. Pick an effect</h3><div class="chips pfx-chips"></div></div>
-          <div class="grp"><h3>Speed (every effect)</h3>
-            <label class="bri spd">Slow<input class="sps" type="range" min="1" max="100" step="1" aria-label="Effect speed">Fast<span class="sv"></span></label></div>
+          <div class="grp"><h3><span class="n" aria-hidden="true">1</span>Pattern: choose the colours</h3>
+            <div class="chips pat-chips" role="group" aria-label="Pattern"></div></div>
+          <div class="grp"><h3><span class="n" aria-hidden="true">2</span>Effect: choose the motion</h3>
+            <div class="chips pfx-chips" role="group" aria-label="Pattern effect"></div>
+            <div class="fxdesc" aria-live="polite"></div></div>
+          <div class="grp spdgrp"><h3><span class="n" aria-hidden="true">3</span>Speed: for any effect on this light</h3>
+            <div class="spdrow"><span>Slow</span><input class="sps" type="range" min="1" max="100" step="1" aria-label="Effect speed, slow to fast">
+              <span>Fast</span></div>
+            <div class="spdval"><span>Normal is 50</span><span>Speed <b class="sv"></b></span></div></div>
         </div>
         <div class="box st-fx"><h2>Effects</h2><div class="groups"></div></div>
         <form class="box st-set edit" novalidate>
@@ -713,7 +763,7 @@ class LightShowStudioPanel extends HTMLElement {
       sws: q(".sws"), groups: q(".groups"), fx: q(".st-fx"), ctl: q(".st-ctl"), form: q(".st-set"), err: q(".st-err"),
       nm: q(".f-nm"), ip: q(".f-ip"), st: q(".f-st"), bl: q(".f-bl"), liveTxt: q(".st-set .live"),
       use: q(".use"), warns: q(".warns"), ferr: q(".st-set .serr"), save: q(".save"), reset: q(".reset"),
-      rm: q(".rm"), pat: q(".st-pat"), patChips: q(".pat-chips"), pfxChips: q(".pfx-chips"), sps: q(".sps"), sv: q(".sv"),
+      rm: q(".rm"), pat: q(".st-pat"), patChips: q(".pat-chips"), pfxChips: q(".pfx-chips"), sps: q(".sps"), sv: q(".sv"), fxd: q(".fxdesc"), spdg: q(".spdgrp"),
     };
     const st = this._st;
     st.rm.onclick = () => this._studioRemove();
@@ -734,8 +784,9 @@ class LightShowStudioPanel extends HTMLElement {
     };
     st.sps.oninput = () => {
       st.sv.textContent = st.sps.value;
+      st.sps.setAttribute("aria-valuetext", `${st.sps.value} of 100`);
       clearTimeout(this._spdT);
-      this._spdT = setTimeout(() => this._pattern({ speed: Number(st.sps.value) }), 150);
+      this._spdT = setTimeout(() => this._pattern({ speed: Number(st.sps.value) }), 200);
     };
     st.sps.onchange = () => {
       clearTimeout(this._spdT);
@@ -797,6 +848,23 @@ class LightShowStudioPanel extends HTMLElement {
     } catch (err) {
       this._studioError((typeof err === "string" ? err : err?.message) || "That didn't work.");
     }
+  }
+
+  _dots(name) {
+    const [cols, width] = PATTERN_COLOURS[name] || [null, 1];
+    const d = this._el("span", "dots");
+    d.setAttribute("aria-hidden", "true");
+    if (cols && !cols.length) {
+      d.classList.add("rb");
+      d.style.background = RAINBOW_CSS;
+    } else if (cols) {
+      for (const c of cols) for (let k = 0; k < width; k++) {
+        const i = document.createElement("i");
+        i.style.background = `rgb(${c.join(",")})`;
+        d.append(i);
+      }
+    } else d.style.display = "none";
+    return d;
   }
 
   async _pattern(data) {
@@ -1011,10 +1079,20 @@ class LightShowStudioPanel extends HTMLElement {
       const fill = (row, names, key) => {
         row.textContent = "";
         for (const n of names) {
-          const b = this._el("button", "chip", n);
+          const b = this._el("button", "chip");
           b.type = "button";
           b.dataset.v = n;
-          b.onclick = () => this._pattern({ [key]: n });
+          if (key === "pattern") b.append(this._dots(n));
+          b.append(this._el("span", "", n));
+          if (key === "effect" && EFFECT_INFO[n]) {
+            b.title = EFFECT_INFO[n];
+            b.setAttribute("aria-label", `${n}: ${EFFECT_INFO[n]}`);
+          } else if (key === "pattern") b.setAttribute("aria-label", `${n} pattern`);
+          b.onclick = () => {
+            row.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c === b)));
+            if (key === "effect") st.fxd.textContent = EFFECT_INFO[n] || "";
+            this._pattern({ [key]: n });
+          };
           row.append(b);
         }
       };
@@ -1024,8 +1102,15 @@ class LightShowStudioPanel extends HTMLElement {
     const patOn = on && effect === "Pattern";
     st.patChips.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(patOn && a.pattern === b.dataset.v)));
     st.pfxChips.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(patOn && a.pattern_effect === b.dataset.v)));
+    if (patOn && EFFECT_INFO[a.pattern_effect]) st.fxd.textContent = EFFECT_INFO[a.pattern_effect];
+    else if (!patOn) st.fxd.textContent = "";
     if (this._root.getRootNode().activeElement !== st.sps && a.speed != null) st.sps.value = a.speed;
     st.sv.textContent = st.sps.value;
+    st.sps.setAttribute("aria-valuetext", `${st.sps.value} of 100`);
+    // speed applies to the pattern and to every other moving effect; only a still colour or the show ignores it
+    const moving = on && effect && effect !== SHOW && !(patOn && STILL.has(a.pattern_effect));
+    st.spdg.classList.toggle("spd-off", !moving);
+    st.sps.title = moving ? "" : "Speed applies once an effect is running";
     // effect chips
     const list = Array.isArray(a.effect_list) ? a.effect_list : [];
     const sig = list.join("|");
@@ -1878,7 +1963,7 @@ class LightShowStudioPanel extends HTMLElement {
       const names = this._effectNames();
       if (d.end_effect && !names.includes(d.end_effect)) names.unshift(d.end_effect);
       if (!names.length) fx.append(Object.assign(this._el("option", "", "No effects found: is a light online?"), { value: "" }));
-      for (const n of names) fx.append(Object.assign(this._el("option", "", n), { value: n }));
+      for (const n of names) fx.append(Object.assign(this._el("option", "", n === "Pattern" ? "Pattern (as last set in Studio)" : n), { value: n }));
       if (!d.end_effect && names.length) d.end_effect = names[0];
       fx.value = d.end_effect;
       fx.onchange = () => (d.end_effect = fx.value);
