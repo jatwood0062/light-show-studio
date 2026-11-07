@@ -78,7 +78,7 @@ def _load():
     del core
     pkg = sys.modules.setdefault("light_show_studio_ls", types.ModuleType("light_show_studio_ls"))
     pkg.__path__ = [str(PKG)]
-    names = ("const", "effects", "protocol", "hosts", "patterns", "controller", "mapping", "schedule_math", "fseq",
+    names = ("const", "effects", "protocol", "hosts", "user_patterns", "patterns", "fade", "controller", "mapping", "schedule_math", "fseq",
              "library", "scheduler", "light_schedules")
     for name in names:
         full = f"light_show_studio_ls.{name}"
@@ -154,6 +154,8 @@ class FakeMap:
         self.runners: dict[str, Runner] = {}
         self.started: list[tuple] = []
         self.stopped: list[str] = []
+        self.fades: list[tuple] = []
+        self.stop_fades: list[tuple] = []
         self._rows = [{"entry_id": e, "title": e, "area": {"id": next((r.area for r in runs if r.entry_id == e), "x")}}
                       for e in lights]
 
@@ -163,12 +165,14 @@ class FakeMap:
     def controller(self, entry_id):
         return self.ctls.get(entry_id)
 
-    async def async_start_area(self, ref, pattern=None, effect=None, speed=None):
+    async def async_start_area(self, ref, pattern=None, effect=None, speed=None, fade_in=None, fade_out=None):
         self.started.append((ref, pattern, effect, speed))
+        self.fades.append((ref, fade_in, fade_out))
         self.runners["area:" + ref] = Runner()
 
-    async def async_stop_area(self, ref):
+    async def async_stop_area(self, ref, fade_out=None):
         self.stopped.append(ref)
+        self.stop_fades.append((ref, fade_out))
         self.runners.pop("area:" + ref, None)
 
 
@@ -215,7 +219,8 @@ def new_scheduler(hass, started=True):
 def data(**kw):
     base = {"name": "Porch lights", "days": ALL, "start": {"type": "time", "time": "18:00"},
             "end": {"type": "time", "time": "22:00"}, "targets": {"areas": ["Porch"]},
-            "look": {"pattern": "Warm White", "effect": "Steady", "speed": 30, "brightness": 50}}
+            "look": {"pattern": "Warm White", "effect": "Steady", "speed": 30, "brightness": 50},
+            "fade_in_s": 0, "fade_out_s": 0}  # instant, so these tests see the end state at once; fades have their own tests
     base.update(kw)
     return base
 
@@ -571,9 +576,9 @@ async def test_overlap_without_a_person_keeps_one_owner_and_no_flicker(hass):
     offs = []
     orig = mgr.ctls["e1"].async_turn_off
 
-    async def spy():
+    async def spy(*args, **kw):
         offs.append(1)
-        await orig()
+        await orig(*args, **kw)
     mgr.ctls["e1"].async_turn_off = spy
     await advance(s, at(21))
     await advance(s, at(22))  # both end together: one turn off
@@ -807,3 +812,139 @@ async def test_listeners_hear_about_changes(hass):
     s.add_listener(lambda: hits.append(1))
     await save(s)
     assert hits
+
+
+# --- fades, map effects and your own patterns ------------------------------------------------------------------------
+def test_fade_fields_default_to_two_seconds_and_are_limited():
+    base = data()
+    del base["fade_in_s"], base["fade_out_s"]
+    out = ls.validate_light_schedule(base)
+    assert out["fade_in_s"] == 2 and out["fade_out_s"] == 2
+    assert ls.validate_light_schedule(data(fade_in_s=0, fade_out_s=1800))["fade_out_s"] == 1800
+    assert ls.validate_light_schedule(data(fade_in_s=0.5))["fade_in_s"] == 0.5
+    for bad in (-1, 1801, True, "2", None, float("nan"), float("inf")):
+        with pytest.raises(vol.Invalid):
+            ls.validate_light_schedule(data(fade_in_s=bad))
+        with pytest.raises(vol.Invalid):
+            ls.validate_light_schedule(data(fade_out_s=bad))
+
+
+@aio
+async def test_old_saved_schedules_without_fades_load_with_the_default(hass):
+    STORAGE[const.LIGHT_SCHEDULE_STORE_KEY] = {"schedules": [{**data(), "id": "abc"}]}
+    STORAGE[const.LIGHT_SCHEDULE_STORE_KEY]["schedules"][0].pop("fade_in_s")
+    STORAGE[const.LIGHT_SCHEDULE_STORE_KEY]["schedules"][0].pop("fade_out_s")
+    s = new_scheduler(hass)
+    await s.async_load()
+    assert s.schedules[0]["fade_in_s"] == 2 and s.schedules[0]["fade_out_s"] == 2
+
+
+@aio
+async def test_long_fade_in_is_a_brightness_ramp_from_black(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s, fade_in_s=120, fade_out_s=120)
+    light = mgr.ctls["e1"]
+    clock = {"t": 1000.0}
+    light._now = lambda: clock["t"]
+    await advance(s, at(18, 0))
+    assert light.is_on and light.effect == "Pattern" and light.pattern == "Warm White" and light.brightness == 128
+    assert light._ramp is not None and light._ramp.dur == 120 and light._ramp.start == 0 and light._ramp.end == 1
+    assert light._ramp.level(light._ramp.t0 + 60) == pytest.approx(0.5)
+    assert light._xf is None  # a brightness ramp, not a frame blend
+
+
+@aio
+async def test_long_fade_out_ramps_down_then_the_light_goes_off(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s, fade_in_s=0, fade_out_s=120)
+    light = mgr.ctls["e1"]
+    await advance(s, at(19))
+    assert light.is_on and light._ramp is None or light._ramp.end == 1
+    await advance(s, at(22, 0))
+    assert light.is_on and light._off_handle is not None  # fading, not yet off
+    assert light._ramp.end == 0 and light._ramp.dur == 120
+    light._finish_off()
+    assert not light.is_on
+
+
+@aio
+async def test_a_new_window_during_a_fade_out_brings_the_light_back(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s, fade_in_s=0, fade_out_s=300)
+    light = mgr.ctls["e1"]
+    await advance(s, at(19))
+    await advance(s, at(22, 0))
+    assert light._off_handle is not None
+    await light.async_turn_on(transition=0)
+    assert light._off_handle is None and light.is_on
+
+
+@aio
+async def test_area_zone_gets_the_fades(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s, targets={"areas": ["Garage"]}, fade_in_s=90, fade_out_s=45)
+    await advance(s, at(19))
+    assert mgr.fades and mgr.fades[-1] == ("garage", 90, 45)
+    await advance(s, at(22, 0))
+    assert mgr.stop_fades[-1] == ("garage", 45)
+
+
+@aio
+async def test_stop_early_and_disable_use_the_fade_too(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    sched = await save(s, fade_in_s=0, fade_out_s=30)
+    await advance(s, at(19))
+    await s.async_stop(sched["id"])
+    assert mgr.ctls["e1"]._off_handle is not None and mgr.ctls["e1"]._ramp.dur == 30
+
+
+def test_look_accepts_map_effects_and_rejects_unknown_ones():
+    for eff in ("Sweep", "Ripple", "Snowfall", "Rise", "Rainbow Wash", "Fireworks", "Breathe Outward", "Chase"):
+        assert ls.validate_light_schedule(data(look={"pattern": "Rainbow", "effect": eff}))["look"]["effect"] == eff
+    with pytest.raises(vol.Invalid):
+        ls.validate_light_schedule(data(look={"pattern": "Rainbow", "effect": "Nope"}))
+    with pytest.raises(vol.Invalid):
+        ls.validate_light_schedule(data(look={"pattern": "Nope", "effect": "Chase"}))
+
+
+@aio
+async def test_map_effect_on_a_single_light_becomes_its_string_equivalent(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s, targets={"lights": ["e3"]}, look={"pattern": "Rainbow", "effect": "Breathe Outward"})
+    await advance(s, at(19))
+    assert mgr.ctls["e3"].pattern_effect == "Fade"
+
+
+@aio
+async def test_map_effect_on_an_area_is_passed_to_the_zone(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s, targets={"areas": ["Garage"]}, look={"pattern": "Rainbow", "effect": "Ripple"})
+    await advance(s, at(19))
+    assert mgr.started[-1][:3] == ("garage", "Rainbow", "Ripple")
+
+
+@aio
+async def test_look_can_use_one_of_your_own_patterns_by_name_or_id_and_follows_a_rename(hass):
+    up = M["user_patterns"].UserPattern({"name": "Mine", "kind": "palette", "colours": [[1, 2, 3]], "bulbs_per_colour": 1,
+                                        "default_effect": "Twinkle", "default_speed": 50}, "ab12cd34")
+    patterns.set_user_patterns([up])
+    try:
+        mgr = world(hass)
+        s = new_scheduler(hass)
+        sched = await save(s, look={"pattern": "ab12cd34", "effect": "Steady"})
+        assert sched["look"]["pattern"] == "Mine"  # stored by name
+        await advance(s, at(19))
+        assert mgr.ctls["e1"].pattern == "Mine"
+        await s.async_pattern_changed("Mine", "Renamed")
+        assert s.get_schedule(sched["id"])["look"]["pattern"] == "Renamed"
+        await s.async_pattern_changed("Renamed", None)  # deleted: the default stands in
+        assert s.get_schedule(sched["id"])["look"]["pattern"] == patterns.DEFAULT_PATTERN
+    finally:
+        patterns.set_user_patterns([])

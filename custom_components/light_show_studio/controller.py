@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN, EXTERNAL_MAX_FPS, FLUSH_DELAY, FPS, WHOLE_LIGHT_FPS
 from .effects import ANIMATED, EFFECTS
-from . import patterns
+from . import fade, patterns
 from .patterns import PATTERN
 from .hosts import valid_ipv4
 from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
@@ -78,6 +78,15 @@ class C9Controller:
         self._scan_prev_show = False
         self._scan_powered = False
         self._scan_before: list[Colour] = []
+        # transitions: a brightness ramp (turn on / off, long fades) and a cross-fade from the previous look
+        self.default_transition = 0.0  # seconds; the integration sets it from the `default_transition` option
+        self.entry_id: str | None = None  # the config entry this light belongs to (set by the integration)
+        self._music: dict | None = None  # what the music session driving this light says about itself
+        self._now: Callable[[], float] = time.monotonic  # the clock fades use (tests replace it)
+        self._ramp: fade.Ramp | None = None
+        self._xf: fade.Xfade | None = None
+        self._last_raw: list[Colour] = []  # the last effect frame before the brightness setting and any fade-in/out
+        self._off_handle: asyncio.TimerHandle | None = None
 
     # --- hardware hooks (a subclass for another brand overrides these) ----
     def _make_link(self, host: str) -> GoveeLan | None:
@@ -135,15 +144,19 @@ class C9Controller:
     # --- rendering -------------------------------------------------------
     def _base_frame(self, t: float) -> list[Colour]:
         if self.effect == PATTERN:
-            return patterns.render(self.pattern, self.pattern_effect, t, self.bulbs)
+            return patterns.render(self.pattern, self.pattern_effect, t, self.bulbs, self.entry_id)
         if self.effect in EFFECTS:
             return EFFECTS[self.effect](t, self.bulbs, self.colour)
         if self.custom:
             return [tuple(v * lvl // 255 for v in c) for c, lvl in zip(self.bulb_colour, self.bulb_level)]
         return [self.colour] * self.bulbs
 
-    def _send_frame(self, frame: list[Colour], scaled: bool = True) -> None:
-        """Show a frame; `scaled` applies the brightness setting (a scan frame must not depend on it)."""
+    def _send_frame(self, frame: list[Colour], scaled: bool = True, fx: bool = False) -> None:
+        """Show a frame; `scaled` applies the brightness setting (a scan frame must not depend on it); `fx` is a
+        frame of this light's own colour / effect / pattern, which turn on / off and look changes fade (sequencer,
+        scan and zone frames are never faded here)."""
+        if fx:
+            frame = self._fade_frame(frame)
         if not self.segmented:
             self._send_whole(frame)
             return
@@ -152,6 +165,45 @@ class C9Controller:
             frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
         self._hw_frame(frame)
         self._set_frame(frame)
+
+    def _fade_frame(self, frame: list[Colour]) -> list[Colour]:
+        now = self._now()
+        if self._xf is not None:
+            if self._xf.done(now):
+                self._xf = None
+            else:
+                frame = self._xf.apply(frame, now)
+        self._last_raw = frame
+        if self._ramp is not None:
+            gain = self._ramp.level(now)
+            if self._ramp.end >= 1 and self._ramp.done(now):
+                self._ramp = None
+            if gain < 1:
+                frame = fade.scale_frame(frame, gain)
+        return frame
+
+    def _transitioning(self) -> bool:
+        """A fade is still moving, so frames must keep coming even for a still look."""
+        now = self._now()
+        return (self._xf is not None and not self._xf.done(now)) or (self._ramp is not None and not self._ramp.done(now))
+
+    def _fade_length(self) -> float:
+        lengths = [x.dur for x in (self._xf, self._ramp) if x is not None]
+        return max(lengths, default=0.0)
+
+    def _clear_fx(self) -> None:
+        """Something else took the picture (a show, a zone, a scan): drop fades and a pending fade-out."""
+        self._ramp = self._xf = None
+        self._last_raw = []
+        self._cancel_off()
+
+    def _cancel_off(self) -> float | None:
+        """Cancel a fade-out in progress; the brightness gain it had reached, or None when none was running."""
+        if self._off_handle is None:
+            return None
+        self._off_handle.cancel()
+        self._off_handle = None
+        return self._ramp.level(self._now()) if self._ramp is not None else 1.0
 
     def _send_whole(self, frame: list[Colour]) -> None:
         """One colour for the whole light: the average of the frame, at most WHOLE_LIGHT_FPS."""
@@ -185,10 +237,15 @@ class C9Controller:
         self._stop_animation()
         if not self.is_on or self.show_mode or self._zones or self._scanning:
             return  # in show mode the sequencer's frames are the picture; with a zone, the zone's; a scan, its own
-        if self._is_animated():
+        if self._is_animated() or self._transitioning():
             self._task = self.hass.async_create_background_task(self._animate(), "light_show_studio effect")
         else:
-            self._send_frame(self._base_frame(0))
+            self._send_frame(self._base_frame(0), fx=True)
+
+    @callback
+    def refresh(self) -> None:
+        """Draw the look again (a pattern it uses was edited)."""
+        self._render()
 
     def _is_animated(self) -> bool:
         return self.effect in ANIMATED or (self.effect == PATTERN and patterns.is_animated(self.pattern_effect))
@@ -220,7 +277,15 @@ class C9Controller:
             t += min(now - last, 0.25) * patterns.speed_factor(self.speed)  # a long stall doesn't leap ahead
             last = now
             self._fx_t = t
-            self._send_frame(self._base_frame(t))
+            self._send_frame(self._base_frame(t), fx=True)
+            if not self._is_animated():
+                if not self._transitioning():  # a still look has finished fading in / blending: nothing more to send
+                    if self._task is asyncio.current_task():
+                        self._task = None
+                    return
+                step = fade.tick_interval(self._fade_length(), 1 / FPS)  # a long ramp doesn't need 25 frames a second
+            else:
+                step = 1 / FPS
             # frames on a fixed beat: sleep to the next due time, not a fixed gap after the work (which drifts
             # and makes the motion uneven); if we fell behind, start the beat again from now
             due += step
@@ -256,12 +321,21 @@ class C9Controller:
 
     # --- whole-string commands ------------------------------------------
     async def async_turn_on(self, brightness: int | None = None, colour: Colour | None = None,
-                            effect: str | None = None) -> None:
+                            effect: str | None = None, transition: float | None = None) -> None:
+        """Turn on / change the look. `transition` (seconds, None = the default_transition option, 0 = instant):
+        turning on fades in, and a new colour or effect cross-fades from the old picture."""
+        dur = self.default_transition if transition is None else fade.clean_seconds(transition)
+        resumed = self._cancel_off()  # turning on while a fade-out runs brings the light back up from where it got to
+        # the picture to blend from, when this is a change of look on a light showing its own look
+        blend_from = list(self._last_raw) if (self.is_on and dur > 0 and self._last_raw and not self.show_mode
+                                              and not self._zones and not self._scanning) else None
+        powered = False
         if not self.is_on:
             self._hw_power(True)
             self._realtime = False  # the light may leave realtime mode while off
             self._whole = None
             self.is_on = True
+            powered = True
             await asyncio.sleep(0.3)
         if self._scanning:
             if colour is None and effect is None:  # brightness, or a plain "on": the scan carries on, at its own level
@@ -291,32 +365,67 @@ class C9Controller:
         elif effect is not None:
             valid = effect in EFFECTS or effect == PATTERN
             self.effect, self.custom, self.show_mode = (effect if valid else None), False, False
-        if colour is None and effect is None and self._task is not None and not self._task.done():
+        now = self._now()
+        if powered and dur > 0 and not self.show_mode:
+            self._ramp = fade.Ramp(0.0, 1.0, dur, now)  # fade in from black
+        elif resumed is not None:
+            self._ramp = fade.Ramp(resumed, 1.0, dur, now) if dur > 0 and resumed < 1 else None
+        if blend_from is not None and (colour is not None or effect is not None) and not self.show_mode:
+            self._xf = fade.Xfade(blend_from, dur, now)  # the old picture dissolves into the new look
+        if colour is None and effect is None and self._task is not None and not self._task.done() \
+                and resumed is None:
             self._notify()  # brightness only, or "on" again: the running effect picks it up next frame; don't restart it
             return
         self._render()
         self._notify()
 
     async def async_set_pattern(self, pattern: str | None = None, effect: str | None = None,
-                                speed: int | None = None) -> None:
-        """Pick a pattern and/or how it moves (turning the light on to show it), and/or the speed.
+                                speed: int | None = None, brightness: int | None = None,
+                                transition: float | None = None) -> None:
+        """Pick a pattern (a built-in or one of yours) and/or how it moves (turning the light on to show it),
+        and/or the speed. Speed alone just changes the speed of whatever effect is running.
 
-        Speed alone just changes the speed of whatever effect is running."""
+        A map effect (Sweep, Ripple ...) needs positions, so on one light it becomes its nearest string effect."""
         if pattern is not None:
-            self.pattern = pattern if pattern in patterns.PATTERNS else patterns.DEFAULT_PATTERN
+            self.pattern = patterns.canonical(pattern) or patterns.DEFAULT_PATTERN
         if effect is not None:
-            self.pattern_effect = effect if effect in patterns.PATTERN_EFFECTS else patterns.DEFAULT_EFFECT
+            self.pattern_effect = patterns.light_effect(effect)
         if speed is not None:
             self.speed = max(1, min(100, int(speed)))
         if pattern is None and effect is None:
             self._notify()  # the running animation picks the new speed up on its next frame
             return
-        await self.async_turn_on(effect=PATTERN)
+        await self.async_turn_on(brightness=brightness, effect=PATTERN, transition=transition)
 
-    async def async_turn_off(self) -> None:
+    async def async_turn_off(self, transition: float | None = None) -> None:
+        """Turn off. With a transition (None = the default_transition option) the light fades to black first and
+        is switched off at the end; a person turning it on again meanwhile brings it back up."""
+        dur = self.default_transition if transition is None else fade.clean_seconds(transition)
+        self._cancel_off()
+        if dur > 0 and self.is_on and not self.show_mode and not self._zones and not self._scanning \
+                and not self._identifying:
+            now = self._now()
+            current = self._ramp.level(now) if self._ramp is not None else 1.0
+            self._ramp, self._xf = fade.Ramp(current, 0.0, dur, now), None
+            if self._task is None or self._task.done():
+                self._render()
+            self._off_handle = self.hass.loop.call_later(dur + 0.02, self._finish_off)
+            self._notify()
+            return
+        self._hard_off()
+        self._notify()
+
+    @callback
+    def _finish_off(self) -> None:
+        self._off_handle = None
+        self._hard_off()
+        self._notify()
+
+    def _hard_off(self) -> None:
         self.release_scan()
         self.release_zone()
         self._stop_animation()
+        self._clear_fx()
         if self._whole_handle:
             self._whole_handle.cancel()
             self._whole_handle = None
@@ -324,7 +433,6 @@ class C9Controller:
         self.is_on = False
         self._realtime = False
         self._set_frame([(0, 0, 0)] * self.bulbs)
-        self._notify()
 
     async def async_set_pixels(self, colours: list[Colour], repeat: bool = True) -> None:
         self.release_scan()
@@ -358,6 +466,20 @@ class C9Controller:
             return
         self._schedule_flush()
 
+    # --- music sync (see musicmanager): a music session holds the light like a zone ------------
+    @property
+    def music(self) -> dict | None:
+        """{"active", "effect", "pattern", "sensitivity", "live"} while a music session has this light, else None."""
+        if self._music and any(z.startswith("music:") for z in self._zones):
+            return self._music
+        return None
+
+    @callback
+    def set_music(self, info: dict | None) -> None:
+        if info != self._music:
+            self._music = info
+            self._notify()
+
     # --- zones: a pattern spread over runs of this light and other lights --------------
     @property
     def zone(self) -> str | None:
@@ -370,10 +492,11 @@ class C9Controller:
             raise RuntimeError("the light is being scanned")
         was_on = self.is_on
         if not was_on:
-            await self.async_turn_on()
+            await self.async_turn_on(transition=0)
         if not self._zones:
             self._zone_prev_show, self._zone_powered = self.show_mode, not was_on
             self._stop_animation()
+            self._clear_fx()
             self.show_mode = False
         if zone_id in self._zones:
             self._zones[zone_id] = (name, self._zones[zone_id][1])
@@ -434,7 +557,7 @@ class C9Controller:
             return
         was_on = self.is_on
         if not was_on:
-            await self.async_turn_on()
+            await self.async_turn_on(transition=0)
         if self._scanning:  # another scan started while the light was turning on
             return
         if self._zones:  # a zone had it: what it showed before the zone is what to go back to
@@ -443,6 +566,7 @@ class C9Controller:
             prev_show, powered = self.show_mode, not was_on
         self._scan_before = list(self.frame)
         self._stop_animation()
+        self._clear_fx()
         self.release_zone()
         self._scan_prev_show, self._scan_powered, self._scanning = prev_show, powered, True
         self.show_mode = False
@@ -488,6 +612,7 @@ class C9Controller:
         self.release_scan()
         self.release_zone()
         self._stop_animation()
+        self._clear_fx()
         if not self.is_on:
             self._hw_power(True)
             self.is_on = True
@@ -522,7 +647,7 @@ class C9Controller:
         self._stop_animation()
         if self._identify_task:  # don't let a flash wake a light that's being removed
             self._identify_task.cancel()
-        for handle in (self._flush_handle, self._whole_handle, self._resume_handle):
+        for handle in (self._flush_handle, self._whole_handle, self._resume_handle, self._off_handle):
             if handle:
                 handle.cancel()
         self._hw_close()

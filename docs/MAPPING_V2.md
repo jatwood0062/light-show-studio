@@ -201,3 +201,10 @@ run at once, and the picture is unmixed into a red, a green and a blue glow map,
 anchors take a third of the pictures. Dark reference = `scan/frame` 0. Ownership, 120 s idle timeout and restore
 are as for `scan/frame`. The panel does the rest (`glow*` functions in `light-show-studio-scan.js`, tests in
 `tests/js/test_glow.mjs`): anchors per run, per-anchor glow centroid, interpolation, manual taps.
+
+### Map effects (2.6.0)
+
+Zones and area zones accept seven more effects that are drawn from the 3D positions: Sweep, Ripple, Snowfall, Rise,
+Rainbow Wash, Fireworks, Breathe Outward (`map/get` lists them as `spatial_effects`). They use the zone's axis (a direction, or a
+`centre` point) and are always spatial, whatever `mode` says. See `MUSIC_PAINT_FX.md` section 4. Zones also take your own
+patterns (including painted ones: per-light paint, and paint by 3D position per area) and fade in / out (`transition`).

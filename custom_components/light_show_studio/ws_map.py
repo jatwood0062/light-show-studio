@@ -9,13 +9,16 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
-from . import mapping, patterns, scan_codes
+from . import fade, mapping, patterns, scan_codes
 from .mapmanager import MapManager, get_manager
 from .mapping import MapError, to_dict
 
 ZONE_ID = vol.All(str, vol.Length(min=1, max=70))  # a zone id, or "area:<area id>" for an area's own
 AREA_REF = vol.All(str, vol.Length(min=1, max=64))  # an area's id or name
 ENTRY_ID = vol.All(str, vol.Length(min=1, max=64))
+PATTERN = vol.All(str, vol.Length(min=1, max=64), patterns.valid_pattern)  # a built-in pattern or one of your own
+EFFECT = vol.All(str, patterns.valid_effect)  # a pattern effect or a map effect
+TRANSITION = vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION))  # seconds
 COLOUR = vol.All([vol.All(int, vol.Range(min=0, max=255))], vol.Length(min=3, max=3))  # [r, g, b]
 
 
@@ -42,7 +45,8 @@ def _manager(hass: HomeAssistant, connection: websocket_api.ActiveConnection, ms
 def _snapshot(manager: MapManager) -> dict[str, Any]:
     data = to_dict(manager.model)
     return {"map": data, "areas": data["areas"], "lights": manager.lights(), "running": manager.running,
-            "scanning": manager.scanning}
+            "scanning": manager.scanning, "spatial_effects": list(patterns.MAP_EFFECTS),
+            "effects": list(patterns.PATTERN_EFFECTS), "patterns": patterns.pattern_names()}
 
 
 @websocket_api.websocket_command({vol.Required("type"): "light_show_studio/map/get"})
@@ -73,9 +77,10 @@ async def ws_set(hass: HomeAssistant, connection: websocket_api.ActiveConnection
     vol.Required("type"): "light_show_studio/map/zone/start",
     vol.Exclusive("zone_id", "target"): ZONE_ID,
     vol.Exclusive("area", "target"): AREA_REF,  # an ad-hoc zone over every run in an area (not saved)
-    vol.Optional("pattern"): vol.In(patterns.PATTERN_LIST),
-    vol.Optional("effect"): vol.In(patterns.PATTERN_EFFECTS),
+    vol.Optional("pattern"): PATTERN,
+    vol.Optional("effect"): EFFECT,  # Steady, Twinkle, Chase ... or a map effect (Sweep, Ripple ...)
     vol.Optional("speed"): vol.All(int, vol.Range(min=1, max=100)),
+    vol.Optional("transition"): TRANSITION,  # seconds to fade in (and out when stopped); default 0.7
     vol.Optional("mode"): vol.In(mapping.MODES),  # area zones only
     vol.Optional("axis"): dict,  # area zones only; checked by mapping.parse_axis
 })
@@ -90,23 +95,29 @@ async def ws_start(hass: HomeAssistant, connection: websocket_api.ActiveConnecti
     try:
         if "area" in msg:
             await manager.async_start_area(msg["area"], msg.get("pattern"), msg.get("effect"), msg.get("speed"),
-                                           msg.get("mode", "string"), msg.get("axis"))
+                                           msg.get("mode", "string"), msg.get("axis"), msg.get("transition"),
+                                           msg.get("transition"))
         else:
-            await manager.async_start_zone(msg["zone_id"], msg.get("pattern"), msg.get("effect"), msg.get("speed"))
+            await manager.async_start_zone(msg["zone_id"], msg.get("pattern"), msg.get("effect"), msg.get("speed"),
+                                           msg.get("transition"))
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "failed", str(err))
         return
     connection.send_result(msg["id"], {})
 
 
-@websocket_api.websocket_command({vol.Required("type"): "light_show_studio/map/zone/stop", vol.Required("zone_id"): ZONE_ID})
+@websocket_api.websocket_command({
+    vol.Required("type"): "light_show_studio/map/zone/stop",
+    vol.Required("zone_id"): ZONE_ID,
+    vol.Optional("transition"): TRANSITION,  # seconds to fade out; default: the zone's own (0.7)
+})
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_stop(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     if not (manager := _manager(hass, connection, msg)):
         return
     try:
-        await manager.async_stop_zone(msg["zone_id"])
+        await manager.async_stop_zone(msg["zone_id"], msg.get("transition"))
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "not_found", str(err))
         return

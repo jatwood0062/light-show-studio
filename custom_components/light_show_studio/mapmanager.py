@@ -16,7 +16,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
-from . import mapping, patterns, scan_codes
+from . import fade, mapping, patterns, scan_codes
 from .const import CONF_BULBS, CONF_SEGMENTED, CONF_TYPE, DEFAULT_BULBS, DOMAIN, MAP_KEY, MAP_STORE_KEY, TYPE_PLAYER, TYPE_TWINKLY, TYPE_WLED
 from .controller import C9Controller
 from .mapped_patterns import ZonePlan
@@ -55,8 +55,10 @@ class MapManager:
         self._scans: dict[str, _Scan] = {}
         self._model: MapModel | None = None  # None until a map is saved: the defaults follow the lights
         self.runners: dict[str, ZoneRunner] = {}
+        self._fading: dict[str, ZoneRunner] = {}  # stopped zones still fading their lights out
         self._listeners: list[Callable[[], None]] = []
         self._lock = asyncio.Lock()
+        self.default_fade = 0.0  # seconds a zone fades in / out by default (the integration sets 0.7)
 
     # --- lights ------------------------------------------------------------------------
     def _entries(self) -> list[ConfigEntry]:
@@ -187,7 +189,7 @@ class MapManager:
                     old.stop()
                     continue
                 old.stop(keep={s.run.entry_id for s in plan.slices})
-                await self._launch(plan, old.speed)
+                await self._launch(plan, old.speed, 0.0, old.fade_out)
         self._notify()
         return model
 
@@ -209,26 +211,34 @@ class MapManager:
         return [z for z, r in self.runners.items() if r.running]
 
     # --- zones ---------------------------------------------------------------------------------
-    async def _launch(self, plan: ZonePlan, speed: int) -> ZoneRunner:
-        runner = ZoneRunner(plan, speed, self.controller, self.hass.async_create_background_task, self._ended)
+    def _fade(self, seconds: float | None) -> float:
+        return self.default_fade if seconds is None else fade.clean_seconds(seconds)
+
+    async def _launch(self, plan: ZonePlan, speed: int, fade_in: float | None = None,
+                      fade_out: float | None = None) -> ZoneRunner:
+        runner = ZoneRunner(plan, speed, self.controller, self.hass.async_create_background_task, self._ended,
+                            self._fade(fade_in), self._fade(fade_out))
         self.runners[plan.zone.id] = runner
         await runner.async_start()
         return runner
 
     @callback
     def _ended(self, runner: ZoneRunner) -> None:
+        if self._fading.get(runner.zone_id) is runner:
+            del self._fading[runner.zone_id]
         if self.runners.get(runner.zone_id) is runner:
             del self.runners[runner.zone_id]
             self._notify()
 
     async def async_start_zone(self, ref: str, pattern: str | None = None, effect: str | None = None,
-                               speed: int | None = None) -> None:
-        """Start (or restart) a zone. A pattern, effect or speed given here is kept as the zone's own."""
+                               speed: int | None = None, transition: float | None = None) -> None:
+        """Start (or restart) a zone. A pattern, effect or speed given here is kept as the zone's own. The lights
+        fade in over `transition` seconds (None = the default)."""
         async with self._lock:
             zone = self.zone(ref)
-            if pattern is not None and pattern not in patterns.PATTERNS:
-                raise ZoneError(f"Unknown pattern {pattern}")
-            if effect is not None and effect not in patterns.PATTERN_EFFECTS:
+            if pattern is not None and (pattern := patterns.canonical(pattern)) is None:
+                raise ZoneError("Unknown pattern")
+            if effect is not None and effect not in patterns.ALL_EFFECTS:
                 raise ZoneError(f"Unknown effect {effect}")
             changes = {k: v for k, v in (("pattern", pattern), ("effect", effect),
                                          ("speed", None if speed is None else max(1, min(100, int(speed))))) if v is not None}
@@ -243,18 +253,22 @@ class MapManager:
                 raise ZoneError(f"{zone.name} has no runs")
             if not any(self.controller(s.run.entry_id) for s in plan.slices):
                 raise ZoneError(f"None of the lights in {zone.name} are set up")
-            if old := self.runners.pop(zone.id, None):
+            old = self.runners.pop(zone.id, None)
+            self._cut_fade(zone.id, plan)
+            if old:
                 old.stop(keep={s.run.entry_id for s in plan.slices})
-            await self._launch(plan, zone.speed)
+            await self._launch(plan, zone.speed, 0.0 if old else transition, transition)
         self._notify()
 
     async def async_start_area(self, ref: str, pattern: str | None = None, effect: str | None = None,
-                               speed: int | None = None, mode: str = "string", axis: Any = None) -> None:
+                               speed: int | None = None, mode: str = "string", axis: Any = None,
+                               fade_in: float | None = None, fade_out: float | None = None) -> None:
         """Start (or restart) a pattern on every run in an area, without saving a zone. Stopped with the zone
-        id "area:<area id>"."""
-        if pattern is not None and pattern not in patterns.PATTERNS:
-            raise ZoneError(f"Unknown pattern {pattern}")
-        if effect is not None and effect not in patterns.PATTERN_EFFECTS:
+        id "area:<area id>". The lights fade in over `fade_in` seconds (None = the default) and, when the zone is
+        stopped, out over `fade_out`."""
+        if pattern is not None and (pattern := patterns.canonical(pattern)) is None:
+            raise ZoneError("Unknown pattern")
+        if effect is not None and effect not in patterns.ALL_EFFECTS:
             raise ZoneError(f"Unknown effect {effect}")
         if mode not in mapping.MODES:
             raise ZoneError("Mode must be string or spatial")
@@ -274,26 +288,66 @@ class MapManager:
                 raise ZoneError(f"{area.name} has no runs")
             if not any(self.controller(s.run.entry_id) for s in plan.slices):
                 raise ZoneError(f"None of the lights in {area.name} are set up")
-            if old := self.runners.pop(zone.id, None):
+            old = self.runners.pop(zone.id, None)
+            self._cut_fade(zone.id, plan)
+            if old:  # a running zone changing look keeps the lights lit: no fade-in from black
                 old.stop(keep={s.run.entry_id for s in plan.slices})
-            await self._launch(plan, zone.speed)
+            await self._launch(plan, zone.speed, 0.0 if old else fade_in, fade_out)
         self._notify()
 
-    async def async_stop_zone(self, ref: str) -> None:
+    def _cut_fade(self, zone_id: str, plan: ZonePlan) -> None:
+        """A zone that is still fading out is cut off when the same zone starts again (they share its lights)."""
+        if fading := self._fading.pop(zone_id, None):
+            fading.stop(keep={s.run.entry_id for s in plan.slices})
+
+    async def async_stop_zone(self, ref: str, fade_out: float | None = None) -> None:
+        """Stop a zone; its lights fade out over `fade_out` seconds (None = the zone's own, else the default) and
+        go back to what they showed before."""
         if ref not in self.runners and not ref.startswith(AD_HOC):
             ref = self.zone(ref).id
         if runner := self.runners.pop(ref, None):
-            runner.stop()
+            runner.stop(fade_out=fade_out)
+            if runner.leaving:
+                self._fading[runner.zone_id] = runner
             self._notify()
 
-    async def async_stop_area(self, ref: str) -> None:
+    async def async_stop_area(self, ref: str, fade_out: float | None = None) -> None:
         area = self.model.area(ref)
-        await self.async_stop_zone(AD_HOC + (area.id if area else ref))
+        await self.async_stop_zone(AD_HOC + (area.id if area else ref), fade_out)
+
+    # --- your own patterns changed (see pattern_store.py) ------------------------------------------------------
+    async def async_pattern_changed(self, old: str, new: str | None) -> None:
+        """A pattern of yours was edited (new == old), renamed (new is the new name) or deleted (new is None):
+        saved zones using it follow, and running zones start again with the new colours."""
+        async with self._lock:
+            if self._model is not None and old != new:
+                repl = new or patterns.DEFAULT_PATTERN
+                zones = tuple(replace(z, pattern=repl) if z.pattern.casefold() == old.casefold() else z
+                              for z in self._model.zones)
+                if zones != self._model.zones:
+                    self._model = replace(self._model, zones=zones)
+                    self._save()
+            model = self.model
+            for zone_id in list(self.runners):
+                runner = self.runners[zone_id]
+                if runner.plan.pattern.casefold() != old.casefold():
+                    continue
+                zone = replace(runner.plan.zone, pattern=new or patterns.DEFAULT_PATTERN)
+                if not zone_id.startswith(AD_HOC):
+                    zone = next((z for z in model.zones if z.id == zone_id), zone)
+                plan = ZonePlan(zone, model.run_map())
+                del self.runners[zone_id]
+                if plan.n == 0:
+                    runner.stop()
+                    continue
+                runner.stop(keep={s.run.entry_id for s in plan.slices})
+                await self._launch(plan, runner.speed, 0.0, runner.fade_out)
 
     def async_stop_all(self) -> None:
-        for runner in list(self.runners.values()):
+        for runner in [*self.runners.values(), *self._fading.values()]:
             runner.stop(restore=False)
         self.runners.clear()
+        self._fading.clear()
         for entry_id in list(self._scans):
             self.scan_stop(entry_id, restore=False)
 

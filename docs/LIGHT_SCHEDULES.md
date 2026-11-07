@@ -1,4 +1,4 @@
-# Light schedules (2.5.0)
+# Light schedules (2.5.0, fades and more in 2.6.0)
 
 Lights or areas that come on with a pattern at a set moment and go off later. Separate from the show scheduler
 (`schedules/*`, which plays xLights playlists one at a time): any number of light schedules can be active at once.
@@ -17,7 +17,9 @@ Code: `light_schedules.py` (engine), `ws_light_schedules.py` (websocket). Store:
   "date_from": "11-25",
   "date_to": "01-06",
   "targets": {"areas": ["outdoor", "Living Room"], "lights": ["<config entry id>"]},
-  "look": {"pattern": "Warm White", "effect": "Steady", "speed": 50, "brightness": 80}
+  "look": {"pattern": "Warm White", "effect": "Steady", "speed": 50, "brightness": 80},
+  "fade_in_s": 120,
+  "fade_out_s": 120
 }
 ```
 
@@ -32,8 +34,10 @@ Code: `light_schedules.py` (engine), `ws_light_schedules.py` (websocket). Store:
 | `targets.areas` | list of map area ids, area names (any case), Home Assistant area ids, or the specials `"all"`, `"outdoor"`, `"indoor"` (outdoor = areas with `outdoor: true`) |
 | `targets.lights` | list of light config entry ids (`map/get` `lights[].entry_id`) |
 | | at least one area or light in total; max 64 of each |
-| `look.pattern` | required, one of `patterns.PATTERN_LIST` (the same list as zones) |
-| `look.effect` | required, one of `patterns.PATTERN_EFFECTS` |
+| `fade_in_s` | optional number of seconds, 0-1800, default **2** (a real number, not a string or boolean): the lights fade up from black over this long when the window opens |
+| `fade_out_s` | optional, 0-1800, default **2**: they fade down over this long when the window closes (or the schedule is stopped / disabled / deleted) and are then switched off |
+| `look.pattern` | required: a built-in pattern or **one of your own** (name or id; stored by name, see `MUSIC_PAINT_FX.md`). Deleting / renaming one of your patterns updates schedules that use it |
+| `look.effect` | required: a string effect (`Steady`, `Twinkle`, `Chase` ...) or a **map effect** (`Sweep`, `Ripple`, `Snowfall`, `Rise`, `Rainbow Wash`, `Fireworks`, `Breathe Outward`). Map effects need an area target: an area zone draws them in 3D; a target **light** shows the nearest string effect instead (Sweep/Rise/Rainbow Wash -> Chase, Ripple -> Wave, Snowfall -> Twinkle, Fireworks -> Sparkle, Breathe Outward -> Fade) |
 | `look.speed` | 1-100, default 50 |
 | `look.brightness` | 1-100 percent, default 100 |
 
@@ -60,7 +64,7 @@ The saved fields above, plus:
 `{type}` -> `{"schedules": [view, ...]}`
 
 ### `save`
-`{type, schedule_id?, name, days, start, targets, look, enabled?, end?, date_from?, date_to?}` -> `{"schedule": view}`.
+`{type, schedule_id?, name, days, start, targets, look, enabled?, end?, date_from?, date_to?, fade_in_s?, fade_out_s?}` -> `{"schedule": view}`.
 Without `schedule_id` a new schedule is made, with it that one is replaced entirely (send all fields). Editing an
 open window's settings (anything but `name`) turns off what it had on and starts the window again with the new
 settings; a rename changes nothing running.
@@ -96,7 +100,13 @@ toggle, a window opening or closing).
 
 ## Behaviour the UI should know
 
-- **Opening a window**: each target light gets brightness then pattern/effect/speed (turned on). A light whose runs all
+- **Fades**: a light that is off fades up from black over `fade_in_s` (a brightness ramp - a 120 s sunset fade is a slow ramp,
+  a couple of frames a second, not a frame blend); a light that is already on cross-fades into the new look. At the end the
+  light fades down over `fade_out_s`, then is switched off; it still reports `on` while it fades, and anyone turning it on meanwhile
+  brings it back up. Area zones fade in and out the same way (`map/zone/start` `transition`). A light a person changed is
+  still left alone at the end (no fade, no off). Windows with no end ("turn on and leave on") use `fade_in_s` only. Schedules
+  saved before 2.6.0 load with the 2 s defaults. With `fade_in_s: 0` / `fade_out_s: 0` everything is instant as before.
+- **Opening a window**: each target light gets brightness and pattern/effect/speed in one step (turned on). A light whose runs all
   lie inside the selected areas (together) is driven directly; a light only partly inside is driven by an area zone
   (`start_zone` on that area, whole area incl. its other lights' runs). Lights with no runs follow their Home
   Assistant area (or count as indoor / loose for `all` and `indoor`).

@@ -15,6 +15,7 @@ from .const import (
     CONF_AUDIO_OFFSET,
     CONF_BULB_ENTITIES,
     CONF_BULBS,
+    CONF_DEFAULT_TRANSITION,
     CONF_DEVICE_ID,
     CONF_GAP,
     CONF_LED_PROFILE,
@@ -331,5 +332,7 @@ class C9OptionsFlow(OptionsFlow):
             return self.async_create_entry(data={**self.config_entry.options, **user_input} if player else user_input)
         cur = {**self.config_entry.data, **self.config_entry.options}
         twinkly = self.config_entry.data.get(CONF_TYPE) in (TYPE_TWINKLY, TYPE_WLED)
-        schema = _player_schema(cur) if player else _light_schema(cur, False, twinkly)
+        schema = _player_schema(cur) if player else _light_schema(cur, False, twinkly).extend({
+            vol.Optional(CONF_DEFAULT_TRANSITION, default=cur.get(CONF_DEFAULT_TRANSITION, 0.7)):
+                vol.All(vol.Coerce(float), vol.Range(min=0, max=30))})
         return self.async_show_form(step_id="init", data_schema=schema)

@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Collection, Coroutine
 from typing import Any, Protocol
 
-from . import patterns
+from . import fade, patterns
 from .const import ZONE_FPS, ZONE_FPS_LARGE, ZONE_LARGE
 from .mapped_patterns import ZonePlan
 
@@ -30,7 +30,8 @@ class ZoneLight(Protocol):
 class ZoneRunner:
     def __init__(self, plan: ZonePlan, speed: int, resolve: Callable[[str], ZoneLight | None],
                  spawn: Callable[[Coroutine[Any, Any, Any], str], asyncio.Future | asyncio.Task],
-                 on_end: Callable[[ZoneRunner], None] | None = None) -> None:
+                 on_end: Callable[[ZoneRunner], None] | None = None, fade_in: float = 0.0, fade_out: float = 0.0,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.plan = plan
         self.zone_id = plan.zone.id
         self.speed = speed
@@ -44,11 +45,21 @@ class ZoneRunner:
         self._task: asyncio.Future | None = None
         self._ended = False
         self._t = 0.0  # the zone's clock
+        self._clock = clock  # what fades measure time with (tests replace it)
+        self.fade_out = fade.clean_seconds(fade_out)  # seconds the lights fade over when the zone is stopped
+        self._ramp: fade.Ramp | None = fade.Ramp(0.0, 1.0, fade.clean_seconds(fade_in), clock()) if fade_in > 0 else None
+        self._wake: asyncio.Event | None = None  # set to cut a long sleep short
+        self._leaving = False  # fading out; the run loop ends the zone when the fade is done
         self.interval = 1 / (ZONE_FPS_LARGE if plan.n > ZONE_LARGE else ZONE_FPS)
 
     @property
     def running(self) -> bool:
         return not self._ended
+
+    @property
+    def leaving(self) -> bool:
+        """Fading out after a stop; it ends by itself."""
+        return self._leaving and not self._ended
 
     def set_speed(self, speed: int) -> None:
         self.speed = max(1, min(100, int(speed)))  # the next frame uses it; the clock keeps running
@@ -87,6 +98,8 @@ class ZoneRunner:
                 self._tick(t)
                 if not any(e not in self._dropped for e in self._entries):
                     break  # every light was taken
+                if self._leaving and not self._ramping():
+                    break  # faded out
                 if self.plan.animated:
                     due += self.interval
                     delay = due - time.monotonic()
@@ -94,16 +107,47 @@ class ZoneRunner:
                         due, delay = time.monotonic(), 0.0
                 else:
                     delay = STILL_RESEND
-                await asyncio.sleep(max(0.0, delay))
+                if self._ramp is not None:  # fading: keep frames coming even for a still picture
+                    delay = min(delay, fade.tick_interval(self._ramp.dur, self.interval))
+                await self._sleep(max(0.0, delay))
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001  never leave lights claimed by a dead task
             _LOGGER.exception("Zone %s stopped", self.plan.zone.name)
         self._finish(restore=True)
 
+    async def _sleep(self, delay: float) -> None:
+        """Sleep; a long wait (a still zone) ends early when a fade-out begins."""
+        if delay <= self.interval * 1.5:
+            await asyncio.sleep(delay)
+            return
+        if self._wake is None:
+            self._wake = asyncio.Event()
+        self._wake.clear()
+        try:
+            await asyncio.wait_for(self._wake.wait(), delay)
+        except asyncio.TimeoutError:
+            pass
+
+    def _gain(self) -> float:
+        """The brightness the zone is shown at: below 1 while it fades in or out."""
+        if self._ramp is None:
+            return 1.0
+        now = self._clock()
+        gain = self._ramp.level(now)
+        if self._ramp.end >= 1 and self._ramp.done(now):
+            self._ramp = None
+        return gain
+
+    def _ramping(self) -> bool:
+        return self._ramp is not None and not self._ramp.done(self._clock())
+
     def _tick(self, t: float) -> None:
         by_light: dict[str, list[tuple[int, list[Any]]]] = {}
-        for entry, first, colours in self.plan.split(self.plan.render(t)):
+        frame = self.plan.render(t)
+        if self._ramp is not None and (gain := self._gain()) < 1:
+            frame = fade.scale_frame(frame, gain)
+        for entry, first, colours in self.plan.split(frame):
             by_light.setdefault(entry, []).append((first, colours))
         for entry, slices in by_light.items():
             if entry in self._dropped:
@@ -119,9 +163,18 @@ class ZoneRunner:
                 self._dropped.add(entry)
                 self._claimed.pop(entry, None)
 
-    def stop(self, restore: bool = True, keep: Collection[str] = ()) -> None:
+    def stop(self, restore: bool = True, keep: Collection[str] = (), fade_out: float | None = None) -> None:
         """End the zone. Lights go back to what they showed before (restore), except those in `keep`,
-        which another run of the same zone is about to take over."""
+        which another run of the same zone is about to take over. A stop that restores fades the lights out first
+        (`fade_out` seconds, else the zone's own); the run loop ends the zone when the fade is done."""
+        secs = self.fade_out if fade_out is None else fade.clean_seconds(fade_out)
+        if restore and not keep and secs > 0 and not self._ended and not self._leaving and self._task is not None \
+                and not self._task.done() and self._task is not asyncio.current_task():
+            self._ramp = fade.Ramp(self._gain(), 0.0, secs, self._clock())
+            self._leaving = True
+            if self._wake is not None:
+                self._wake.set()
+            return
         if self._task and self._task is not asyncio.current_task():
             self._task.cancel()
         self._finish(restore, keep, notify=False)
@@ -138,3 +191,9 @@ class ZoneRunner:
         self._claimed.clear()
         if notify and self._on_end:
             self._on_end(self)
+
+    def replace_plan(self, plan: Any) -> None:
+        """Swap in a new plan for the same lights (a pattern being painted) and show its frame at once."""
+        self.plan = plan
+        if not self._ended:
+            self._tick(self._t)

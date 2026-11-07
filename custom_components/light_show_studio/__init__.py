@@ -19,6 +19,7 @@ from homeassistant.loader import async_get_integration
 
 from .const import (
     CONF_BULBS,
+    CONF_DEFAULT_TRANSITION,
     CONF_DEVICE_ID,
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
@@ -30,7 +31,10 @@ from .const import (
     DEFAULT_BULBS,
     DOMAIN,
     MAP_KEY,
+    MUSIC_KEY,
+    PREVIEW_KEY,
     SEQUENCER_KEY,
+    USER_PATTERNS_KEY,
     TYPE_PLAYER,
     TYPE_TWINKLY,
     TYPE_WLED,
@@ -45,7 +49,10 @@ from .light_schedules import async_setup_light_scheduler
 from .mapmanager import MapManager
 from .outputs import normalize_speakers
 from .playback import SequencePlayer
-from . import patterns, upload, websocket, ws_light_schedules, ws_map, ws_schedule, ws_shows
+from . import fade, patterns, upload, websocket, ws_light_schedules, ws_map, ws_music, ws_patterns, ws_schedule, ws_shows
+from .musicmanager import MusicManager
+from .pattern_store import PatternStore
+from .patternpreview import PreviewManager
 from .receiver import PixelReceiver
 from .scheduler import async_setup_scheduler
 from .showplayer import async_setup_player, async_unload_player
@@ -79,11 +86,13 @@ _NAME = vol.All(cv.string, vol.Strip, vol.Length(min=1, max=64))
 START_ZONE_SCHEMA = vol.All(vol.Schema({
     vol.Exclusive("zone", "target"): _NAME,  # a zone's name or id
     vol.Exclusive("area", "target"): _NAME,  # or an area's name or id: every run in it, no saved zone needed
-    vol.Optional("pattern"): vol.In(patterns.PATTERN_LIST),
-    vol.Optional("effect"): vol.In(patterns.PATTERN_EFFECTS),
+    vol.Optional("pattern"): vol.All(cv.string, patterns.valid_pattern),  # a built-in pattern or one of your own
+    vol.Optional("effect"): vol.All(cv.string, patterns.valid_effect),  # a pattern effect or a map effect
     vol.Optional("speed"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+    vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION)),
 }), cv.has_at_least_one_key("zone", "area"))
-STOP_ZONE_SCHEMA = vol.All(vol.Schema({vol.Exclusive("zone", "target"): _NAME, vol.Exclusive("area", "target"): _NAME}),
+STOP_ZONE_SCHEMA = vol.All(vol.Schema({vol.Exclusive("zone", "target"): _NAME, vol.Exclusive("area", "target"): _NAME,
+                                       vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION))}),
                            cv.has_at_least_one_key("zone", "area"))
 
 
@@ -107,14 +116,36 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     ws_schedule.async_register(hass)
     ws_map.async_register(hass)
     ws_light_schedules.async_register(hass)
+    ws_patterns.async_register(hass)
+    ws_music.async_register(hass)
+    user_store = hass.data[USER_PATTERNS_KEY] = PatternStore(hass)  # your own patterns: before the map and the schedules
+    await user_store.async_load()                                    # (zones and schedules refer to them by name)
     scheduler = await async_setup_scheduler(hass)  # playlists + schedules, loaded once
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: scheduler.async_stop_timers())
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: receiver.close())
     zones = hass.data[MAP_KEY] = MapManager(hass)  # zones across lights; the map is read now, zones start on request
+    zones.default_fade = fade.DEFAULT_TRANSITION  # zones fade in and out unless told otherwise
     await zones.async_load()
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: zones.async_stop_all())
+    music = hass.data[MUSIC_KEY] = MusicManager(hass, zones)  # phone microphone -> lights, per connection
+    preview = hass.data[PREVIEW_KEY] = PreviewManager(hass, zones)  # unsaved patterns shown live while they are made
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: music.stop_all())
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: preview.stop_all())
     light_scheduler = await async_setup_light_scheduler(hass)  # lights/areas on at a time; uses the map and the lights
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: light_scheduler.async_stop_timers())
+
+    async def pattern_changed(old: str, new: str | None) -> None:
+        """One of your patterns was edited, renamed or deleted: lights, zones and schedules that use it follow."""
+        for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            ctl = getattr(entry, "runtime_data", None)
+            if isinstance(ctl, C9Controller) and ctl.pattern.casefold() == old.casefold():
+                ctl.pattern = new or patterns.DEFAULT_PATTERN
+                if ctl.effect == patterns.PATTERN:
+                    ctl.refresh()
+        await zones.async_pattern_changed(old, new)
+        await light_scheduler.async_pattern_changed(old, new)
+
+    user_store.add_listener(pattern_changed)
     upload.async_register(hass)
     health = hass.data[HEALTH] = HealthMonitor(hass)
     health.start()
@@ -142,16 +173,17 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def start_zone(call: ServiceCall) -> None:
         if "area" in call.data:
             await zones.async_start_area(call.data["area"], call.data.get("pattern"), call.data.get("effect"),
-                                         call.data.get("speed"))
+                                         call.data.get("speed"), fade_in=call.data.get("transition"),
+                                         fade_out=call.data.get("transition"))
             return
         await zones.async_start_zone(call.data["zone"], call.data.get("pattern"), call.data.get("effect"),
-                                     call.data.get("speed"))
+                                     call.data.get("speed"), call.data.get("transition"))
 
     async def stop_zone(call: ServiceCall) -> None:
         if "area" in call.data:
-            await zones.async_stop_area(call.data["area"])
+            await zones.async_stop_area(call.data["area"], call.data.get("transition"))
             return
-        await zones.async_stop_zone(call.data["zone"])
+        await zones.async_stop_zone(call.data["zone"], call.data.get("transition"))
 
     hass.services.async_register(DOMAIN, "start_zone", start_zone, schema=START_ZONE_SCHEMA)
     hass.services.async_register(DOMAIN, "stop_zone", stop_zone, schema=STOP_ZONE_SCHEMA)
@@ -233,6 +265,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
         ctl.mark_seen()
     else:
         ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], bulbs, _opt(entry, CONF_SEGMENTED, True))
+    ctl.entry_id = entry.entry_id  # painted patterns find their pixels by it
+    ctl.default_transition = fade.clean_seconds(_opt(entry, CONF_DEFAULT_TRANSITION, fade.DEFAULT_TRANSITION))
     receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver(hass))
     await receiver.subscribe(entry.entry_id, _opt(entry, CONF_START_PIXEL, 1), ctl.bulbs, ctl.show_external)
     entry.async_on_unload(lambda: receiver.unsubscribe(entry.entry_id))

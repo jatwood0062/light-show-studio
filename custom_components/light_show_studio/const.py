@@ -37,3 +37,8 @@ LIGHT_SCHEDULER_KEY = f"{DOMAIN}_light_scheduler"  # hass.data key of the LightS
 LIGHT_SCHEDULE_STORE_KEY = f"{DOMAIN}.light_schedules"
 EVENT_LIGHT_SCHEDULE_STARTED = f"{DOMAIN}_light_schedule_started"
 EVENT_LIGHT_SCHEDULE_ENDED = f"{DOMAIN}_light_schedule_ended"
+USER_PATTERNS_STORE_KEY = f"{DOMAIN}.user_patterns"  # the Store of your own patterns (see pattern_store.py)
+USER_PATTERNS_KEY = f"{DOMAIN}_user_patterns"  # hass.data key of the PatternStore, made in async_setup
+MUSIC_KEY = f"{DOMAIN}_music"  # hass.data key of the MusicManager, made in async_setup
+PREVIEW_KEY = f"{DOMAIN}_pattern_preview"  # hass.data key of the PreviewManager, made in async_setup
+CONF_DEFAULT_TRANSITION = "default_transition"  # seconds a light fades in / out / between looks (0 = instant)

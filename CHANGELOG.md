@@ -4,6 +4,49 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-07
+
+### Added
+- Transitions: turning a light on fades it in, turning it off fades it out, and changing the look (colour, effect, pattern)
+  cross-fades the old picture into the new one without restarting the effect clock. Home Assistant's `transition` works on
+  `light.turn_on` / `light.turn_off` (`LightEntityFeature.TRANSITION`); new light option `default_transition` (0.7 s, 0 =
+  instant). xLights / show frames are never faded. Zones and area zones fade in and out too (`transition` on `map/zone/start`,
+  `map/zone/stop` and the `start_zone` / `stop_zone` / `set_pattern` services).
+- Light schedules: `fade_in_s` / `fade_out_s` (0-1800 s, default 2 each). Long fades such as 120 s at sunset are a slow brightness
+  ramp.
+- Music sync (backend): `light_show_studio/music/start`, `music/frame` and `music/stop`. A phone listens with its microphone and
+  sends level / bass / mid / treble / beat; effects Pulse, Beat Chase, Spectrum and Flash on lights and areas, with attack/release
+  smoothing, a 3 s timeout back to the pattern's normal look, 40 frames a second per connection, and everything restored on stop
+  or when the connection closes. New light attribute `music`.
+- Your own patterns: palettes and painted pixels (per light, and per area by 3D position), stored in
+  `light_show_studio.user_patterns` (max 200). `light_show_studio/patterns/list|save|delete`, live `patterns/preview` /
+  `preview_stop` and the instant brush `patterns/paint`. Usable by name or id in `set_pattern`, zones, area zones, light
+  schedules and music; they appear after the built-ins in `pattern_list`. Effects work on top of painted pixels.
+- Map effects for zones and area zones: Sweep, Ripple, Snowfall, Rise, Rainbow Wash, Fireworks and Breathe Outward, drawn from the
+  3D positions of the map (`map/get` `spatial_effects`). Light schedules accept them as `look.effect` for area targets.
+- See `docs/MUSIC_PAINT_FX.md` for the exact websocket contract.
+
+### Changed
+- Light schedules apply a look to a light in one step (pattern, effect, speed and brightness together).
+- `async_turn_off` and `async_set_pattern` on the controller take `transition` (and `brightness` for set_pattern).
+
+## [2.5.0] - 2026-11-07
+
+### Added
+- Colour camera mapping, now the default: instead of bright white flashes the lights show red, green and blue. Three
+  calibration frames (all red, all green, all blue) teach the phone how it sees each LED, then one frame per base-3 digit
+  of the light's number and a check frame; 904 lights take 12 frames instead of 22, at a gentler level (140 of 255 on one
+  channel), and work with the room lights dimmed rather than fully dark. White flashes remain under More options ("Use white
+  flashes"), and a recorded video always uses white. `light_show_studio/map/scan/start` takes `mode` ("colour" or "white")
+  and returns `{bulbs, frames, first, level, mode}`.
+- Glow scan: `map/scan/segment` takes `colour: [r, g, b]` and `segments: [{start, count, colour}]` (up to three at once,
+  red/green/blue by default), so hidden-strip anchors can be found three at a time. The decoder side is in place; the
+  wizard still lights one spot at a time.
+- Scan from several angles: scan from 3 to 6 places and get a true 3D map. The wizard shows how many lights are seen from
+  two or more angles, a top-down sketch of where you stood and where to go next; the phone's tilt (if allowed) levels the
+  model. The solver (essential matrix or plane homography, PnP, bundle adjustment with a shared focal length) is in
+  `light-show-studio-multiview.js`.
+
 ## [2.4.0] - 2026-11-06
 
 ### Added

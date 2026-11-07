@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import secrets
 import time
 from collections.abc import Callable
@@ -54,6 +55,8 @@ KEEP = timedelta(hours=2)  # how long bookkeeping about a finished window is kep
 SHOW_FRESH = 2.0  # seconds: frames this recent mean a show is playing on the light
 SAVE_DELAY = 1.0
 MAX_TARGETS = 64
+MAX_FADE = 1800  # seconds: the longest fade in / out a schedule can ask for
+DEFAULT_FADE = 2
 
 
 # --- validation ---------------------------------------------------------------------
@@ -93,9 +96,24 @@ _TARGETS = vol.Schema({
     vol.Optional("areas", default=list): vol.All([_ref], vol.Length(max=MAX_TARGETS), _unique),
     vol.Optional("lights", default=list): vol.All([_ref], vol.Length(max=MAX_TARGETS), _unique),
 })
+def _pattern(value: Any) -> str:
+    """A built-in pattern or one of the person's own (by name or id); stored by name."""
+    try:
+        return patterns.valid_pattern(value)
+    except ValueError as err:
+        raise vol.Invalid("unknown pattern") from err
+
+
+def _seconds(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+            or not 0 <= value <= MAX_FADE:
+        raise vol.Invalid(f"expected 0 to {MAX_FADE} seconds")
+    return value
+
+
 _LOOK = vol.Schema({
-    vol.Required("pattern"): vol.In(patterns.PATTERN_LIST),
-    vol.Required("effect"): vol.In(patterns.PATTERN_EFFECTS),
+    vol.Required("pattern"): _pattern,
+    vol.Required("effect"): vol.In(patterns.ALL_EFFECTS),  # a map effect (Sweep, Ripple ...) needs an area target
     vol.Optional("speed", default=patterns.DEFAULT_SPEED): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
     vol.Optional("brightness", default=100): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
 })
@@ -126,6 +144,8 @@ LIGHT_SCHEDULE_FIELDS: dict[Any, Any] = {
     vol.Optional("date_to", default=None): vol.Any(None, _mmdd),
     vol.Required("targets"): _targets,
     vol.Required("look"): _LOOK,
+    vol.Optional("fade_in_s", default=DEFAULT_FADE): _seconds,  # the lights fade up over this long when a window opens
+    vol.Optional("fade_out_s", default=DEFAULT_FADE): _seconds,  # ... and down when it closes (a brightness ramp)
 }
 _SCHEMA = vol.Schema(LIGHT_SCHEDULE_FIELDS)  # strict: unknown keys are an error
 
@@ -156,6 +176,7 @@ class _Owned:
     applied_at: datetime
     print: Any = None  # the light's state right after the look was applied
     runner: Any = None  # an area: the zone runner started for it
+    fade_out: float = 0.0  # seconds to fade out over when the window closes
 
 
 @dataclass
@@ -164,6 +185,8 @@ class _Want:
     key: str
     start: datetime
     look: dict[str, Any]
+    fade_in: float = 0.0
+    fade_out: float = 0.0
 
 
 @dataclass
@@ -469,15 +492,16 @@ class LightScheduler:
     def _level(look: dict[str, Any]) -> int:
         return max(1, round(look["brightness"] * 255 / 100))
 
-    async def _apply_light(self, ctl: Any, look: dict[str, Any]) -> tuple:
-        await ctl.async_turn_on(brightness=self._level(look))
-        await ctl.async_set_pattern(look["pattern"], look["effect"], look["speed"])
+    async def _apply_light(self, ctl: Any, look: dict[str, Any], fade_in: float = 0.0) -> tuple:
+        # one call: a light that is off fades up from black over fade_in, one that is on cross-fades into the look
+        await ctl.async_set_pattern(look["pattern"], look["effect"], look["speed"], brightness=self._level(look),
+                                    transition=fade_in)
         return self._print(ctl)
 
     def _reclaimable(self, ctl: Any, look: dict[str, Any]) -> bool:
         """After a restart: is the light still showing this look (so it is ours to turn off)?"""
         return bool(ctl.is_on and ctl.effect == PATTERN and ctl.pattern == look["pattern"]
-                    and ctl.pattern_effect == look["effect"] and ctl.speed == look["speed"]
+                    and ctl.pattern_effect == patterns.light_effect(look["effect"]) and ctl.speed == look["speed"]
                     and ctl.brightness == self._level(look) and not ctl.zone)
 
     def _untouched(self, unit: str, own: _Owned, mgr: Any) -> bool:
@@ -495,9 +519,9 @@ class LightScheduler:
             if not self._untouched(unit, own, mgr):
                 return
             if unit.startswith("area:"):
-                await mgr.async_stop_area(unit[5:])
+                await mgr.async_stop_area(unit[5:], own.fade_out)
             elif (ctl := mgr.controller(unit[6:])) is not None:
-                await ctl.async_turn_off()
+                await ctl.async_turn_off(own.fade_out)
         except Exception:  # noqa: BLE001  one light failing must not stop the others
             _LOGGER.exception("Could not turn off %s", unit)
 
@@ -522,11 +546,12 @@ class LightScheduler:
         done = self._windows.setdefault(key, {"end": (now + KEEP).isoformat(), "stopped": False, "units": []})
         for unit in [f"light:{e}" for e in plan.lights] + [f"area:{a}" for a in plan.zones]:
             self._owned.pop(unit, None)  # whoever had it no longer turns it off
-            if await self._apply_unit(unit, s["look"], mgr, None):
+            if await self._apply_unit(unit, s["look"], mgr, None, s["fade_in_s"]):
                 done["units"].append(unit)
         self._fire_started(s, key, None)
 
-    async def _apply_unit(self, unit: str, look: dict[str, Any], mgr: Any, own: _Owned | None) -> bool:
+    async def _apply_unit(self, unit: str, look: dict[str, Any], mgr: Any, own: _Owned | None,
+                          fade_in: float = 0.0, fade_out: float = 0.0) -> bool:
         """Apply the look to a light or an area zone. False when it was skipped (not ready, or a show plays)."""
         try:
             if unit.startswith("light:"):
@@ -534,7 +559,7 @@ class LightScheduler:
                 if ctl is None or self._in_show(ctl):
                     self._retry = True
                     return False
-                print_ = await self._apply_light(ctl, look)
+                print_ = await self._apply_light(ctl, look, fade_in)
                 if own is not None:
                     own.print = print_
                 return True
@@ -545,7 +570,8 @@ class LightScheduler:
                 return False
             for c in ctls:
                 c.brightness = self._level(look)  # the zone shows at the light's brightness
-            await mgr.async_start_area(area_id, look["pattern"], look["effect"], look["speed"])
+            await mgr.async_start_area(area_id, look["pattern"], look["effect"], look["speed"],
+                                       fade_in=fade_in, fade_out=fade_out)
             if own is not None:
                 own.runner = mgr.runners.get(AD_HOC + area_id)
             return True
@@ -557,6 +583,20 @@ class LightScheduler:
     @staticmethod
     def _zone_lights(mgr: Any, area_id: str) -> list[str]:
         return list(dict.fromkeys(r.entry_id for r in mgr.model.runs if r.area == area_id))
+
+    async def async_pattern_changed(self, old: str, new: str | None) -> None:
+        """One of the person's patterns was renamed or deleted: schedules that use it follow (the default pattern
+        stands in for a deleted one). Editing its colours needs nothing: the lights read them each time."""
+        if new == old:
+            return
+        async with self._lock:
+            hit = [s for s in self.schedules if s["look"]["pattern"].casefold() == old.casefold()]
+            for s in hit:
+                s["look"] = {**s["look"], "pattern": new or patterns.DEFAULT_PATTERN}
+            if hit:
+                self._save()
+        if hit:
+            self._notify()
 
     # --- the heart: work out what should be on, and make it so ---------------------------------
     async def _process(self) -> None:
@@ -595,7 +635,7 @@ class LightScheduler:
                 s = self.get_schedule(sid)
                 plan = self._plan(s, model, rows)
                 for unit in [f"light:{e}" for e in plan.lights] + [f"area:{a}" for a in plan.zones]:
-                    wants[unit] = _Want(sid, key, w.start, s["look"])
+                    wants[unit] = _Want(sid, key, w.start, s["look"], s["fade_in_s"], s["fade_out_s"])
         # 4. let go of units nobody wants any more
         for unit, own in list(self._owned.items()):
             want = wants.get(unit)
@@ -626,7 +666,7 @@ class LightScheduler:
                     self._reclaimed.add((want.key, unit))
                     if unit.startswith("light:") and (ctl := mgr.controller(unit[6:])) is not None \
                             and self._reclaimable(ctl, want.look):
-                        self._owned[unit] = _Owned(want.sid, want.key, now, self._print(ctl))
+                        self._owned[unit] = _Owned(want.sid, want.key, now, self._print(ctl), fade_out=want.fade_out)
                 continue
             await self._take(unit, want, mgr, now)
         for sid, (w, key) in active.items():
@@ -639,8 +679,8 @@ class LightScheduler:
         self._save()
 
     async def _take(self, unit: str, want: _Want, mgr: Any, now: datetime) -> bool:
-        own = _Owned(want.sid, want.key, now)
-        if not await self._apply_unit(unit, want.look, mgr, own):
+        own = _Owned(want.sid, want.key, now, fade_out=want.fade_out)
+        if not await self._apply_unit(unit, want.look, mgr, own, want.fade_in, want.fade_out):
             return False
         self._owned[unit] = own
         self._reclaimed.add((want.key, unit))

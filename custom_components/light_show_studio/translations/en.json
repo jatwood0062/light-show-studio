@@ -108,6 +108,7 @@
           "segmented": "Per-bulb control (turn off if the light only takes one colour)",
           "bulb_entities": "Create a light for every bulb",
           "start_pixel": "First pixel in xLights / Light-O-Rama output",
+          "default_transition": "Fade in / out and between looks, in seconds (0 = instant)",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
           "gap": "Pause between shows (seconds)",
           "allowed_sources": "Only accept xLights / sequencer data from these IPs (optional, comma separated; empty = any device on your home network)"

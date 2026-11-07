@@ -9,6 +9,7 @@ from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_EFFECT,
     ATTR_RGB_COLOR,
+    ATTR_TRANSITION,
     ColorMode,
     LightEntity,
     LightEntityFeature,
@@ -24,7 +25,7 @@ from . import C9ConfigEntry
 from .const import CONF_BULB_ENTITIES, CONF_DEVICE_ID, CONF_SKU, CONF_START_PIXEL, CONF_TYPE, DOMAIN, TYPE_TWINKLY, TYPE_WLED
 from .controller import SHOW, C9Controller
 from .effects import EFFECT_LIST, EFFECTS
-from . import patterns
+from . import fade, patterns
 from .patterns import PATTERN
 from .protocol import Colour
 
@@ -53,9 +54,10 @@ SET_PIXELS_SCHEMA = {
 
 
 SET_PATTERN_SCHEMA = {
-    vol.Optional("pattern"): vol.In(patterns.PATTERN_LIST),
-    vol.Optional("effect"): vol.In(patterns.PATTERN_EFFECTS),
+    vol.Optional("pattern"): vol.All(cv.string, patterns.valid_pattern),  # a built-in pattern or one of your own
+    vol.Optional("effect"): vol.All(cv.string, patterns.valid_effect),  # on one light a map effect shows as its nearest string effect
     vol.Optional("speed"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+    vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION)),
 }
 
 
@@ -101,7 +103,7 @@ class _Base(LightEntity):
 
 class C9StringLight(_Base, RestoreEntity):
     _attr_name = None
-    _attr_supported_features = LightEntityFeature.EFFECT
+    _attr_supported_features = LightEntityFeature.EFFECT | LightEntityFeature.TRANSITION
     _attr_effect_list = [SHOW, PATTERN, *EFFECT_LIST]
 
     def __init__(self, ctl, entry, device, uid: str) -> None:
@@ -119,8 +121,8 @@ class C9StringLight(_Base, RestoreEntity):
             ctl.brightness = int(level)
         if (rgb := attrs.get(ATTR_RGB_COLOR)) is not None:
             ctl.colour = tuple(rgb)
-        if attrs.get("pattern") in patterns.PATTERNS:
-            ctl.pattern = attrs["pattern"]
+        if (name := patterns.canonical(attrs.get("pattern"))) is not None:  # a built-in or one of your own
+            ctl.pattern = name
         if attrs.get("pattern_effect") in patterns.PATTERN_EFFECTS:
             ctl.pattern_effect = attrs["pattern_effect"]
         try:
@@ -158,21 +160,22 @@ class C9StringLight(_Base, RestoreEntity):
                 "pixels": f"{first}-{first + n - 1}", "channels": f"{(first - 1) * 3 + 1}-{(first + n - 1) * 3}",
                 "pattern": self.ctl.pattern, "pattern_effect": self.ctl.pattern_effect, "speed": self.ctl.speed,
                 "zone": self.ctl.zone, "scanning": self.ctl.scanning,
-                "pattern_list": patterns.PATTERN_LIST, "pattern_effect_list": patterns.PATTERN_EFFECTS}
+                "pattern_list": patterns.pattern_names(), "pattern_effect_list": patterns.PATTERN_EFFECTS,
+                "music": self.ctl.music, "default_transition": self.ctl.default_transition}
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.ctl.async_turn_on(kwargs.get(ATTR_BRIGHTNESS), kwargs.get(ATTR_RGB_COLOR),
-                                     kwargs.get(ATTR_EFFECT))
+                                     kwargs.get(ATTR_EFFECT), kwargs.get(ATTR_TRANSITION))
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.ctl.async_turn_off()
+        await self.ctl.async_turn_off(kwargs.get(ATTR_TRANSITION))
 
     async def async_set_pixels(self, colors: list[Colour], repeat: bool = True) -> None:
         await self.ctl.async_set_pixels(colors, repeat)
 
     async def async_set_pattern(self, pattern: str | None = None, effect: str | None = None,
-                                speed: int | None = None) -> None:
-        await self.ctl.async_set_pattern(pattern, effect, speed)
+                                speed: int | None = None, transition: float | None = None) -> None:
+        await self.ctl.async_set_pattern(pattern, effect, speed, transition=transition)
 
 
 class C9BulbLight(_Base):

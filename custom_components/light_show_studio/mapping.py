@@ -309,11 +309,11 @@ def parse_zone(v: Any) -> Zone:
     mode = d.get("mode", "string")
     if mode not in MODES:
         raise MapError(f"{name}: mode must be string or spatial")
-    pattern = d.get("pattern", patterns.DEFAULT_PATTERN)
-    if pattern not in patterns.PATTERNS:
+    pattern = patterns.canonical(d.get("pattern", patterns.DEFAULT_PATTERN))  # a built-in or one of your own
+    if pattern is None:
         raise MapError(f"{name}: unknown pattern")
     effect = d.get("effect", patterns.CHASE)
-    if effect not in patterns.PATTERN_EFFECTS:
+    if effect not in patterns.ALL_EFFECTS:
         raise MapError(f"{name}: unknown effect")
     return Zone(_id(d.get("id"), "zone id"), name, runs, mode, parse_axis(d.get("axis", default_axis())),
                 pattern, effect, _int(d.get("speed", patterns.DEFAULT_SPEED), f"{name}: speed", 1, 100), areas)
