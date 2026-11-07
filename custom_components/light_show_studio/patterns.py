@@ -13,9 +13,9 @@ from .protocol import Colour
 
 PATTERN = "Pattern"  # the light's effect name while a pattern + pattern effect is showing
 
-# Classic C9 multicolour: the old ceramic-bulb set order (red, gold, green, blue, orange, pink).
+# Classic C9 multicolour: same colours as the "Classic Multicolour" effect (red, green, blue, orange, pink).
 PATTERNS: dict[str, tuple[list[Colour], int]] = {  # name -> (colours, bulbs per colour)
-    "Classic Multicolor": ([(255, 0, 0), (255, 150, 0), (0, 200, 0), (0, 40, 255), (255, 70, 0), (255, 20, 120)], 1),
+    "Classic Multicolor": ([(255, 0, 0), (0, 255, 0), (0, 60, 255), (255, 80, 0), (255, 0, 120)], 1),
     "Warm White": ([(255, 150, 40)], 1),
     "Cool White": ([(200, 220, 255)], 1),
     "Red & Green": ([(255, 0, 0), (0, 200, 0)], 1),

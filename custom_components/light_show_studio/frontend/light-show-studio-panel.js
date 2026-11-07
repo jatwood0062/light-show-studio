@@ -21,7 +21,7 @@ const SEASONAL = /Christmas|Candy|Halloween|Valentine|Patrick|Easter|July 4th|Th
 const SHOW = "Light show";
 // mirrors PATTERNS in patterns.py: name -> [colours as r,g,b, bulbs per colour]; no colours = rainbow gradient
 const PATTERN_COLOURS = {
-  "Classic Multicolor": [[[255, 0, 0], [255, 150, 0], [0, 200, 0], [0, 40, 255], [255, 70, 0], [255, 20, 120]], 1],
+  "Classic Multicolor": [[[255, 0, 0], [0, 255, 0], [0, 60, 255], [255, 80, 0], [255, 0, 120]], 1],
   "Warm White": [[[255, 150, 40]], 1],
   "Cool White": [[[200, 220, 255]], 1],
   "Red & Green": [[[255, 0, 0], [0, 200, 0]], 1],
