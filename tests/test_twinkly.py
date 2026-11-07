@@ -63,7 +63,8 @@ def test_rgbw_takes_the_grey_part_out():
 
 def test_layout_y_is_flipped():
     out = tw.flip_layout([{"x": -0.5, "y": 0.23, "z": 1.0}, {"x": 0.25, "y": 1.0, "z": 0}])
-    assert out == [[-0.5, -0.23], [0.25, -1.0]]
+    assert out == [[-0.5, -0.23, 1.0], [0.25, -1.0, 0.0]]  # z kept for 3D mapping
+    assert tw.flip_layout([{"x": 1, "y": 2}]) == [[1.0, -2.0]]  # a flat layout stays 2D
 
 
 def test_discovery_reply():

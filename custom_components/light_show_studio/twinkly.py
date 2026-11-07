@@ -51,8 +51,10 @@ def build_packets(token: bytes, colours: list[Colour], profile: str = "RGB") -> 
 
 
 def flip_layout(coords: list[dict]) -> list[list[float]]:
-    """Twinkly's y points up, the card draws top-down."""
-    return [[round(float(c["x"]), 4), round(-float(c["y"]), 4)] for c in coords]
+    """Twinkly's y points up, the card draws top-down. A 3D layout keeps its z as a third value (the card
+    ignores it; mapping uses it for depth)."""
+    return [[round(float(c["x"]), 4), round(-float(c["y"]), 4)] + ([round(float(c["z"]), 4)] if "z" in c else [])
+            for c in coords]
 
 
 def parse_discovery(data: bytes) -> tuple[str, str] | None:
