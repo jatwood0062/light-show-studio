@@ -15,6 +15,10 @@ const OLD_TABS = { play: ["shows", "play"], library: ["shows", "library"], add: 
 const INTEGRATION_PATH = "/config/integrations/integration/light_show_studio";
 const STORE_KEY = "light_show_studio_panel_tab";
 const SUB_KEY = "light_show_studio_panel_shows";
+const FADE_KEY = "light_show_studio_panel_fade"; // seconds an area pattern fades in / out (default 0.7)
+const MAP_FX = ["Sweep", "Ripple", "Snowfall", "Rise", "Rainbow Wash", "Fireworks", "Breathe Outward"];
+const CENTRE_FX = new Set(["Ripple", "Fireworks", "Breathe Outward"]);
+const MUSIC_FX = ["Pulse", "Beat Chase", "Spectrum", "Flash"];
 const THEME_KEY = "light_show_studio_panel_theme"; // auto | light | dark
 const SEL_KEY = "light_show_studio_panel_light";
 const BANNER_KEY = "light_show_studio_panel_banner"; // the first-run banner was dismissed for this set of missing steps
@@ -50,6 +54,11 @@ const EFFECT_INFO = {
   Wave: "A soft wave of brightness travels along",
 };
 // the slider only means something while an effect is moving
+const MAP_FX_INFO = {
+  Sweep: "A soft band crosses the area", Ripple: "Rings spread out from a centre point", Snowfall: "Flakes drift down",
+  Rise: "A glow fills the area along a direction", "Rainbow Wash": "Hue drifts along a direction", Fireworks: "Random bursts in 3D",
+  "Breathe Outward": "Brightness waves travel out from the centre",
+};
 const STILL = new Set(["Steady"]);
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
@@ -68,6 +77,8 @@ const PANEL_ICON = {
   layers: "M11.99 18.54l-7.37-5.73L3 14.07l9 7 9-7-1.63-1.27-7.38 5.74zM12 16l7.36-5.73L21 9l-9-7-9 7 1.63 1.27L12 16z",
   route: "M19 15.18V7c0-2.21-1.79-4-4-4s-4 1.79-4 4v10c0 1.1-.9 2-2 2s-2-.9-2-2V8.82C8.16 8.4 9 7.3 9 6c0-1.66-1.34-3-3-3S3 4.34 3 6c0 1.3.84 2.4 2 2.82V17c0 2.21 1.79 4 4 4s4-1.79 4-4V7c0-1.1.9-2 2-2s2 .9 2 2v8.18c-1.16.41-2 1.51-2 2.82 0 1.66 1.34 3 3 3s3-1.34 3-3c0-1.3-.84-2.4-2-2.82z",
   palette: "M12 3a9 9 0 0 0 0 18c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.4c3 0 5.1-2.3 5.1-5.2C22 6.2 17.5 3 12 3zM6.5 12a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z",
+  mic: "M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z",
+  brush: "M7 14c-1.66 0-3 1.34-3 3 0 1.31-1.16 2-2 2 .92 1.22 2.49 2 4 2 2.21 0 4-1.79 4-4 0-1.66-1.34-3-3-3zm13.71-9.37-1.34-1.34a1 1 0 0 0-1.41 0L9 12.25 11.75 15l8.96-8.96a1 1 0 0 0 0-1.41z",
   sliders: "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z",
   sun: "M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM2 13h2v-2H2v2zm18 0h2v-2h-2v2zM11 2v2h2V2h-2zm0 18v2h2v-2h-2zM5.99 4.58 4.58 5.99l1.41 1.42 1.42-1.42-1.42-1.41zm12.02 12.01-1.42 1.42 1.42 1.41 1.41-1.41-1.41-1.42zM4.58 18.01l1.41 1.41 1.42-1.41-1.42-1.42-1.41 1.42zM18.01 5.99l1.41-1.41-1.41-1.41-1.42 1.41 1.42 1.41z",
   power: "M13 3h-2v10h2zm4.8 2.2-1.4 1.4A6 6 0 1 1 7.6 6.6L6.2 5.2a8 8 0 1 0 11.6 0z",
@@ -105,6 +116,7 @@ const stored = store(STORE_KEY);
 const storedBanner = store(BANNER_KEY);
 const storedSub = store(SUB_KEY);
 const storedTheme = store(THEME_KEY);
+const storedFade = store(FADE_KEY);
 const storedLight = store(SEL_KEY);
 
 class LightShowStudioPanel extends HTMLElement {
@@ -134,12 +146,19 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    this._onVis = () => {
+      if (document.hidden && this._musicRunning) this._musicStop(); // the page is hidden: the microphone stops, so music mode does too
+    };
+    document.addEventListener("visibilitychange", this._onVis);
     this._startPolling();
     this._syncWatch();
     if (this._tab === "schedule" || this._tab === "areas") this._subscribeSchedule();
   }
 
   disconnectedCallback() {
+    document.removeEventListener("visibilitychange", this._onVis);
+    if (this._musicRunning) this._musicStop(true);
+    this._ptCleanup();
     clearInterval(this._poll);
     this._poll = null;
     this._unsubscribeSchedule();
@@ -805,6 +824,34 @@ class LightShowStudioPanel extends HTMLElement {
         .ac-top h3 { display: flex; align-items: center; gap: 8px; }
         .ad-head { flex-wrap: wrap; }
         .ad-head input[type=text] { flex: 1 1 160px; }
+        /* ---- music, painter, map effects, fades ---- */
+        .scene.music-scene { color: var(--lss-acc); }
+        .playbtn.music { flex: 0 0 auto; }
+        .mypats { margin-top: 6px; }
+        .lc.mp .looks, .lc.mp .lookdots { align-self: flex-start; }
+        .st-extra { display: flex; flex-direction: column; gap: 10px; }
+        .st-extra .fade-note:empty { display: none; }
+        .mfxg { margin-top: 10px; }
+        .mfxh { font-size: 12.5px; font-weight: 600; color: var(--lss-mut); margin: 0 0 8px; }
+        .mfxopts .mfxc { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+        .fv { width: 100%; }
+        .fv canvas { display: block; width: 100%; aspect-ratio: 4 / 3; max-height: 280px; border-radius: 12px; cursor: crosshair; touch-action: none; }
+        .ptcv { display: block; width: 100%; border-radius: 12px; touch-action: none; cursor: crosshair; }
+        .ptools { gap: 8px; }
+        .ptools select { min-height: 44px; }
+        .ptc { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; }
+        .rsw.big { width: 18px; height: 18px; }
+        .mu-live { gap: 10px; }
+        .mu-meters { display: flex; flex-direction: column; gap: 8px; }
+        .mu-row { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px; align-items: center; font-size: 13px; color: var(--lss-mut); }
+        .mu-bar { height: 12px; border-radius: 6px; background: var(--lss-strip); overflow: hidden; }
+        .mu-bar i { display: block; height: 100%; width: 0; border-radius: 6px; background: linear-gradient(90deg, var(--lss-acc), #ffb43c); transition: width .05s linear; }
+        .mu-beatrow { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+        .mu-beat { width: 14px; height: 14px; border-radius: 50%; background: var(--lss-dotoff); transition: background .05s, box-shadow .05s; }
+        .mu-beat.on { background: #ffb43c; box-shadow: 0 0 calc(12px * var(--glow)) 3px #ffb43c; }
+        .mu-glow { display: flex; flex-direction: column; gap: 6px; }
+        .mu-glow canvas.glow { height: 28px; }
+        .mu-go { flex: 1 !important; }
       </style>
       <div class="root">
         <div class="topbar">
@@ -829,6 +876,7 @@ class LightShowStudioPanel extends HTMLElement {
             <div class="skel areas-skel" aria-busy="true" aria-label="Loading lights"><i></i><i></i><i></i></div>
             <div class="serr areas-err" role="alert" hidden></div>
             <div class="alist"></div>
+            <section class="asec mypats" aria-label="My patterns" hidden></section>
             <div class="box empty no-lights" hidden><span class="eic">${svg(PANEL_ICON.bulb)}</span><div class="et">No lights yet</div>
               <div class="ed">Add a Wi-Fi light strip and it will show up here with a live preview.</div>
               <button class="btn" type="button">${svg(PANEL_ICON.add)}Add a light</button></div>
@@ -928,6 +976,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._aSkel = q(".areas-skel");
     this._aErr = q(".areas-err");
     this._aList = q(".alist");
+    this._myPats = q(".mypats");
     this._scenesEl = q(".scenes");
     this._addLight.onclick = q(".no-lights .btn").onclick = () => this._navigate(INTEGRATION_PATH);
     this._sunPill = q(".sunpill");
@@ -1014,6 +1063,7 @@ class LightShowStudioPanel extends HTMLElement {
     else this._unsubscribeMap();
     if (id !== "map") this._closeScan();
     if (id === "areas" || id === "map") this._loadStrands();
+    if (id === "areas" || id === "map" || id === "schedule") this._loadUserPatterns();
     if (id === "areas") {
       this._loadMap();
       this._loadSchedules();
@@ -1110,7 +1160,21 @@ class LightShowStudioPanel extends HTMLElement {
       }));
       f.append(this._el("span", "muted", this._themeMode() === "auto" ? "Auto follows your Home Assistant theme." : "Fixed for this browser."));
       box.append(f);
-      // hook: later work adds the default transition and fade settings here
+      const ff = this._el("div", "fld");
+      ff.append(this._el("span", "lb", "Area patterns fade"));
+      const row = this._el("div", "vrow");
+      const r = this._el("input");
+      Object.assign(r, { type: "range", min: 0, max: 5, step: 0.1, value: this._fade() });
+      r.setAttribute("aria-label", "Fade when an area pattern starts or stops, in seconds");
+      const bv = this._el("span", "bv", LightShowStudioPanel._fadeText(this._fade()));
+      r.oninput = () => {
+        storedFade.set(String(r.value));
+        bv.textContent = LightShowStudioPanel._fadeText(Number(r.value));
+      };
+      row.append(r, bv);
+      ff.append(row, this._el("span", "muted", "How long a pattern started on an area or zone fades in and out. Each light also has its own fade, shown on its controls."));
+      box.append(ff);
+      // hook: later work adds more settings here
       const hook = this._el("div", "hook settings-extra");
       hook.dataset.hook = "settings-extra";
       box.append(hook);
@@ -1166,6 +1230,8 @@ class LightShowStudioPanel extends HTMLElement {
     if (!sh) return;
     this._sheet = null;
     this._stopPreview?.();
+    if (sh.kind === "music") this._musicStop(true);
+    if (sh.kind === "paint") this._ptCleanup();
     this._sheetBack.hidden = true;
     this._sheetBody.textContent = "";
     this._sheetFoot.textContent = "";
@@ -1469,7 +1535,11 @@ class LightShowStudioPanel extends HTMLElement {
           <div class="sws" role="group" aria-label="Colour"></div>
         </div>
         <div class="pat-slot"></div>
-        <div class="hook" data-hook="light-sheet-extra" hidden><!-- hook: Music mode, Pattern painter, spatial map effects and fade settings mount here for this light --></div>
+        <div class="box st-extra" data-hook="light-sheet-extra">
+          <div class="inl"><button class="btn alt sm paintbtn" type="button">${svg(PANEL_ICON.brush, 18)}Paint a pattern</button>
+            <button class="btn alt sm musicbtn" type="button">${svg(PANEL_ICON.mic, 18)}Music</button></div>
+          <div class="fade-row"><span class="muted fade-note"></span></div>
+        </div>
         <div class="box st-fx"><h2><span class="hi">${svg(PANEL_ICON.palette)}</span>Effects</h2><div class="groups"></div></div>
         <form class="box st-set edit" novalidate>
           <h2><span class="hi">${svg(PANEL_ICON.gear)}</span>Settings</h2>
@@ -1490,7 +1560,7 @@ class LightShowStudioPanel extends HTMLElement {
       </div>`;
     const patBox = this._patternBox({
       title: "Pattern", speedText: "Speed: for any effect on this light",
-      onPick: (key, n) => this._pattern({ [key]: n }), onSpeed: (v) => this._pattern({ speed: v }),
+      onPick: (key, n) => this._pattern({ [key]: n, ...(key === "pattern" ? this._patDefaults(n) || {} : {}) }), onSpeed: (v) => this._pattern({ speed: v }),
     });
     sec.querySelector(".pat-slot").replaceWith(patBox);
     const q = (c) => sec.querySelector(c);
@@ -1500,10 +1570,15 @@ class LightShowStudioPanel extends HTMLElement {
       sws: q(".sws"), groups: q(".groups"), fx: q(".st-fx"), ctl: q(".st-ctl"), form: q(".st-set"), err: q(".st-err"),
       nm: q(".f-nm"), ip: q(".f-ip"), st: q(".f-st"), bl: q(".f-bl"), liveTxt: q(".st-set .live"),
       use: q(".use"), warns: q(".warns"), ferr: q(".st-set .serr"), save: q(".save"), reset: q(".reset"),
-      rm: q(".rm"), pat: patBox,
+      rm: q(".rm"), pat: patBox, fade: q(".fade-note"),
     };
     const st = this._st;
     st.rm.onclick = () => this._studioRemove();
+    q(".paintbtn").onclick = () => this._openPainter({ entry: this._currentStrand()?.entry_id });
+    q(".musicbtn").onclick = () => {
+      const s = this._currentStrand();
+      if (s) this._openMusic({ areas: [], lights: [s.entry_id] });
+    };
     st.pick.onchange = () => {
       const s = this._resolveStrand(st.pick.value);
       if (s) this._openStudio(s);
@@ -1578,9 +1653,19 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   _dots(name) {
-    const [cols, width] = PATTERN_COLOURS[name] || [null, 1];
     const d = this._el("span", "dots");
     d.setAttribute("aria-hidden", "true");
+    if (this._userPat(name)) {
+      const seen = [];
+      for (const c of this._lookColours(name)) if (!seen.some((x) => x.join() === c.join())) seen.push(c);
+      for (const c of seen.slice(0, 10)) {
+        const i = document.createElement("i");
+        i.style.background = `rgb(${c.join(",")})`;
+        d.append(i);
+      }
+      return d;
+    }
+    const [cols, width] = PATTERN_COLOURS[name] || [null, 1];
     if (cols && !cols.length) {
       d.classList.add("rb");
       d.style.background = RAINBOW_CSS;
@@ -1791,6 +1876,10 @@ class LightShowStudioPanel extends HTMLElement {
     else if (on) line = effect ? `Showing ${effect}` : a.per_bulb ? "Showing your painting" : "Showing a colour";
     st.ml.textContent = line;
     st.back.hidden = !on || following;
+    if (a.default_transition !== undefined && a.default_transition !== null) {
+      // the fade is a per-light option (default_transition): the integration has no panel setting for it, so it is shown, not edited
+      st.fade.textContent = `Fade: ${LightShowStudioPanel._fadeText(a.default_transition)} when it turns on, off or changes look. Change it in the light's Configure dialog in Home Assistant.`;
+    } else st.fade.textContent = "";
     if (document.activeElement !== st.brs && this._root.getRootNode().activeElement !== st.brs && a.brightness != null) {
       st.brs.value = a.brightness;
     }
@@ -1906,7 +1995,7 @@ class LightShowStudioPanel extends HTMLElement {
       const s = this._currentStrand();
       if (s?.entity_id) out.push(s.entity_id);
     }
-    if (this._sheet?.kind === "play" || this._tab === "areas") for (const s of strands) if (s.entity_id && s.loaded) out.push(s.entity_id);
+    if (["play", "music", "paint"].includes(this._sheet?.kind) || this._tab === "areas") for (const s of strands) if (s.entity_id && s.loaded) out.push(s.entity_id);
     if (this._tab === "map") out.push(...this._mapEntities());
     return [...new Set(out)];
   }
@@ -2003,13 +2092,15 @@ class LightShowStudioPanel extends HTMLElement {
         <div class="chips pat-chips" role="group" aria-label="Pattern"></div></div>
       <div class="grp"><h3><span class="n" aria-hidden="true">2</span>Effect: choose the motion</h3>
         <div class="chips pfx-chips" role="group" aria-label="Pattern effect"></div>
+        <div class="mfxg" hidden><h3 class="mfxh">Map effects: move through the area in 3D</h3>
+          <div class="chips mfx-chips" role="group" aria-label="Map effects"></div></div>
         <div class="fxdesc" aria-live="polite"></div></div>
       <div class="grp spdgrp"><h3><span class="n" aria-hidden="true">3</span>${speedText}</h3>
         <div class="spdrow"><span>Slow</span><input class="sps" type="range" min="1" max="100" step="1" aria-label="Effect speed, slow to fast">
           <span>Fast</span></div>
         <div class="spdval"><span>Normal is 50</span><span>Speed <b class="sv"></b></span></div></div>`;
     const q = (c) => box.querySelector(c);
-    const r = { sig: "", onPick, patChips: q(".pat-chips"), pfxChips: q(".pfx-chips"), sps: q(".sps"), sv: q(".sv"), fxd: q(".fxdesc"), spdg: q(".spdgrp") };
+    const r = { sig: "", onPick, patChips: q(".pat-chips"), pfxChips: q(".pfx-chips"), mfxChips: q(".mfx-chips"), mfxG: q(".mfxg"), sps: q(".sps"), sv: q(".sv"), fxd: q(".fxdesc"), spdg: q(".spdgrp") };
     r.sps.oninput = () => {
       r.sv.textContent = r.sps.value;
       r.sps.setAttribute("aria-valuetext", `${r.sps.value} of 100`);
@@ -2025,9 +2116,9 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   // (re)build the chips when the lists change
-  _patternFill(box, pats, pfx) {
+  _patternFill(box, pats, pfx, mfx = []) {
     const r = box._r;
-    const sig = pats.join("|") + "#" + pfx.join("|");
+    const sig = pats.join("|") + "#" + pfx.join("|") + "#" + mfx.join("|");
     if (sig === r.sig || !pats.length) return;
     r.sig = sig;
     const fill = (row, names, key) => {
@@ -2038,13 +2129,16 @@ class LightShowStudioPanel extends HTMLElement {
         b.dataset.v = n;
         if (key === "pattern") b.append(this._dots(n));
         b.append(this._el("span", "", n));
-        if (key === "effect" && EFFECT_INFO[n]) {
+        if (key === "effect" && !EFFECT_INFO[n] && MAP_FX.includes(n)) {
+          b.title = MAP_FX_INFO[n];
+          b.setAttribute("aria-label", `${n}: ${MAP_FX_INFO[n]}`);
+        } else if (key === "effect" && EFFECT_INFO[n]) {
           b.title = EFFECT_INFO[n];
           b.setAttribute("aria-label", `${n}: ${EFFECT_INFO[n]}`);
         } else if (key === "pattern") b.setAttribute("aria-label", `${n} pattern`);
         b.onclick = () => {
-          row.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c === b)));
-          if (key === "effect") r.fxd.textContent = EFFECT_INFO[n] || "";
+          box.querySelectorAll(key === "pattern" ? ".pat-chips .chip" : ".pfx-chips .chip, .mfx-chips .chip").forEach((c) => c.setAttribute("aria-pressed", String(c === b)));
+          if (key === "effect") r.fxd.textContent = EFFECT_INFO[n] || MAP_FX_INFO[n] || "";
           r.onPick(key, n);
         };
         row.append(b);
@@ -2052,6 +2146,8 @@ class LightShowStudioPanel extends HTMLElement {
     };
     fill(r.patChips, pats, "pattern");
     fill(r.pfxChips, pfx, "effect");
+    r.mfxG.hidden = !mfx.length;
+    fill(r.mfxChips, mfx, "effect");
   }
 
   // show the current pattern, effect and speed; moving = false greys the speed slider
@@ -2059,7 +2155,8 @@ class LightShowStudioPanel extends HTMLElement {
     const r = box._r;
     r.patChips.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(!!pattern && pattern === b.dataset.v)));
     r.pfxChips.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(!!effect && effect === b.dataset.v)));
-    r.fxd.textContent = effect && EFFECT_INFO[effect] ? EFFECT_INFO[effect] : "";
+    r.mfxChips.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(!!effect && effect === b.dataset.v)));
+    r.fxd.textContent = effect && (EFFECT_INFO[effect] || MAP_FX_INFO[effect]) ? EFFECT_INFO[effect] || MAP_FX_INFO[effect] : "";
     if (this._root.getRootNode().activeElement !== r.sps && speed != null) r.sps.value = speed;
     r.sv.textContent = r.sps.value;
     r.sps.setAttribute("aria-valuetext", `${r.sps.value} of 100`);
@@ -2289,6 +2386,7 @@ class LightShowStudioPanel extends HTMLElement {
       this._mapSaved = JSON.stringify(this._map);
       if (Array.isArray(r?.running)) this._mapRunning = new Set(r.running);
       this._mapScanning = new Set(Array.isArray(r?.scanning) ? r.scanning : []);
+      this._mapSpatial = Array.isArray(r?.spatial_effects) ? r.spatial_effects : null;
     } catch (err) {
       if (/unknown/i.test(this._mapErrText(err, "")) || err?.code === "unknown_command") this._mapOld = true;
       else this._mapLoadErr = this._mapErrText(err, "Couldn't load the map.");
@@ -2619,7 +2717,11 @@ class LightShowStudioPanel extends HTMLElement {
     const pb = this._patternBox({
       title: `Run a pattern in ${area.name}`, speedText: "Speed: how fast it moves",
       onPick: (key, n) => {
+        const was = this._isMapFx(ap.effect);
         ap[key] = n;
+        const d = key === "pattern" ? this._patDefaults(n) : null;
+        if (d) Object.assign(ap, d); // a pattern of your own brings its effect and speed
+        if (d || was !== this._isMapFx(ap.effect)) this._rerenderMotion();
         if (this._areaRunning(area)) {
           clearTimeout(this._zT);
           this._zT = setTimeout(() => this._areaCall("start", area.id), 250);
@@ -2631,12 +2733,13 @@ class LightShowStudioPanel extends HTMLElement {
       },
     });
     const [pats, pfx] = this._patternLists();
-    this._patternFill(pb, pats, pfx);
+    this._patternFill(pb, pats, pfx, this._mapSpatial || []);
     this._patternSync(pb, { pattern: ap.pattern, effect: ap.effect, speed: ap.speed, moving: !STILL.has(ap.effect) });
-    const motion = this._motionControls(ap, () => {
+    const changedFn = () => {
       this._renderAreaDetailBits();
       if (this._areaRunning(area)) this._areaCall("start", area.id);
-    });
+    };
+    const motion = this._isMapFx(ap.effect) ? this._mapFxOptions(ap, [area.id], changedFn) : this._motionControls(ap, changedFn);
     const err = this._el("div", "serr");
     err.setAttribute("role", "alert");
     err.hidden = true;
@@ -2926,11 +3029,11 @@ class LightShowStudioPanel extends HTMLElement {
       const zid = "area:" + id;
       if (what === "start") {
         const axis = ap.axis.centre ? { centre: ap.axis.centre } : ap.axis.preset ? { preset: ap.axis.preset } : { dir: ap.axis.dir };
-        await this._hass.callWS({ type: "light_show_studio/map/zone/start", area: id, pattern: ap.pattern, effect: ap.effect, speed: ap.speed, mode: ap.mode, axis });
+        await this._hass.callWS({ type: "light_show_studio/map/zone/start", area: id, pattern: ap.pattern, effect: ap.effect, speed: ap.speed, mode: ap.mode, axis, transition: this._fade() });
         this._mapRunning = new Set([...(this._mapRunning || []), zid]);
       } else if (what === "speed") await this._hass.callWS({ type: "light_show_studio/map/zone/speed", zone_id: zid, speed: ap.speed });
       else {
-        await this._hass.callWS({ type: "light_show_studio/map/zone/stop", zone_id: zid });
+        await this._hass.callWS({ type: "light_show_studio/map/zone/stop", zone_id: zid, transition: this._fade() });
         const s = new Set(this._mapRunning || []);
         s.delete(zid);
         this._mapRunning = s;
@@ -3008,7 +3111,11 @@ class LightShowStudioPanel extends HTMLElement {
 
   _rerenderMotion() {
     // the owner re-renders its card; area detail and zone cards both call their own render in `changed`
-    if (this._sheet?.kind === "play") this._openPlaySheet(this._sheet.area);
+    if (this._sheet?.kind === "play") {
+      const st = this._sheetBody.scrollTop;
+      this._openPlaySheet(this._sheet.area);
+      this._sheetBody.scrollTop = st;
+    }
     else if (this._mapSel.area) this._renderAreaDetail();
     else this._renderMapZones();
   }
@@ -3160,9 +3267,36 @@ class LightShowStudioPanel extends HTMLElement {
   _patternLists() {
     for (const id of this._lights()) {
       const a = this._hass.states[id]?.attributes || {};
-      if (Array.isArray(a.pattern_list) && a.pattern_list.length) return [a.pattern_list, a.pattern_effect_list || []];
+      if (Array.isArray(a.pattern_list) && a.pattern_list.length) return [this._withMine(a.pattern_list), a.pattern_effect_list || []];
     }
-    return [Object.keys(PATTERN_COLOURS), Object.keys(EFFECT_INFO).filter((n) => n !== "Steady").concat("Steady")];
+    return [this._withMine(Object.keys(PATTERN_COLOURS)), Object.keys(EFFECT_INFO).filter((n) => n !== "Steady").concat("Steady")];
+  }
+
+  // built-ins first, then the person's own patterns (the lights' pattern_list already has them; this covers lists made before they loaded)
+  _withMine(list) {
+    const out = [...list];
+    for (const u of this._up?.patterns || []) if (!out.includes(u.name)) out.push(u.name);
+    return out;
+  }
+
+  _userPat(name) {
+    const n = String(name || "").toLowerCase();
+    return n ? (this._up?.patterns || []).find((p) => p.name.toLowerCase() === n) || null : null;
+  }
+
+  _isMapFx(n) {
+    return MAP_FX.includes(n) || (this._mapSpatial || []).includes(n);
+  }
+
+  // the effect and speed a picked pattern of the person's own wants (null for a built-in)
+  _patDefaults(name) {
+    const u = this._userPat(name);
+    return u ? { effect: u.default_effect, speed: u.default_speed } : null;
+  }
+
+  _fade() {
+    const v = parseFloat(storedFade.get());
+    return Number.isFinite(v) && v >= 0 && v <= 30 ? v : 0.7;
   }
 
   // running state: pushed by map/subscribe; the lights' "zone" attribute is the fallback
@@ -3365,19 +3499,25 @@ class LightShowStudioPanel extends HTMLElement {
       areasBox.append(addRow);
     }
     body.append(runsBox, areasBox);
-    body.append(this._motionControls(zone, () => {
+    const zChanged = () => {
       if (this._zoneRunning(zone)) {
         clearTimeout(this._zT);
         this._zT = setTimeout(() => this._zoneCall("start", zone.id), 250);
       }
-    }));
+    };
+    const zAreas = [...new Set([...(zone.areas || []), ...zone.runs.map((id) => this._map.runs.find((r) => r.id === id)?.area).filter(Boolean)])];
+    body.append(this._isMapFx(zone.effect) ? this._mapFxOptions(zone, zAreas, zChanged) : this._motionControls(zone, zChanged));
     // pattern -> effect -> speed (same controls as the Studio tab)
     const pb = this._patternBox({
       title: "Pattern", speedText: "Speed: how fast the zone moves",
       onPick: (key, n) => {
+        const was = this._isMapFx(zone.effect);
         zone[key] = n;
+        const d = key === "pattern" ? this._patDefaults(n) : null;
+        if (d) Object.assign(zone, d);
         this._mapChanged();
         this._syncZones();
+        if (d || was !== this._isMapFx(zone.effect)) this._rerenderMotion();
         if (this._zoneRunning(zone)) {
           clearTimeout(this._zT);
           this._zT = setTimeout(() => this._zoneCall("start", zone.id), 250);
@@ -3390,7 +3530,7 @@ class LightShowStudioPanel extends HTMLElement {
       },
     });
     const [pats, pfx] = this._patternLists();
-    this._patternFill(pb, pats, pfx);
+    this._patternFill(pb, pats, pfx, this._mapSpatial || []);
     this._patternSync(pb, { pattern: zone.pattern, effect: zone.effect, speed: zone.speed, moving: !STILL.has(zone.effect) });
     body.append(pb);
     const prob = this._el("div", "zprob");
@@ -3444,7 +3584,8 @@ class LightShowStudioPanel extends HTMLElement {
       }
       const z = this._map.zones.find((x) => x.id === id) || zone;
       const msg = { type: `light_show_studio/map/zone/${what}`, zone_id: id };
-      if (what === "start") Object.assign(msg, { pattern: z.pattern, effect: z.effect, speed: z.speed });
+      if (what === "start") Object.assign(msg, { pattern: z.pattern, effect: z.effect, speed: z.speed, transition: this._fade() });
+      if (what === "stop") msg.transition = this._fade();
       if (what === "speed") msg.speed = z.speed;
       await this._hass.callWS(msg);
     } catch (err) {
@@ -4717,6 +4858,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._noLights.hidden = !none;
     this._manage.hidden = none;
     this._scenesEl.hidden = !strands || none;
+    this._renderMyPats();
     if (!strands || none) {
       this._aList.textContent = "";
       this._homeSig = null;
@@ -4768,7 +4910,11 @@ class LightShowStudioPanel extends HTMLElement {
       stop.innerHTML = `${svg(PANEL_ICON.stop, 16)}Stop`;
       stop.hidden = true;
       stop.setAttribute("aria-label", `Stop the pattern in ${g.name}`);
-      acts.append(play, stop);
+      const mus = this._btn("", "playbtn music", () => this._openMusic({ areas: [g.area.id], lights: [] }));
+      mus.innerHTML = `${svg(PANEL_ICON.mic, 16)}Music`;
+      mus.dataset.fk = `music-${g.id}`;
+      mus.setAttribute("aria-label", `Music mode in ${g.name}`);
+      acts.append(play, stop, mus);
       ref.play = play;
       ref.stop = stop;
     }
@@ -4889,7 +5035,7 @@ class LightShowStudioPanel extends HTMLElement {
   async _homeStop(areaId) {
     this._aErr.hidden = true;
     try {
-      await this._hass.callWS({ type: "light_show_studio/map/zone/stop", zone_id: "area:" + areaId });
+      await this._hass.callWS({ type: "light_show_studio/map/zone/stop", zone_id: "area:" + areaId, transition: this._fade() });
       const s = new Set(this._mapRunning || []);
       s.delete("area:" + areaId);
       this._mapRunning = s;
@@ -4904,7 +5050,7 @@ class LightShowStudioPanel extends HTMLElement {
     const box = this._scenesEl;
     const [pats] = this._patternLists();
     const list = LightShowStudioPanel._SCENES.filter((sc) => pats.includes(sc.pattern));
-    const sig = list.map((x) => x.id).join();
+    const sig = list.map((x) => x.id).join() + "|m";
     if (box.dataset.sig === sig) return;
     box.dataset.sig = sig;
     box.textContent = "";
@@ -4917,7 +5063,7 @@ class LightShowStudioPanel extends HTMLElement {
         if (!ids.length) return;
         this._aErr.hidden = true;
         try {
-          await this._hass.callService("light_show_studio", "set_pattern", { pattern: sc.pattern, effect: sc.effect }, { entity_id: ids });
+          await this._hass.callService("light_show_studio", "set_pattern", { pattern: sc.pattern, effect: sc.effect, transition: this._fade() }, { entity_id: ids });
         } catch (err) {
           this._aErr.textContent = this._err(err, "That didn't work.");
           this._aErr.hidden = false;
@@ -4934,6 +5080,11 @@ class LightShowStudioPanel extends HTMLElement {
       b.setAttribute("aria-label", `${sc.label}: ${sc.pattern}, ${sc.effect}, on every light`);
       box.append(b);
     }
+    // music mode (the microphone); more entries can be added here later
+    const mu = this._btn("", "scene music-scene", () => this._openMusic({ areas: [], lights: [] }));
+    mu.innerHTML = `${svg(PANEL_ICON.mic, 14)}Music`;
+    mu.setAttribute("aria-label", "Music mode: lights follow the music");
+    box.append(mu);
   }
 
   // a canvas of a few glowing bulbs sampled from the light's live frame (or its settings while no frame has arrived)
@@ -5019,11 +5170,7 @@ class LightShowStudioPanel extends HTMLElement {
   // colours to show before a frame arrives: the pattern's, the chosen colour, or warm white
   _staticColours(e) {
     const a = e?.attributes || {};
-    if (a.effect === "Pattern" && PATTERN_COLOURS[a.pattern]) {
-      const [cols, width] = PATTERN_COLOURS[a.pattern];
-      if (!cols.length) return [[255, 0, 0], [255, 220, 0], [0, 255, 0], [0, 220, 255], [0, 60, 255], [240, 0, 240]];
-      return cols.flatMap((c) => Array.from({ length: width }, () => c));
-    }
+    if (a.effect === "Pattern" && (PATTERN_COLOURS[a.pattern] || this._userPat(a.pattern))) return this._lookColours(a.pattern);
     if (!a.effect && Array.isArray(a.rgb_color)) return [a.rgb_color];
     return [[255, 196, 107], [255, 217, 160]];
   }
@@ -5198,6 +5345,17 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   _lookColours(pattern) {
+    const u = this._userPat(pattern);
+    if (u) {
+      if (u.kind === "palette") return u.colours.flatMap((c) => Array.from({ length: u.bulbs_per_colour || 1 }, () => c));
+      const out = [];
+      const add = (c) => {
+        if (out.length < 16 && !out.some((x) => x.join() === c.join())) out.push(c);
+      };
+      for (const l of Object.values(u.lights || {})) for (const c of l.colours) add(c);
+      for (const pts of Object.values(u.areas || {})) for (const pt of pts) add(pt.colour);
+      return out.length ? out : [[255, 196, 107]];
+    }
     const p = PATTERN_COLOURS[pattern];
     if (!p) return [[255, 196, 107], [255, 217, 160]];
     if (!p[0].length) return [[255, 0, 0], [255, 220, 0], [0, 255, 0], [0, 220, 255], [0, 60, 255], [240, 0, 240]];
@@ -5541,7 +5699,7 @@ class LightShowStudioPanel extends HTMLElement {
       id: null, name: "", enabled: true, days: [0, 1, 2, 3, 4, 5, 6],
       start: { type: "sunset", time: "18:00", offset_min: 0 },
       end: { type: "time", time: "23:00", offset_min: 0, minutes: 240 },
-      season: false, date_from: "11-25", date_to: "01-06",
+      season: false, date_from: "11-25", date_to: "01-06", fade_in_s: 2, fade_out_s: 2,
       areas: [], lights: [],
       look: { pattern: this._patternLists()[0].includes("Classic Multicolor") ? "Classic Multicolor" : this._patternLists()[0][0], effect: "Steady", speed: 50, brightness: 100 },
     };
@@ -5551,7 +5709,7 @@ class LightShowStudioPanel extends HTMLElement {
     const d = this._lsNew();
     const m = this._map && !this._mapOld ? this._map : null;
     Object.assign(d, {
-      id: s.id, name: s.name, enabled: s.enabled, days: [...s.days],
+      id: s.id, name: s.name, enabled: s.enabled, days: [...s.days], fade_in_s: s.fade_in_s ?? 2, fade_out_s: s.fade_out_s ?? 2,
       start: { type: s.start.type, time: s.start.time || "18:00", offset_min: s.start.offset_min || 0 },
       season: !!(s.date_from && s.date_to), date_from: s.date_from || "11-25", date_to: s.date_to || "01-06",
       areas: (s.targets?.areas || []).map((r) => {
@@ -5753,6 +5911,8 @@ class LightShowStudioPanel extends HTMLElement {
     }
     body.append(this._lsEdge("start", "When on", null, again));
     body.append(this._lsEdge("end", "When off", [["duration", "After"], ["none", "Leave on"]], again));
+    body.append(this._lsFade("fade_in_s", "Fade in"));
+    if (d.end.type !== "none") body.append(this._lsFade("fade_out_s", "Fade out"));
     // repeat
     {
       const sec = this._el("div", "ed-sec");
@@ -5825,6 +5985,12 @@ class LightShowStudioPanel extends HTMLElement {
       for (const p of pats) {
         const b = this._btn("", "patopt", () => {
           d.look.pattern = p;
+          const df = this._patDefaults(p); // a pattern of your own brings its effect and speed
+          if (df) {
+            Object.assign(d.look, df);
+            again();
+            return;
+          }
           grid.querySelectorAll(".patopt").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
           upd();
         });
@@ -5844,7 +6010,7 @@ class LightShowStudioPanel extends HTMLElement {
       for (const n of pfx) {
         const b = this._btn(n, "chip", () => {
           d.look.effect = n;
-          chips.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+          fx.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
           upd();
         });
         if (EFFECT_INFO[n]) b.title = EFFECT_INFO[n];
@@ -5852,6 +6018,27 @@ class LightShowStudioPanel extends HTMLElement {
         chips.append(b);
       }
       fx.append(chips);
+      const mfx = this._mapSpatial || [];
+      if (mfx.length) {
+        const hasArea = d.areas.length > 0;
+        fx.append(this._el("div", "ed-lb", "Map effects"));
+        const mc = this._el("div", "chips");
+        mc.setAttribute("role", "group");
+        mc.setAttribute("aria-label", "Map effects");
+        for (const n of mfx) {
+          const b = this._btn(n, "chip", () => {
+            d.look.effect = n;
+            fx.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+            upd();
+          });
+          b.title = MAP_FX_INFO[n] || "";
+          b.setAttribute("aria-pressed", String(d.look.effect === n));
+          mc.append(b);
+        }
+        fx.append(mc, this._el("div", "ed-hint", hasArea
+          ? "Map effects move through the area in 3D. A single light you pick shows the nearest ordinary effect."
+          : "Map effects need an area target. On a single light they show the nearest ordinary effect."));
+      }
       card.append(fx);
       const rng = (label, key, min, max, ends, fmt) => {
         const w = this._el("div", "rng");
@@ -5930,6 +6117,7 @@ class LightShowStudioPanel extends HTMLElement {
       end: d.end.type === "none" ? null : d.end.type === "duration" ? { type: "duration", minutes: d.end.minutes } : edge(d.end),
       date_from: d.season ? d.date_from : null, date_to: d.season ? d.date_to : null,
       targets: { areas: d.areas, lights: d.lights },
+      fade_in_s: d.fade_in_s, fade_out_s: d.fade_out_s,
       look: { pattern: d.look.pattern, effect: d.look.effect, speed: d.look.speed, brightness: d.look.brightness },
     };
     if (d.id) msg.schedule_id = d.id;
@@ -5964,14 +6152,16 @@ class LightShowStudioPanel extends HTMLElement {
         }
         const g = cv.getContext("2d");
         g.clearRect(0, 0, cv.width, cv.height);
-        const cols = this._lookColours(look.pattern);
+        const cols = look._cols ? look._cols.flatMap((c) => Array.from({ length: look._bpc || 1 }, () => c)) : this._lookColours(look.pattern);
+        const NEAR = { Sweep: "Chase", Rise: "Chase", "Rainbow Wash": "Chase", Ripple: "Wave", Snowfall: "Twinkle", Fireworks: "Sparkle", "Breathe Outward": "Fade" };
+        const eff = NEAR[look.effect] || look.effect;
         const n = Math.max(8, Math.floor(w / 16));
         const t = reduce ? 0 : ((now - t0) / 1000) * (0.4 + (look.speed || 50) / 40);
         const glow = this._dark ? 1.7 : 1;
         const bri = Math.max(0.1, (look.brightness || 100) / 100);
         for (let i = 0; i < n; i++) {
           let c = cols[i % cols.length], k = 1;
-          switch (look.effect) {
+          switch (eff) {
             case "Twinkle": k = 0.35 + 0.65 * Math.pow(Math.sin(t * 1.6 + i * 2.399), 2); break;
             case "Chase": c = cols[((i - Math.floor(t * 3)) % cols.length + cols.length) % cols.length]; break;
             case "Twinkle Swap": k = 0.25 + 0.75 * Math.pow(Math.sin(t * 1.2 + i * 1.7), 2); c = cols[(i + Math.floor(t * 0.7 + i * 0.37)) % cols.length]; break;
@@ -6004,6 +6194,1180 @@ class LightShowStudioPanel extends HTMLElement {
       this._stopPreview = null;
     };
     this._pvRaf = requestAnimationFrame(draw);
+  }
+
+  // --- map effects: direction + centre options -----------------------------------------------------------------------
+  // [x, y] (0-1, y up) of every pixel in the given areas, for the small front views
+  _frontPoints(areaIds) {
+    const out = [];
+    for (const r of this._map?.runs || []) {
+      if (!areaIds.includes(r.area)) continue;
+      const P = LightShowStudioPanel._runPos(r);
+      const step = Math.max(1, Math.ceil(P.length / 300));
+      for (let i = 0; i < P.length; i += step) out.push([P[i][0], P[i][1]]);
+    }
+    return out;
+  }
+
+  // a small 2D front view of an area's mapped positions; tapping calls onTap(x, y) in 0-1 (y up); getMarker() = [x, y] to draw
+  _frontView(areaIds, onTap, getMarker) {
+    const wrap = this._el("div", "fv");
+    const cv = this._el("canvas");
+    cv.setAttribute("role", "img");
+    cv.setAttribute("aria-label", "Front view of the area. Tap to place the centre.");
+    wrap.append(cv);
+    const pts = this._frontPoints(areaIds);
+    const draw = () => {
+      const w = cv.clientWidth, h = cv.clientHeight;
+      if (!w || !h) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+      const g = cv.getContext("2d");
+      g.fillStyle = this._dark ? "#07090D" : "#0F1218";
+      g.fillRect(0, 0, cv.width, cv.height);
+      const X = (x) => (0.06 + 0.88 * x) * cv.width, Y = (y) => (0.94 - 0.88 * y) * cv.height;
+      g.fillStyle = "rgba(160,180,255,.75)";
+      for (const [x, y] of pts) g.fillRect(X(x) - dpr, Y(y) - dpr, 2 * dpr, 2 * dpr);
+      const mk = getMarker && getMarker();
+      if (mk) {
+        g.strokeStyle = "#ffb43c";
+        g.lineWidth = 2 * dpr;
+        g.beginPath();
+        g.arc(X(mk[0]), Y(mk[1]), 9 * dpr, 0, 6.2832);
+        g.moveTo(X(mk[0]) - 14 * dpr, Y(mk[1]));
+        g.lineTo(X(mk[0]) + 14 * dpr, Y(mk[1]));
+        g.moveTo(X(mk[0]), Y(mk[1]) - 14 * dpr);
+        g.lineTo(X(mk[0]), Y(mk[1]) + 14 * dpr);
+        g.stroke();
+      }
+    };
+    cv.onpointerdown = (e) => {
+      const b = cv.getBoundingClientRect();
+      const u = (e.clientX - b.left) / b.width, v = (e.clientY - b.top) / b.height;
+      onTap(Math.min(1, Math.max(0, (u - 0.06) / 0.88)), Math.min(1, Math.max(0, (0.94 - v) / 0.88)));
+      draw();
+    };
+    wrap.redraw = draw;
+    requestAnimationFrame(draw);
+    return wrap;
+  }
+
+  // what a map effect needs besides the pattern: a direction, and for Ripple / Fireworks / Breathe Outward a centre
+  _mapFxOptions(o, areaIds, changed) {
+    const wrap = this._el("div", "fld motion mfxopts");
+    wrap.append(this._el("span", "lb", `Map effect: ${o.effect}`));
+    wrap.append(this._el("div", "muted", MAP_FX_INFO[o.effect] || ""));
+    const chips = this._el("div", "chips");
+    chips.setAttribute("role", "group");
+    chips.setAttribute("aria-label", "Direction");
+    const cur = () => o.axis.preset || (o.axis.centre ? "outward" : "");
+    const centreBox = this._el("div", "mfxc");
+    const holder = [];
+    const drawChips = () => chips.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(cur() === c.dataset.k)));
+    for (const [k, t] of LightShowStudioPanel._DIR_NAMES) {
+      const b = this._btn(t, "chip", () => {
+        o.axis = k === "outward" ? { centre: o.axis.centre || [0.5, 0.5, 0.5], preset: "outward" } : { dir: [...LightShowStudioPanel._DIRS[k]], preset: k };
+        this._mapChanged();
+        drawChips();
+        holder[0]?.redraw();
+        changed();
+      });
+      b.dataset.k = k;
+      chips.append(b);
+    }
+    drawChips();
+    wrap.append(chips);
+    if (CENTRE_FX.has(o.effect) || o.axis.centre) {
+      centreBox.append(this._el("div", "muted", "Tap the view to set the centre."));
+      const fv = this._frontView(areaIds, (x, y) => {
+        o.axis = { centre: [Math.round(x * 100) / 100, Math.round(y * 100) / 100, o.axis.centre?.[2] ?? 0.5], preset: "outward" };
+        this._mapChanged();
+        drawChips();
+        changed();
+      }, () => o.axis.centre && [o.axis.centre[0], o.axis.centre[1]]);
+      holder.push(fv);
+      centreBox.append(fv, this._btn("Centre of the area", "btn alt sm", () => {
+        o.axis = this._normAxis(null);
+        this._mapChanged();
+        drawChips();
+        fv.redraw();
+        changed();
+      }));
+      wrap.append(centreBox);
+    }
+    if (!areaIds.length) wrap.append(this._el("div", "muted", "Add an area or run to this zone to see the map."));
+    return wrap;
+  }
+
+  // --- your own patterns: list, "My patterns" on Areas --------------------------------------------------------------
+  async _loadUserPatterns() {
+    if (!this._hass || this._upOld || this._upLoading) return;
+    this._upLoading = true;
+    try {
+      this._up = await this._hass.callWS({ type: "light_show_studio/patterns/list" });
+      this._upErr = "";
+    } catch (err) {
+      if (err?.code === "unknown_command" || /unknown command/i.test(String(err?.message || err))) this._upOld = true;
+      else this._upErr = this._err(err, "Couldn't load your patterns.");
+    }
+    this._upLoading = false;
+    this._upSig = null;
+    this._renderMyPats();
+    this._homeSig = null;
+    this._renderHome();
+  }
+
+  _renderMyPats() {
+    const box = this._myPats;
+    if (!box) return;
+    const list = this._up?.patterns || [];
+    const sig = JSON.stringify([list, this._upErr, this._upOld, this._isAdmin(), this._upConfirm, !!this._strands?.length]);
+    if (sig === this._upSig) return;
+    this._upSig = sig;
+    box.textContent = "";
+    box.hidden = !!this._upOld || !this._strands?.length;
+    if (box.hidden) return;
+    const admin = this._isAdmin();
+    const head = this._el("div", "ahead");
+    const an = this._el("div", "an");
+    an.append(this._el("h2", "", "My patterns"));
+    const nb = this._btn("", "btn alt sm", () => this._openPainter({}));
+    nb.innerHTML = `${svg(PANEL_ICON.brush, 18)}New pattern`;
+    nb.dataset.fk = "new-pattern";
+    head.append(an, nb);
+    box.append(head);
+    if (this._upErr) box.append(this._el("div", "serr", this._upErr));
+    if (!list.length) box.append(this._el("div", "muted", "Paint your own colours or pixels. They show up after the built-in patterns everywhere you pick one."));
+    const grid = this._el("div", "lcgrid" + (list.length > 1 ? " two" : ""));
+    grid.setAttribute("role", "list");
+    for (const p of list) {
+      const card = this._el("div", "lc mp");
+      card.setAttribute("role", "listitem");
+      const t = this._el("div", "lc-open");
+      t.append(this._el("span", "lc-n", p.name), this._el("span", "lc-s", `${p.kind === "palette" ? "Colours" : "Painted"} · ${p.default_effect} · speed ${p.default_speed}`));
+      card.append(t, this._lookDots(p.name, 8));
+      if (admin) {
+        const acts = this._el("div", "sacts");
+        if (this._upConfirm === p.id) {
+          acts.append(this._el("span", "muted", `Delete "${p.name}"?`), this._btn("Delete", "btn sm warnb", async () => {
+            this._upConfirm = null;
+            try {
+              await this._hass.callWS({ type: "light_show_studio/patterns/delete", pattern_id: p.id });
+            } catch (err) {
+              this._upErr = this._err(err, "Couldn't delete it.");
+            }
+            await this._loadUserPatterns();
+          }), this._btn("Cancel", "btn alt sm", () => {
+            this._upConfirm = null;
+            this._upSig = null;
+            this._renderMyPats();
+          }));
+        } else {
+          const ed = this._btn("Edit", "btn alt sm", () => this._openPainter({ pattern: p }));
+          ed.setAttribute("aria-label", `Edit ${p.name}`);
+          const rn = this._btn("Rename", "btn alt sm", () => this._renamePattern(p));
+          rn.setAttribute("aria-label", `Rename ${p.name}`);
+          const del = this._btn("Delete", "btn alt sm danger", () => {
+            this._upConfirm = p.id;
+            this._upSig = null;
+            this._renderMyPats();
+          });
+          del.setAttribute("aria-label", `Delete ${p.name}`);
+          acts.append(ed, rn, del);
+        }
+        card.append(acts);
+      }
+      grid.append(card);
+    }
+    box.append(grid);
+  }
+
+  async _renamePattern(p) {
+    const n = (window.prompt("Rename the pattern:", p.name) || "").trim();
+    if (!n || n === p.name) return;
+    try {
+      await this._hass.callWS({ type: "light_show_studio/patterns/save", pattern: { ...p, name: n } });
+      this._upErr = "";
+    } catch (err) {
+      this._upErr = this._err(err, "Couldn't rename it.");
+    }
+    await this._loadUserPatterns();
+  }
+
+  // --- pattern painter ------------------------------------------------------------------------------------------------
+  // Palette mode: up to 16 colours and bulbs per colour. Pixels mode: paint a light's bulbs (or an area's mapped points) one by one.
+  // Live preview on the real lights is patterns/preview (the pattern as an object) + patterns/paint (batched, <= 500 per call).
+  _ptArr(entry) {
+    const pt = this._pt;
+    if (!pt.arr[entry]) {
+      const n = (this._strands || []).find((s) => s.entry_id === entry)?.bulbs || 1;
+      const a = new Array(n).fill(null);
+      const src = pt.src.lights?.[entry];
+      if (src) src.colours.forEach((c, i) => {
+        if (src.first + i < n) a[src.first + i] = [...c];
+      });
+      pt.arr[entry] = a;
+    }
+    return pt.arr[entry];
+  }
+
+  _ptPoints(areaId) {
+    const pt = this._pt;
+    if (!pt.pts[areaId]) {
+      let P = [];
+      for (const r of (this._map?.runs || []).filter((x) => x.area === areaId)) for (const q of LightShowStudioPanel._runPos(r)) P.push(q);
+      const step = Math.max(1, Math.ceil(P.length / 2040));
+      P = P.filter((_, i) => i % step === 0).slice(0, 2040);
+      const pts = P.map((q) => ({ pos: q.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 1000)), colour: null }));
+      for (const old of pt.src.areas?.[areaId] || []) {
+        let best = null, bd = 1e12;
+        for (const p of pts) {
+          const d = (p.pos[0] - old.pos[0]) ** 2 + (p.pos[1] - old.pos[1]) ** 2 + (p.pos[2] - old.pos[2]) ** 2;
+          if (d < bd) {
+            bd = d;
+            best = p;
+          }
+        }
+        if (best) best.colour = [...old.colour];
+      }
+      pt.pts[areaId] = pts;
+    }
+    return pt.pts[areaId];
+  }
+
+  // the pattern object as the server wants it
+  _ptObject(forPreview) {
+    const pt = this._pt;
+    const o = { name: pt.name || "Preview", kind: pt.kind, default_effect: pt.effect, default_speed: pt.speed };
+    if (pt.id && !forPreview) o.id = pt.id;
+    if (pt.kind === "palette") {
+      o.colours = pt.colours.map((c) => [...c]);
+      o.bulbs_per_colour = pt.bpc;
+      return o;
+    }
+    o.lights = {};
+    o.areas = {};
+    for (const [entry, arr] of Object.entries(pt.arr)) {
+      const first = arr.findIndex((c) => c);
+      if (first < 0) continue;
+      let last = arr.length - 1;
+      while (!arr[last]) last--;
+      o.lights[entry] = { first, colours: arr.slice(first, last + 1).map((c) => (c ? [...c] : [0, 0, 0])) };
+    }
+    for (const [id, pts] of Object.entries(pt.pts)) {
+      const on = pts.filter((p) => p.colour).map((p) => ({ pos: [...p.pos], colour: [...p.colour] }));
+      if (on.length) o.areas[id] = on;
+    }
+    if (forPreview && !Object.keys(o.lights).length && !Object.keys(o.areas).length) {
+      if (pt.target.type === "light") o.lights[pt.target.id] = { first: 0, colours: [[0, 0, 0]] };
+      else o.areas[pt.target.id] = [{ pos: [500, 500, 500], colour: [0, 0, 0] }];
+    }
+    return o;
+  }
+
+  async _ptPreview() {
+    const pt = this._pt;
+    if (!pt || !pt.target.id) return;
+    const msg = {
+      type: "light_show_studio/patterns/preview", pattern: this._ptObject(true),
+      effect: pt.kind === "pixels" ? "Steady" : pt.effect, speed: pt.speed,
+    };
+    if (pt.target.type === "light") msg.entry_id = pt.target.id;
+    else msg.area = pt.target.id;
+    try {
+      await this._hass.callWS(msg);
+      pt.previewing = true;
+      this._ptSetErr("");
+    } catch (err) {
+      this._ptSetErr(this._err(err, "The preview didn't start."));
+    }
+  }
+
+  _ptPreviewSoon(ms = 250) {
+    clearTimeout(this._ptT);
+    this._ptT = setTimeout(() => this._ptPreview(), ms);
+  }
+
+  // light pixels: queue changes, send them <= 500 at a time, at most ~20 calls a second
+  _ptQueue(entry, list) {
+    const pt = this._pt;
+    pt.q = pt.q || new Map();
+    for (const [i, c] of list) pt.q.set(`${entry}:${i}`, [entry, i, c]);
+    if (pt.qt) return;
+    pt.qt = setTimeout(() => this._ptFlush(), 50);
+  }
+
+  async _ptFlush() {
+    const pt = this._pt;
+    if (!pt) return;
+    pt.qt = null;
+    const items = [...(pt.q || new Map()).values()];
+    pt.q = new Map();
+    if (!items.length) return;
+    if (!pt.previewing) await this._ptPreview();
+    const by = {};
+    for (const [e, i, c] of items) (by[e] = by[e] || []).push([i, ...(c || [0, 0, 0])]);
+    for (const [entry, set] of Object.entries(by)) {
+      for (let k = 0; k < set.length; k += 500) {
+        try {
+          await this._hass.callWS({ type: "light_show_studio/patterns/paint", entry_id: entry, set: set.slice(k, k + 500) });
+        } catch (err) {
+          this._ptSetErr(this._err(err, "Couldn't paint the lights."));
+          pt.previewing = false;
+          return;
+        }
+      }
+    }
+  }
+
+  _ptSetErr(t) {
+    if (this._pt) this._pt.err = t || "";
+    const e = this._sheetBody?.querySelector(".pt-err");
+    if (e) {
+      e.textContent = t || "";
+      e.hidden = !t;
+    }
+  }
+
+  _ptCleanup() {
+    clearTimeout(this._ptT);
+    const pt = this._pt;
+    this._pt = null;
+    if (pt) clearTimeout(pt.qt);
+    if (pt?.previewing) this._hass?.callWS({ type: "light_show_studio/patterns/preview_stop" }).catch(() => {});
+  }
+
+  _openPainter(opts) {
+    const p = opts.pattern;
+    const strands = (this._strands || []).filter((s) => s.entity_id && s.loaded);
+    const area = opts.area || null;
+    const entry = opts.entry || strands[0]?.entry_id || null;
+    this._ptCleanup();
+    this._pt = {
+      id: p?.id || null, name: p?.name || "", kind: p?.kind || "palette", colours: p?.kind === "palette" ? p.colours.map((c) => [...c]) : [[255, 120, 30], [255, 200, 120]],
+      bpc: p?.bulbs_per_colour || 1, src: { lights: p?.lights || {}, areas: p?.areas || {} }, arr: {}, pts: {}, effect: p?.default_effect || "Twinkle", speed: p?.default_speed || 50,
+      target: area ? { type: "area", id: area } : { type: "light", id: entry }, brush: [255, 70, 0], tool: "brush", size: 1, undo: [], err: "", previewing: false,
+    };
+    const pt = this._pt;
+    if (p?.kind === "pixels" && !opts.entry && !area) {
+      const l = Object.keys(p.lights || {})[0], a = Object.keys(p.areas || {})[0];
+      if (l) pt.target = { type: "light", id: l };
+      else if (a) pt.target = { type: "area", id: a };
+    }
+    this._openSheet("paint", p ? "Edit pattern" : "New pattern");
+    this._renderPainter();
+    if (pt.target.id) this._ptPreviewSoon(50);
+  }
+
+  _ptDraw() {
+    const pt = this._pt;
+    const cv = pt?.cv;
+    if (!cv || !cv.isConnected) return;
+    const w = cv.clientWidth;
+    if (!w) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const light = pt.target.type === "light";
+    const g0 = light ? this._ptArr(pt.target.id) : this._ptPoints(pt.target.id);
+    const cell = 16, cols = Math.max(1, Math.floor(w / cell));
+    cv.style.height = (light ? Math.ceil(g0.length / cols) * cell : Math.round(w * 0.75)) + "px";
+    const h = cv.clientHeight;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    const g = cv.getContext("2d");
+    g.fillStyle = this._dark ? "#07090D" : "#0F1218";
+    g.fillRect(0, 0, cv.width, cv.height);
+    const dot = (x, y, r, col, off) => {
+      g.beginPath();
+      g.fillStyle = col ? `rgb(${col.join(",")})` : off;
+      g.shadowColor = col ? `rgb(${col.join(",")})` : "transparent";
+      g.shadowBlur = col ? 6 * dpr : 0;
+      g.arc(x, y, r, 0, 6.2832);
+      g.fill();
+    };
+    if (light) {
+      const c = cell * dpr;
+      g0.forEach((col, i) => dot((i % cols) * c + c / 2, Math.floor(i / cols) * c + c / 2, col ? c * 0.34 : c * 0.2, col, "#2a2f3b"));
+      pt.geo = { cell, cols };
+    } else {
+      const X = (x) => (0.06 + (0.88 * x) / 1000) * cv.width, Y = (y) => (0.94 - (0.88 * y) / 1000) * cv.height;
+      for (const p of g0) dot(X(p.pos[0]), Y(p.pos[1]), (p.colour ? 4 : 2.4) * dpr, p.colour, "#3a4150");
+    }
+    g.shadowBlur = 0;
+  }
+
+  // indices (light) / points (area) under a pointer, within the brush
+  _ptHit(e) {
+    const pt = this._pt, cv = pt.cv, b = cv.getBoundingClientRect();
+    const x = e.clientX - b.left, y = e.clientY - b.top;
+    if (pt.target.type === "light") {
+      if (!pt.geo) this._ptDraw();
+      if (!pt.geo) return [];
+      const { cell, cols } = pt.geo;
+      const n = this._ptArr(pt.target.id).length;
+      const i = Math.floor(y / cell) * cols + Math.floor(x / cell);
+      if (i < 0 || i >= n || x < 0 || x >= cols * cell) return [];
+      const out = [];
+      const r = Math.floor(pt.size / 2);
+      for (let k = i - r; k <= i + r; k++) if (k >= 0 && k < n) out.push(k);
+      return out;
+    }
+    const pts = this._ptPoints(pt.target.id);
+    const u = ((x / b.width - 0.06) / 0.88) * 1000, v = ((0.94 - y / b.height) / 0.88) * 1000;
+    const rad = 28 * pt.size;
+    let best = -1, bd = 1e12;
+    const out = [];
+    pts.forEach((p, i) => {
+      const d = Math.hypot(p.pos[0] - u, p.pos[1] - v);
+      if (d < rad) out.push(i);
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    });
+    return pt.size === 1 ? (bd < 45 ? [best] : []) : out;
+  }
+
+  _ptSnapshot() {
+    const pt = this._pt;
+    pt.undo.push(JSON.stringify([pt.arr, pt.pts]));
+    if (pt.undo.length > 30) pt.undo.shift();
+    if (pt.undoBtn) pt.undoBtn.disabled = false;
+  }
+
+  _ptSet(hits, colour) {
+    const pt = this._pt;
+    if (pt.target.type === "light") {
+      const arr = this._ptArr(pt.target.id), ch = [];
+      for (const i of hits) {
+        const was = arr[i];
+        if ((was && colour && was.join() === colour.join()) || (!was && !colour)) continue;
+        arr[i] = colour ? [...colour] : null;
+        ch.push([i, colour]);
+      }
+      if (ch.length) this._ptQueue(pt.target.id, ch);
+    } else {
+      const pts = this._ptPoints(pt.target.id);
+      for (const i of hits) pts[i].colour = colour ? [...colour] : null;
+      this._ptPreviewSoon(250);
+    }
+    this._ptDraw();
+  }
+
+  _ptTool(e) {
+    const pt = this._pt;
+    const hits = this._ptHit(e);
+    if (!hits.length) return;
+    const light = pt.target.type === "light";
+    if (pt.tool === "pick") {
+      const c = light ? this._ptArr(pt.target.id)[hits[0]] : this._ptPoints(pt.target.id)[hits[0]].colour;
+      if (c) {
+        pt.brush = [...c];
+        this._ptSyncBrush();
+      }
+      pt.tool = "brush";
+      this._ptSyncTools();
+    } else if (pt.tool === "fill") {
+      const i = hits[0];
+      const arr = light ? this._ptArr(pt.target.id).map((c) => (c ? c.join() : "")) : this._ptPoints(pt.target.id).map((p) => (p.colour ? p.colour.join() : ""));
+      const from = arr[i];
+      if (light) {
+        const idx = [i];
+        for (let k = i - 1; k >= 0 && arr[k] === from; k--) idx.push(k);
+        for (let k = i + 1; k < arr.length && arr[k] === from; k++) idx.push(k);
+        this._ptSet(idx, pt.brush);
+      } else this._ptSet(arr.map((_, k) => k).filter((k) => arr[k] === from), pt.brush);
+    } else this._ptSet(hits, pt.brush);
+  }
+
+  _ptSyncTools() {
+    const pt = this._pt;
+    pt.toolBtns?.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.t === pt.tool)));
+  }
+
+  _ptSyncBrush() {
+    const pt = this._pt;
+    const hex = "#" + pt.brush.map((v) => v.toString(16).padStart(2, "0")).join("");
+    if (pt.picker) pt.picker.value = hex;
+    pt.swBtns?.forEach((b) => b.classList.toggle("sel", b.dataset.c === hex));
+  }
+
+  _renderPainter() {
+    const pt = this._pt;
+    if (!pt || this._sheet?.kind !== "paint") return;
+    const body = this._sheetBody, scroll = body.scrollTop;
+    this._stopPreview?.();
+    body.textContent = "";
+    const again = () => {
+      this._renderPainter();
+      this._ptPreviewSoon(150);
+    };
+    const hex = (c) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+    const rgb = (h) => {
+      const n = parseInt(h.slice(1), 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+    };
+    const name = this._el("input", "ed-name");
+    name.type = "text";
+    name.maxLength = 40;
+    name.placeholder = "Name, e.g. Warm porch";
+    name.value = pt.name;
+    name.setAttribute("aria-label", "Pattern name");
+    name.oninput = () => (pt.name = name.value);
+    body.append(name);
+    body.append(this._seg([["palette", "Palette"], ["pixels", "Pixels"]], pt.kind, "How to make the pattern", (v) => {
+      pt.kind = v;
+      again();
+    }));
+    const strands = (this._strands || []).filter((s) => s.entity_id && s.loaded);
+    const areas = (this._map?.areas || []).filter((a) => (this._map.runs || []).some((r) => r.area === a.id));
+    const tsel = this._el("select");
+    tsel.setAttribute("aria-label", "Preview and paint on");
+    for (const s of strands) tsel.append(Object.assign(this._el("option", "", `Light: ${s.title}`), { value: "l:" + s.entry_id }));
+    for (const a of areas) tsel.append(Object.assign(this._el("option", "", `Area: ${a.name}`), { value: "a:" + a.id }));
+    tsel.value = (pt.target.type === "light" ? "l:" : "a:") + pt.target.id;
+    tsel.onchange = () => {
+      pt.target = { type: tsel.value[0] === "l" ? "light" : "area", id: tsel.value.slice(2) };
+      again();
+    };
+    body.append(this._field("Preview on the real lights, and paint on", tsel));
+    const card = this._el("div", "ed-card");
+    const sws = this._el("div", "sws");
+    sws.setAttribute("role", "group");
+    sws.setAttribute("aria-label", "Brush colour");
+    pt.swBtns = [];
+    for (const c of SWATCHES) {
+      const b = this._btn("", "sw", () => {
+        pt.brush = rgb(c);
+        this._ptSyncBrush();
+      });
+      b.style.background = c;
+      b.dataset.c = c;
+      b.setAttribute("aria-label", `Colour ${c}`);
+      pt.swBtns.push(b);
+      sws.append(b);
+    }
+    const picker = Object.assign(this._el("input"), { type: "color", value: hex(pt.brush) });
+    picker.setAttribute("aria-label", "Any colour");
+    picker.oninput = () => {
+      pt.brush = rgb(picker.value);
+      this._ptSyncBrush();
+    };
+    pt.picker = picker;
+    sws.append(picker);
+    card.append(sws);
+    if (pt.kind === "palette") {
+      const row = this._el("div", "chips ptpal");
+      row.setAttribute("role", "list");
+      pt.colours.forEach((c, i) => {
+        const b = this._btn("", "chip ptc", () => {
+          if (pt.colours.length > 1) pt.colours.splice(i, 1);
+          again();
+        });
+        b.setAttribute("role", "listitem");
+        b.setAttribute("aria-label", `Remove colour ${i + 1} (${hex(c)})`);
+        b.innerHTML = `<span class="rsw" style="--c:${hex(c)}"></span>×`;
+        row.append(b);
+      });
+      const add = this._btn("", "btn alt sm", () => {
+        if (pt.colours.length < 16) {
+          pt.colours.push([...pt.brush]);
+          again();
+        }
+      });
+      add.innerHTML = `${svg(PANEL_ICON.add, 18)}Add the brush colour`;
+      add.disabled = pt.colours.length >= 16;
+      card.append(this._el("div", "ed-hint", `${pt.colours.length} of 16 colours. Tap a colour to remove it.`), row, add);
+      const w = this._el("div", "rng");
+      const rl = this._el("div", "rl");
+      const v = this._el("span", "", String(pt.bpc));
+      const lab = this._el("label", "", "Bulbs per colour");
+      lab.htmlFor = "pt-bpc";
+      rl.append(lab, v);
+      const r = this._el("input");
+      Object.assign(r, { type: "range", id: "pt-bpc", min: 1, max: 20, value: pt.bpc });
+      r.oninput = () => {
+        pt.bpc = Number(r.value);
+        v.textContent = pt.bpc;
+        this._ptPreviewSoon(250);
+      };
+      w.append(rl, r);
+      card.append(w);
+      const pv = this._el("div", "pv");
+      pv.append(this._el("canvas"));
+      card.append(pv);
+      this._startPreview(pv.firstChild, () => ({ pattern: "", effect: pt.effect, speed: pt.speed, brightness: 100, _cols: pt.colours, _bpc: pt.bpc }));
+    } else {
+      const tools = this._el("div", "inl ptools");
+      tools.setAttribute("role", "group");
+      tools.setAttribute("aria-label", "Tools");
+      pt.toolBtns = [];
+      for (const [t, label] of [["brush", "Brush"], ["fill", "Bucket fill"], ["pick", "Eyedropper"]]) {
+        const b = this._btn(label, "chip", () => {
+          pt.tool = t;
+          this._ptSyncTools();
+        });
+        b.dataset.t = t;
+        pt.toolBtns.push(b);
+        tools.append(b);
+      }
+      const size = this._el("select");
+      size.setAttribute("aria-label", "Brush size");
+      for (const n of [1, 3, 5, 9]) size.append(Object.assign(this._el("option", "", `Size ${n}`), { value: n }));
+      size.value = pt.size;
+      size.onchange = () => (pt.size = Number(size.value));
+      const undo = this._btn("Undo", "btn alt sm", () => {
+        const snap = pt.undo.pop();
+        if (!snap) return;
+        [pt.arr, pt.pts] = JSON.parse(snap);
+        undo.disabled = !pt.undo.length;
+        if (pt.target.type === "light") {
+          const arr = this._ptArr(pt.target.id);
+          this._ptQueue(pt.target.id, arr.map((c, i) => [i, c]));
+        } else this._ptPreviewSoon(150);
+        this._ptDraw();
+      });
+      undo.disabled = !pt.undo.length;
+      pt.undoBtn = undo;
+      const clear = this._btn("Clear", "btn alt sm", () => {
+        this._ptSnapshot();
+        if (pt.target.type === "light") {
+          const arr = this._ptArr(pt.target.id);
+          this._ptQueue(pt.target.id, arr.map((c, i) => [i, null]).filter((x, i) => arr[i]));
+          arr.fill(null);
+        } else {
+          this._ptPoints(pt.target.id).forEach((p) => (p.colour = null));
+          this._ptPreviewSoon(150);
+        }
+        this._ptDraw();
+      });
+      tools.append(size, undo, clear);
+      card.append(tools);
+      const cv = this._el("canvas", "ptcv");
+      cv.setAttribute("role", "img");
+      cv.setAttribute("aria-label", pt.target.type === "light" ? "The light's bulbs. Tap or drag to paint." : "Front view of the area. Tap or drag to paint.");
+      pt.cv = cv;
+      let down = false;
+      cv.onpointerdown = (e) => {
+        down = true;
+        cv.setPointerCapture?.(e.pointerId);
+        this._ptSnapshot();
+        this._ptTool(e);
+      };
+      cv.onpointermove = (e) => {
+        if (down && pt.tool === "brush") this._ptTool(e);
+      };
+      cv.onpointerup = cv.onpointercancel = () => (down = false);
+      card.append(cv, this._el("div", "ed-hint", pt.target.type === "light" ? "Tap or drag on the bulbs. What you paint shows on the real light as you go." : "Each dot is a pixel at its mapped position. Painted dots colour the pixels nearest to them."));
+      requestAnimationFrame(() => this._ptDraw());
+      this._ptSyncTools();
+    }
+    this._ptSyncBrush();
+    body.append(card);
+    const fx = this._el("div", "ed-card");
+    fx.append(this._el("div", "ed-lb", "Default effect and speed (used when you pick it)"));
+    const chips = this._el("div", "chips");
+    chips.setAttribute("role", "group");
+    chips.setAttribute("aria-label", "Default effect");
+    for (const n of this._up?.effects || Object.keys(EFFECT_INFO)) {
+      const b = this._btn(n, "chip", () => {
+        pt.effect = n;
+        chips.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+        if (pt.kind === "palette") this._ptPreviewSoon(200);
+      });
+      b.setAttribute("aria-pressed", String(pt.effect === n));
+      chips.append(b);
+    }
+    const sp = this._el("div", "rng");
+    const sl = this._el("div", "rl");
+    const sv = this._el("span", "", String(pt.speed));
+    const slab = this._el("label", "", "Speed");
+    slab.htmlFor = "pt-sp";
+    sl.append(slab, sv);
+    const si = this._el("input");
+    Object.assign(si, { type: "range", id: "pt-sp", min: 1, max: 100, value: pt.speed });
+    si.oninput = () => {
+      pt.speed = Number(si.value);
+      sv.textContent = pt.speed;
+      this._ptPreviewSoon(300);
+    };
+    sp.append(sl, si);
+    fx.append(chips, sp);
+    body.append(fx);
+    const err = this._el("div", "serr pt-err", pt.err);
+    err.setAttribute("role", "alert");
+    err.hidden = !pt.err;
+    body.append(err);
+    const foot = this._sheetFoot;
+    foot.hidden = false;
+    foot.textContent = "";
+    const save = this._btn("Save pattern", "btn", () => this._ptSave());
+    save.disabled = !this._isAdmin();
+    save.title = save.disabled ? "Only administrators can save patterns" : "";
+    foot.append(this._btn("Cancel", "btn alt", () => this._closeSheet()), save);
+    body.scrollTop = scroll;
+  }
+
+  async _ptSave() {
+    const pt = this._pt;
+    const o = this._ptObject(false);
+    o.name = pt.name.trim().replace(/\s+/g, " ");
+    if (!o.name) return this._ptSetErr("Give the pattern a name.");
+    if (o.name.length > 40) return this._ptSetErr("The name can be 40 characters at most.");
+    if (pt.kind === "pixels" && !Object.keys(o.lights).length && !Object.keys(o.areas).length) return this._ptSetErr("Paint at least one bulb first.");
+    try {
+      await this._hass.callWS({ type: "light_show_studio/patterns/save", pattern: o });
+    } catch (err) {
+      return this._ptSetErr(this._err(err, "Couldn't save the pattern."));
+    }
+    this._closeSheet();
+    this._loadUserPatterns();
+  }
+
+  // --- music mode ------------------------------------------------------------------------------------------------------
+  // The phone listens (Web Audio) and sends level / bass / mid / treble / beat / bpm about 25 times a second (music/frame).
+  // Needs the microphone, so a secure context (https or the HA app).
+  _musicOk() {
+    return !!(window.isSecureContext && navigator.mediaDevices?.getUserMedia && (window.AudioContext || window.webkitAudioContext));
+  }
+
+  _musicTargets() {
+    const m = this._mu;
+    return { lights: [...m.lights], areas: [...m.areas] };
+  }
+
+  _musicEntities() {
+    const m = this._mu;
+    const entries = new Set(m.lights);
+    for (const a of m.areas) for (const r of this._map?.runs || []) if (r.area === a) entries.add(r.entry_id);
+    return [...entries].map((id) => (this._strands || []).find((s) => s.entry_id === id)).filter((s) => s && s.entity_id);
+  }
+
+  _openMusic(pre = {}) {
+    if (!this._mu) {
+      const pats = this._patternLists()[0];
+      this._mu = { areas: [], lights: [], pattern: pats.includes("Classic Multicolor") ? "Classic Multicolor" : pats[0], effect: "Pulse", sensitivity: 50 };
+    }
+    const m = this._mu;
+    if (!this._musicRunning && (pre.areas || pre.lights)) {
+      m.areas = pre.areas || [];
+      m.lights = pre.lights || [];
+    }
+    if (!this._map) this._loadMap();
+    this._openSheet("music", "Music");
+    this._renderMusic();
+    this._syncWatch();
+  }
+
+  _renderMusic() {
+    if (this._sheet?.kind !== "music") return;
+    const m = this._mu, body = this._sheetBody, scroll = body.scrollTop;
+    body.textContent = "";
+    this._muRefs = null;
+    if (!this._musicOk()) {
+      const n = this._el("div", "box notice mu-note");
+      n.setAttribute("role", "status");
+      n.append(this._el("strong", "", "Music mode needs the microphone"), this._el("div", "muted", window.isSecureContext
+        ? "This browser can't use the microphone here."
+        : "Browsers only allow the microphone on secure (https) pages. Open Home Assistant with its https address (Nabu Casa or your own certificate), or use the Home Assistant app, then come back."));
+      body.append(n);
+      return;
+    }
+    const run = !!this._musicRunning;
+    const again = () => {
+      this._renderMusic();
+      if (this._musicRunning) this._musicRestartSoon();
+    };
+    // targets
+    {
+      const sec = this._el("div", "ed-sec");
+      const count = m.areas.length + m.lights.length;
+      const lb = this._el("div", "ed-lb");
+      lb.append(this._el("span", "", "Lights"), this._el("em", "", count ? `${count} selected` : "pick at least one"));
+      const card = this._el("div", "ed-card");
+      const chips = this._el("div", "chips");
+      chips.setAttribute("role", "group");
+      chips.setAttribute("aria-label", "Areas");
+      for (const a of this._map?.areas || []) {
+        if (!(this._map.runs || []).some((r) => r.area === a.id)) continue;
+        const b = this._btn(a.name, "chip", () => {
+          m.areas = m.areas.includes(a.id) ? m.areas.filter((x) => x !== a.id) : [...m.areas, a.id];
+          again();
+        });
+        b.setAttribute("aria-pressed", String(m.areas.includes(a.id)));
+        chips.append(b);
+      }
+      const all = this._btn("Everything", "chip", () => {
+        const ids = (this._map?.areas || []).filter((a) => this._map.runs.some((r) => r.area === a.id)).map((a) => a.id);
+        const inMap = new Set(this._map?.runs.map((r) => r.entry_id));
+        m.areas = ids;
+        m.lights = (this._strands || []).filter((s) => s.entity_id && !inMap.has(s.entry_id)).map((s) => s.entry_id);
+        again();
+      });
+      chips.append(all);
+      card.append(chips);
+      const det = this._el("details", "spk");
+      det.append(this._el("summary", "", "or pick lights"));
+      const lst = this._el("div", "ed-lights");
+      for (const s of (this._strands || []).filter((x) => x.entity_id)) {
+        const lab = this._el("label", "chk");
+        const cb = this._el("input");
+        cb.type = "checkbox";
+        cb.checked = m.lights.includes(s.entry_id);
+        cb.onchange = () => {
+          m.lights = m.lights.filter((x) => x !== s.entry_id);
+          if (cb.checked) m.lights.push(s.entry_id);
+          again();
+        };
+        lab.append(cb, this._el("span", "", s.title));
+        lst.append(lab);
+      }
+      det.append(lst);
+      det.open = m.lights.length > 0;
+      card.append(det);
+      sec.append(lb, card);
+      body.append(sec);
+    }
+    // pattern + effect + sensitivity
+    {
+      const card = this._el("div", "ed-card");
+      card.append(this._el("div", "ed-lb", "Pattern"));
+      const grid = this._el("div", "pats");
+      grid.setAttribute("role", "radiogroup");
+      grid.setAttribute("aria-label", "Pattern");
+      for (const p of this._patternLists()[0]) {
+        const b = this._btn("", "patopt", () => {
+          m.pattern = p;
+          grid.querySelectorAll(".patopt").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+          if (this._musicRunning) this._musicRestartSoon();
+        });
+        b.setAttribute("role", "radio");
+        b.setAttribute("aria-checked", String(m.pattern === p));
+        const dots = this._dots(p);
+        if (dots.style.display === "none") dots.classList.add("none");
+        b.append(dots, document.createTextNode(p));
+        grid.append(b);
+      }
+      card.append(grid, this._el("div", "ed-lb", "How the lights move"));
+      const chips = this._el("div", "chips");
+      chips.setAttribute("role", "group");
+      chips.setAttribute("aria-label", "Music effect");
+      const INFO = { Pulse: "Brightness follows the volume, with a kick on each beat", "Beat Chase": "The pattern steps along on every beat", Spectrum: "Bass, mids and treble light different parts", Flash: "Each beat flashes the lights" };
+      for (const n of MUSIC_FX) {
+        const b = this._btn(n, "chip", () => {
+          m.effect = n;
+          chips.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+          fxd.textContent = INFO[n];
+          if (this._musicRunning) this._musicRestartSoon();
+        });
+        b.title = INFO[n];
+        b.setAttribute("aria-pressed", String(m.effect === n));
+        chips.append(b);
+      }
+      const fxd = this._el("div", "ed-hint", INFO[m.effect]);
+      fxd.setAttribute("aria-live", "polite");
+      card.append(chips, fxd);
+      const w = this._el("div", "rng");
+      const rl = this._el("div", "rl");
+      const v = this._el("span", "", `${m.sensitivity}`);
+      const lab = this._el("label", "", "Sensitivity");
+      lab.htmlFor = "mu-sens";
+      rl.append(lab, v);
+      const r = this._el("input");
+      Object.assign(r, { type: "range", id: "mu-sens", min: 1, max: 100, value: m.sensitivity });
+      r.oninput = () => {
+        m.sensitivity = Number(r.value);
+        v.textContent = m.sensitivity;
+        if (this._musicRunning) this._musicRestartSoon(400);
+      };
+      const en = this._el("div", "ends");
+      en.append(this._el("span", "", "Calm"), this._el("span", "", "Normal is 50"), this._el("span", "", "Wild"));
+      w.append(rl, r, en);
+      card.append(w);
+      // hook: later work adds more music options here
+      const hook = this._el("div", "hook");
+      hook.dataset.hook = "music-extra";
+      hook.hidden = true;
+      card.append(hook);
+      body.append(card);
+    }
+    // meters + glow
+    const live = this._el("div", "ed-card mu-live");
+    const meters = this._el("div", "mu-meters");
+    const refs = { bars: {}, beat: null, bpm: null, status: null };
+    for (const [k, t] of [["level", "Level"], ["bass", "Bass"], ["mid", "Mid"], ["treble", "Treble"]]) {
+      const row = this._el("div", "mu-row");
+      const bar = this._el("div", "mu-bar");
+      bar.setAttribute("role", "meter");
+      bar.setAttribute("aria-label", t);
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
+      bar.setAttribute("aria-valuenow", "0");
+      const i = document.createElement("i");
+      bar.append(i);
+      row.append(this._el("span", "", t), bar);
+      refs.bars[k] = { bar, i };
+      meters.append(row);
+    }
+    const beat = this._el("div", "mu-beatrow");
+    refs.beat = this._el("span", "mu-beat");
+    refs.beat.setAttribute("aria-hidden", "true");
+    refs.bpm = this._el("span", "muted", "");
+    refs.status = this._el("span", "muted");
+    refs.status.setAttribute("role", "status");
+    refs.status.setAttribute("aria-live", "polite");
+    beat.append(refs.beat, this._el("span", "", "Beat"), refs.bpm);
+    live.append(meters, beat, refs.status);
+    const ents = this._musicEntities().slice(0, 6);
+    if (ents.length) {
+      const gl = this._el("div", "mu-glow");
+      for (const s of ents) {
+        const cv = this._el("canvas", "glow");
+        cv.dataset.e = s.entity_id;
+        cv.setAttribute("aria-hidden", "true");
+        this._glowEls.add(cv);
+        gl.append(cv);
+      }
+      live.append(gl);
+    }
+    this._muRefs = refs;
+    body.append(live);
+    const err = this._el("div", "serr mu-err", this._musicErrText || "");
+    err.setAttribute("role", "alert");
+    err.hidden = !this._musicErrText;
+    body.append(err);
+    const foot = this._sheetFoot;
+    foot.hidden = false;
+    foot.textContent = "";
+    const go = this._btn("", "btn " + (run ? "warnb" : ""), () => (this._musicRunning ? this._musicStop() : this._musicStart()));
+    go.className = "btn mu-go" + (run ? " warnb" : "");
+    go.innerHTML = run ? `${svg(PANEL_ICON.stop, 18)}Stop music` : `${svg(PANEL_ICON.mic, 18)}Start listening`;
+    go.disabled = !m.areas.length && !m.lights.length;
+    foot.append(go);
+    this._muRefs.go = go;
+    this._musicPaint({ level: 0, bass: 0, mid: 0, treble: 0, beat: false });
+    refs.status.textContent = run ? "Listening" : "Not listening";
+    body.scrollTop = scroll;
+    requestAnimationFrame(() => this._drawStrips());
+  }
+
+  _musicErr(t) {
+    this._musicErrText = t || "";
+    const e = this._sheetBody?.querySelector(".mu-err");
+    if (e) {
+      e.textContent = this._musicErrText;
+      e.hidden = !t;
+    }
+  }
+
+  async _musicSession() {
+    const m = this._mu;
+    const r = await this._hass.callWS({
+      type: "light_show_studio/music/start", targets: this._musicTargets(), pattern: m.pattern, effect: m.effect, sensitivity: m.sensitivity,
+    });
+    return r;
+  }
+
+  async _musicStart() {
+    const m = this._mu;
+    if (this._musicRunning || this._musicStarting) return;
+    this._musicStarting = true;
+    this._musicErr("");
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    } catch (err) {
+      this._musicStarting = false;
+      this._musicErr(err?.name === "NotAllowedError" ? "The microphone is blocked. Allow it for this page in the browser's site settings, then try again." : "Couldn't open the microphone.");
+      return;
+    }
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AC();
+      await ctx.resume?.();
+      const an = ctx.createAnalyser();
+      an.fftSize = 1024;
+      an.smoothingTimeConstant = 0.4;
+      ctx.createMediaStreamSource(stream).connect(an);
+      this._mAudio = {
+        stream, ctx, an, freq: new Uint8Array(an.frequencyBinCount), time: new Uint8Array(an.fftSize),
+        peak: { level: 0.05, bass: 0.05, mid: 0.05, treble: 0.05 }, hist: [], last: 0, ibi: [], bpm: 0, prevE: 0, back: 0,
+      };
+      await this._musicSession();
+    } catch (err) {
+      this._musicStarting = false;
+      this._musicTeardown();
+      this._musicErr(this._err(err, "Couldn't start music mode."));
+      return;
+    }
+    this._musicStarting = false;
+    this._musicRunning = true;
+    try {
+      this._wake = (await navigator.wakeLock?.request("screen")) || null;
+    } catch (e) {
+      this._wake = null;
+    }
+    clearInterval(this._mTimer);
+    this._mTimer = setInterval(() => this._musicTick(), 40);
+    this._renderMusic();
+    void m;
+  }
+
+  _musicRestartSoon(ms = 250) {
+    clearTimeout(this._mRs);
+    this._mRs = setTimeout(async () => {
+      if (!this._musicRunning) return;
+      if (!this._mu.areas.length && !this._mu.lights.length) return this._musicStop();
+      try {
+        await this._musicSession();
+        this._musicErr("");
+      } catch (err) {
+        this._musicErr(this._err(err, "Couldn't change music mode."));
+      }
+    }, ms);
+  }
+
+  _musicTick() {
+    const a = this._mAudio;
+    if (!a || !this._musicRunning) return;
+    const now = performance.now();
+    a.an.getByteFrequencyData(a.freq);
+    a.an.getByteTimeDomainData(a.time);
+    let s = 0;
+    for (const v of a.time) {
+      const d = (v - 128) / 128;
+      s += d * d;
+    }
+    const bw = a.ctx.sampleRate / a.an.fftSize;
+    const band = (lo, hi) => {
+      const i0 = Math.max(1, Math.floor(lo / bw)), i1 = Math.min(a.freq.length - 1, Math.max(i0, Math.ceil(hi / bw)));
+      let t = 0;
+      for (let i = i0; i <= i1; i++) t += a.freq[i];
+      return t / (i1 - i0 + 1) / 255;
+    };
+    const raw = { level: Math.sqrt(s / a.time.length) * 2, bass: band(20, 150), mid: band(150, 2000), treble: band(2000, 10000) };
+    const f = { level: 0, bass: 0, mid: 0, treble: 0 };
+    for (const k of Object.keys(f)) {
+      a.peak[k] = Math.max(raw[k], a.peak[k] * 0.995, 0.03); // auto-gain: scale by a slowly falling peak
+      f[k] = Math.min(1, raw[k] / a.peak[k]);
+    }
+    // onsets: low-frequency energy against its running average, at most one per 250 ms
+    const e = raw.bass + 0.5 * raw.mid;
+    const avg = a.hist.length ? a.hist.reduce((x, y) => x + y, 0) / a.hist.length : e;
+    a.hist.push(e);
+    if (a.hist.length > 43) a.hist.shift();
+    let beat = false;
+    if (e > avg * 1.35 + 0.02 && e > a.prevE && now - a.last > 250) {
+      beat = true;
+      if (a.last && now - a.last < 2000) {
+        a.ibi.push(now - a.last);
+        if (a.ibi.length > 8) a.ibi.shift();
+        const sorted = [...a.ibi].sort((x, y) => x - y);
+        const bpm = 60000 / sorted[Math.floor(sorted.length / 2)];
+        a.bpm = bpm >= 30 && bpm <= 300 ? Math.round(bpm) : 0;
+      }
+      a.last = now;
+    }
+    a.prevE = e;
+    this._musicPaint({ ...f, beat, bpm: a.bpm });
+    if (now < a.back) return; // rate limited: wait
+    const msg = { type: "light_show_studio/music/frame", targets: this._musicTargets(), level: +f.level.toFixed(3), bass: +f.bass.toFixed(3), mid: +f.mid.toFixed(3), treble: +f.treble.toFixed(3), beat };
+    if (a.bpm) msg.bpm = a.bpm;
+    this._hass.connection.sendMessagePromise(msg).catch((err) => {
+      if (err?.code === "rate_limited") a.back = performance.now() + 600;
+      else if (err?.code === "not_found" && this._musicRunning && performance.now() > (a.restartAt || 0)) {
+        a.restartAt = performance.now() + 1500; // the session ended (someone changed the light): start again
+        this._musicSession().catch((e) => this._musicErr(this._err(e, "Music mode stopped.")));
+      }
+    });
+  }
+
+  _musicPaint(f) {
+    const r = this._muRefs;
+    if (!r) return;
+    for (const k of Object.keys(r.bars)) {
+      const v = Math.round((f[k] || 0) * 100);
+      r.bars[k].i.style.width = v + "%";
+      r.bars[k].bar.setAttribute("aria-valuenow", String(v));
+    }
+    if (f.beat) {
+      r.beat.classList.add("on");
+      clearTimeout(this._beatT);
+      this._beatT = setTimeout(() => r.beat.classList.remove("on"), 110);
+    }
+    if (f.bpm !== undefined) r.bpm.textContent = f.bpm ? `${f.bpm} bpm` : "";
+  }
+
+  _musicTeardown() {
+    clearInterval(this._mTimer);
+    clearTimeout(this._mRs);
+    const a = this._mAudio;
+    this._mAudio = null;
+    try {
+      a?.stream.getTracks().forEach((t) => t.stop());
+      a?.ctx.close();
+    } catch (e) {
+      /* already closed */
+    }
+    try {
+      this._wake?.release();
+    } catch (e) {
+      /* already released */
+    }
+    this._wake = null;
+  }
+
+  async _musicStop(quiet) {
+    const was = this._musicRunning;
+    this._musicRunning = false;
+    this._musicTeardown();
+    if (was) this._hass?.callWS({ type: "light_show_studio/music/stop" }).catch(() => {});
+    if (!quiet && this._sheet?.kind === "music") this._renderMusic();
+  }
+
+  // --- fades ---------------------------------------------------------------------------------------------------------
+  static _FADES = [[0, "Off"], [2, "2 s"], [30, "30 s"], [120, "2 min"], [600, "10 min"]];
+
+  static _fadeText(s) {
+    s = Number(s) || 0;
+    if (!s) return "Off";
+    if (s < 60) return `${+s.toFixed(1)} s`;
+    return `${Math.floor(s / 60)} min${s % 60 ? ` ${Math.round(s % 60)} s` : ""}`;
+  }
+
+  // "Fade in" / "Fade out" for a light schedule: friendly presets and an exact value, 0 s to 30 min
+  _lsFade(key, label) {
+    const d = this._lsDraft;
+    const sec = this._el("div", "ed-sec");
+    sec.append(this._el("div", "ed-lb", label));
+    const card = this._el("div", "ed-card");
+    const chips = this._el("div", "chips");
+    chips.setAttribute("role", "group");
+    chips.setAttribute("aria-label", label);
+    const num = this._el("input");
+    const sync = () => chips.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(Number(c.dataset.s) === d[key])));
+    for (const [v, t] of LightShowStudioPanel._FADES) {
+      const b = this._btn(t, "chip", () => {
+        d[key] = v;
+        num.value = v;
+        sync();
+      });
+      b.dataset.s = v;
+      chips.append(b);
+    }
+    Object.assign(num, { type: "number", min: 0, max: 1800, step: 1, value: d[key] });
+    num.setAttribute("aria-label", `${label} in seconds`);
+    num.oninput = () => {
+      const v = Number(num.value);
+      d[key] = Number.isFinite(v) ? Math.min(1800, Math.max(0, v)) : 0;
+      sync();
+    };
+    sync();
+    const row = this._el("div", "ed-row");
+    row.append(num, this._el("span", "ed-hint", "seconds (up to 1800 = 30 min)"));
+    card.append(chips, row);
+    sec.append(card);
+    return sec;
   }
 
   // --- live updates ------------------------------------------------------
