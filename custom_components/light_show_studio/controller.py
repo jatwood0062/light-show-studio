@@ -201,17 +201,26 @@ class C9Controller:
             self._resume_handle = self.hass.loop.call_later(delay, _go)
 
     async def _animate(self) -> None:
-        # effect time runs at the speed setting; accumulating it lets the speed change smoothly mid-effect
-        # staying on Pattern (new colours or motion) keeps the clock running, so nothing jumps
-        t = self._fx_t if self.effect == PATTERN and self._fx_effect == PATTERN else 0.0
-        self._fx_effect, last = self.effect, time.monotonic()
+        # Effect time runs at the speed setting; accumulating it lets the speed change smoothly mid-effect.
+        # Re-rendering the same effect (or changing a Pattern's colours or motion) keeps the clock running, so
+        # nothing jumps back to the start.
+        t = self._fx_t if self.effect == self._fx_effect else 0.0
+        self._fx_effect = self.effect
+        step = 1 / FPS
+        last = due = time.monotonic()
         while True:
             now = time.monotonic()
-            t += (now - last) * patterns.speed_factor(self.speed)
+            t += min(now - last, 0.25) * patterns.speed_factor(self.speed)  # a long stall doesn't leap ahead
             last = now
             self._fx_t = t
             self._send_frame(self._base_frame(t))
-            await asyncio.sleep(1 / FPS)
+            # frames on a fixed beat: sleep to the next due time, not a fixed gap after the work (which drifts
+            # and makes the motion uneven); if we fell behind, start the beat again from now
+            due += step
+            wait = due - time.monotonic()
+            if wait < -step:
+                due, wait = time.monotonic(), 0.0
+            await asyncio.sleep(max(0.0, wait))
 
     def _stop_animation(self) -> None:
         if self._task:
@@ -268,6 +277,9 @@ class C9Controller:
         elif effect is not None:
             valid = effect in EFFECTS or effect == PATTERN
             self.effect, self.custom, self.show_mode = (effect if valid else None), False, False
+        if colour is None and effect is None and self._task is not None and not self._task.done():
+            self._notify()  # brightness only, or "on" again: the running effect picks it up next frame; don't restart it
+            return
         self._render()
         self._notify()
 
