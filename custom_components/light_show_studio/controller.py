@@ -9,6 +9,8 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import DOMAIN, EXTERNAL_MAX_FPS, FLUSH_DELAY, FPS, WHOLE_LIGHT_FPS
 from .effects import ANIMATED, EFFECTS
+from . import patterns
+from .patterns import PATTERN
 from .hosts import valid_ipv4
 from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
 
@@ -45,6 +47,9 @@ class C9Controller:
         self.brightness = 255
         self.colour: Colour = (255, 150, 40)
         self.effect: str | None = None
+        self.pattern = patterns.DEFAULT_PATTERN
+        self.pattern_effect = patterns.DEFAULT_EFFECT
+        self.speed = patterns.DEFAULT_SPEED  # 1-100, scales every animated effect
         self.show_mode = True  # accept sequencer frames; picking a colour or effect turns it off
         self.custom = False  # True once single bulbs have been set
         self.bulb_colour: list[Colour] = [self.colour] * bulbs
@@ -118,6 +123,8 @@ class C9Controller:
 
     # --- rendering -------------------------------------------------------
     def _base_frame(self, t: float) -> list[Colour]:
+        if self.effect == PATTERN:
+            return patterns.render(self.pattern, self.pattern_effect, t, self.bulbs)
         if self.effect in EFFECTS:
             return EFFECTS[self.effect](t, self.bulbs, self.colour)
         if self.custom:
@@ -165,15 +172,19 @@ class C9Controller:
         self._stop_animation()
         if not self.is_on or self.show_mode:
             return  # in show mode the sequencer's frames are the picture
-        if self.effect in ANIMATED:
+        if self.effect in ANIMATED or (self.effect == PATTERN and patterns.is_animated(self.pattern_effect)):
             self._task = self.hass.async_create_background_task(self._animate(), "light_show_studio effect")
         else:
             self._send_frame(self._base_frame(0))
 
     async def _animate(self) -> None:
-        start = time.monotonic()
+        # effect time runs at the speed setting; accumulating it lets the speed change smoothly mid-effect
+        t, last = 0.0, time.monotonic()
         while True:
-            self._send_frame(self._base_frame(time.monotonic() - start))
+            now = time.monotonic()
+            t += (now - last) * patterns.speed_factor(self.speed)
+            last = now
+            self._send_frame(self._base_frame(t))
             await asyncio.sleep(1 / FPS)
 
     def _stop_animation(self) -> None:
@@ -221,9 +232,26 @@ class C9Controller:
         if effect == SHOW:
             self.enable_show()
         elif effect is not None:
-            self.effect, self.custom, self.show_mode = (effect if effect in EFFECTS else None), False, False
+            valid = effect in EFFECTS or effect == PATTERN
+            self.effect, self.custom, self.show_mode = (effect if valid else None), False, False
         self._render()
         self._notify()
+
+    async def async_set_pattern(self, pattern: str | None = None, effect: str | None = None,
+                                speed: int | None = None) -> None:
+        """Pick a pattern and/or how it moves (turning the light on to show it), and/or the speed.
+
+        Speed alone just changes the speed of whatever effect is running."""
+        if pattern is not None:
+            self.pattern = pattern if pattern in patterns.PATTERNS else patterns.DEFAULT_PATTERN
+        if effect is not None:
+            self.pattern_effect = effect if effect in patterns.PATTERN_EFFECTS else patterns.DEFAULT_EFFECT
+        if speed is not None:
+            self.speed = max(1, min(100, int(speed)))
+        if pattern is None and effect is None:
+            self._notify()  # the running animation picks the new speed up on its next frame
+            return
+        await self.async_turn_on(effect=PATTERN)
 
     async def async_turn_off(self) -> None:
         self._stop_animation()

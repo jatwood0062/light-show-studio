@@ -14,6 +14,52 @@ set_pixels:
       selector:
         boolean:
 
+set_pattern:
+  target:
+    entity:
+      integration: light_show_studio
+      domain: light
+  fields:
+    pattern:
+      example: Classic Multicolor
+      selector:
+        select:
+          options:
+            - "Classic Multicolor"
+            - "Warm White"
+            - "Cool White"
+            - "Red & Green"
+            - "Red, Green & White"
+            - "Candy Cane"
+            - "Blue & White"
+            - "Gold & White"
+            - "Pastel"
+            - "Halloween"
+            - "Red, White & Blue"
+            - "Valentine"
+            - "Rainbow"
+    effect:
+      example: Twinkle
+      selector:
+        select:
+          options:
+            - "Steady"
+            - "Twinkle"
+            - "Chase"
+            - "Twinkle Swap"
+            - "Marquee"
+            - "Fade"
+            - "Sparkle"
+            - "Alternate"
+            - "Wave"
+    speed:
+      example: 50
+      selector:
+        number:
+          min: 1
+          max: 100
+          mode: slider
+
 play_sequence:
   fields:
     file:

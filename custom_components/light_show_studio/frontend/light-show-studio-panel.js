@@ -682,6 +682,12 @@ class LightShowStudioPanel extends HTMLElement {
           </div>
           <div class="sws" role="group" aria-label="Colour"></div>
         </div>
+        <div class="box st-pat"><h2>Pattern</h2>
+          <div class="grp"><h3>1. Pick a pattern</h3><div class="chips pat-chips"></div></div>
+          <div class="grp"><h3>2. Pick an effect</h3><div class="chips pfx-chips"></div></div>
+          <div class="grp"><h3>Speed (every effect)</h3>
+            <label class="bri spd">Slow<input class="sps" type="range" min="1" max="100" step="1" aria-label="Effect speed">Fast<span class="sv"></span></label></div>
+        </div>
         <div class="box st-fx"><h2>Effects</h2><div class="groups"></div></div>
         <form class="box st-set edit" novalidate>
           <h2 style="flex:1 0 100%;margin:0">Settings</h2>
@@ -707,7 +713,7 @@ class LightShowStudioPanel extends HTMLElement {
       sws: q(".sws"), groups: q(".groups"), fx: q(".st-fx"), ctl: q(".st-ctl"), form: q(".st-set"), err: q(".st-err"),
       nm: q(".f-nm"), ip: q(".f-ip"), st: q(".f-st"), bl: q(".f-bl"), liveTxt: q(".st-set .live"),
       use: q(".use"), warns: q(".warns"), ferr: q(".st-set .serr"), save: q(".save"), reset: q(".reset"),
-      rm: q(".rm"),
+      rm: q(".rm"), pat: q(".st-pat"), patChips: q(".pat-chips"), pfxChips: q(".pfx-chips"), sps: q(".sps"), sv: q(".sv"),
     };
     const st = this._st;
     st.rm.onclick = () => this._studioRemove();
@@ -725,6 +731,15 @@ class LightShowStudioPanel extends HTMLElement {
       st.bv.textContent = Math.round((st.brs.value / 255) * 100) + "%";
       clearTimeout(this._briT);
       this._briT = setTimeout(() => this._svc("turn_on", { brightness: Number(st.brs.value) }), 150);
+    };
+    st.sps.oninput = () => {
+      st.sv.textContent = st.sps.value;
+      clearTimeout(this._spdT);
+      this._spdT = setTimeout(() => this._pattern({ speed: Number(st.sps.value) }), 150);
+    };
+    st.sps.onchange = () => {
+      clearTimeout(this._spdT);
+      this._pattern({ speed: Number(st.sps.value) });
     };
     st.brs.onchange = () => {
       clearTimeout(this._briT);
@@ -778,6 +793,17 @@ class LightShowStudioPanel extends HTMLElement {
     if (!s?.entity_id || !this._hass) return;
     try {
       await this._hass.callService("light", service, { entity_id: s.entity_id, ...data });
+      this._studioError("");
+    } catch (err) {
+      this._studioError((typeof err === "string" ? err : err?.message) || "That didn't work.");
+    }
+  }
+
+  async _pattern(data) {
+    const s = this._currentStrand();
+    if (!s?.entity_id || !this._hass) return;
+    try {
+      await this._hass.callService("light_show_studio", "set_pattern", data, { entity_id: s.entity_id });
       this._studioError("");
     } catch (err) {
       this._studioError((typeof err === "string" ? err : err?.message) || "That didn't work.");
@@ -974,6 +1000,32 @@ class LightShowStudioPanel extends HTMLElement {
     const hex = rgb ? "#" + rgb.map((v) => v.toString(16).padStart(2, "0")).join("") : "";
     st.sws.querySelectorAll(".sw").forEach((b) => b.classList.toggle("sel", !!hex && b.dataset.c === hex));
     if (hex && this._root.getRootNode().activeElement !== this._picker) this._picker.value = hex;
+    // pattern + pattern effect + speed
+    st.pat.classList.toggle("ctl-off", !usable);
+    const pats = Array.isArray(a.pattern_list) ? a.pattern_list : [];
+    const pfx = Array.isArray(a.pattern_effect_list) ? a.pattern_effect_list : [];
+    st.pat.hidden = !pats.length && !this._patSig;  // older integration without patterns
+    const psig = pats.join("|") + "#" + pfx.join("|");
+    if (psig !== this._patSig && pats.length) {
+      this._patSig = psig;
+      const fill = (row, names, key) => {
+        row.textContent = "";
+        for (const n of names) {
+          const b = this._el("button", "chip", n);
+          b.type = "button";
+          b.dataset.v = n;
+          b.onclick = () => this._pattern({ [key]: n });
+          row.append(b);
+        }
+      };
+      fill(st.patChips, pats, "pattern");
+      fill(st.pfxChips, pfx, "effect");
+    }
+    const patOn = on && effect === "Pattern";
+    st.patChips.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(patOn && a.pattern === b.dataset.v)));
+    st.pfxChips.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(patOn && a.pattern_effect === b.dataset.v)));
+    if (this._root.getRootNode().activeElement !== st.sps && a.speed != null) st.sps.value = a.speed;
+    st.sv.textContent = st.sps.value;
     // effect chips
     const list = Array.isArray(a.effect_list) ? a.effect_list : [];
     const sig = list.join("|");
@@ -997,7 +1049,7 @@ class LightShowStudioPanel extends HTMLElement {
       };
       group("Show", list.filter((n) => n === SHOW));
       group("Seasonal", list.filter((n) => n !== SHOW && SEASONAL.test(n)));
-      group("More effects", list.filter((n) => n !== SHOW && !SEASONAL.test(n)));
+      group("More effects", list.filter((n) => n !== SHOW && n !== "Pattern" && !SEASONAL.test(n)));
       if (!list.length) st.groups.append(this._el("div", "muted", "Effects show up when the light is online."));
     }
     st.groups.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", String(on && effect === b.dataset.fx)));

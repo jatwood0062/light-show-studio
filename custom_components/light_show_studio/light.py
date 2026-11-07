@@ -24,6 +24,8 @@ from . import C9ConfigEntry
 from .const import CONF_BULB_ENTITIES, CONF_DEVICE_ID, CONF_SKU, CONF_START_PIXEL, CONF_TYPE, DOMAIN, TYPE_TWINKLY, TYPE_WLED
 from .controller import SHOW, C9Controller
 from .effects import EFFECT_LIST, EFFECTS
+from . import patterns
+from .patterns import PATTERN
 from .protocol import Colour
 
 
@@ -50,6 +52,13 @@ SET_PIXELS_SCHEMA = {
 }
 
 
+SET_PATTERN_SCHEMA = {
+    vol.Optional("pattern"): vol.In(patterns.PATTERN_LIST),
+    vol.Optional("effect"): vol.In(patterns.PATTERN_EFFECTS),
+    vol.Optional("speed"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+}
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry,
                             async_add_entities: AddEntitiesCallback) -> None:
     ctl = entry.runtime_data
@@ -66,9 +75,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry,
         entities += [C9BulbLight(ctl, device, uid, i) for i in range(ctl.bulbs)]
     async_add_entities(entities)
 
-    entity_platform.async_get_current_platform().async_register_entity_service(
-        "set_pixels", SET_PIXELS_SCHEMA, "async_set_pixels"
-    )
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service("set_pixels", SET_PIXELS_SCHEMA, "async_set_pixels")
+    platform.async_register_entity_service("set_pattern", SET_PATTERN_SCHEMA, "async_set_pattern")
 
 
 class _Base(LightEntity):
@@ -93,7 +102,7 @@ class _Base(LightEntity):
 class C9StringLight(_Base, RestoreEntity):
     _attr_name = None
     _attr_supported_features = LightEntityFeature.EFFECT
-    _attr_effect_list = [SHOW, *EFFECT_LIST]
+    _attr_effect_list = [SHOW, PATTERN, *EFFECT_LIST]
 
     def __init__(self, ctl, entry, device, uid: str) -> None:
         super().__init__(ctl, device)
@@ -110,9 +119,15 @@ class C9StringLight(_Base, RestoreEntity):
             ctl.brightness = int(level)
         if (rgb := attrs.get(ATTR_RGB_COLOR)) is not None:
             ctl.colour = tuple(rgb)
+        if attrs.get("pattern") in patterns.PATTERNS:
+            ctl.pattern = attrs["pattern"]
+        if attrs.get("pattern_effect") in patterns.PATTERN_EFFECTS:
+            ctl.pattern_effect = attrs["pattern_effect"]
+        if isinstance(attrs.get("speed"), int):
+            ctl.speed = max(1, min(100, attrs["speed"]))
         if (effect := attrs.get(ATTR_EFFECT)) == SHOW:
             ctl.show_mode = True
-        elif effect in EFFECTS:
+        elif effect in EFFECTS or effect == PATTERN:
             ctl.effect, ctl.show_mode = effect, False
         elif ctl.is_on:  # on with a plain colour
             ctl.show_mode = False
@@ -137,7 +152,9 @@ class C9StringLight(_Base, RestoreEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         first, n = self._start, self.ctl.bulbs
         return {"per_bulb": self.ctl.custom, "bulbs": n, "ip_address": self.ctl.host, "start_pixel": first,
-                "pixels": f"{first}-{first + n - 1}", "channels": f"{(first - 1) * 3 + 1}-{(first + n - 1) * 3}"}
+                "pixels": f"{first}-{first + n - 1}", "channels": f"{(first - 1) * 3 + 1}-{(first + n - 1) * 3}",
+                "pattern": self.ctl.pattern, "pattern_effect": self.ctl.pattern_effect, "speed": self.ctl.speed,
+                "pattern_list": patterns.PATTERN_LIST, "pattern_effect_list": patterns.PATTERN_EFFECTS}
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.ctl.async_turn_on(kwargs.get(ATTR_BRIGHTNESS), kwargs.get(ATTR_RGB_COLOR),
@@ -148,6 +165,10 @@ class C9StringLight(_Base, RestoreEntity):
 
     async def async_set_pixels(self, colors: list[Colour], repeat: bool = True) -> None:
         await self.ctl.async_set_pixels(colors, repeat)
+
+    async def async_set_pattern(self, pattern: str | None = None, effect: str | None = None,
+                                speed: int | None = None) -> None:
+        await self.ctl.async_set_pattern(pattern, effect, speed)
 
 
 class C9BulbLight(_Base):

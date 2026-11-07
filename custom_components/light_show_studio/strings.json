@@ -162,6 +162,24 @@
     "stop_sequence": {
       "name": "Stop sequence",
       "description": "Stop the playing sequence and turn the bulbs dark."
+    },
+    "set_pattern": {
+      "name": "Set pattern",
+      "description": "Pick the bulbs' colour pattern, how it moves, and the speed. Speed on its own changes the speed of whatever effect is running.",
+      "fields": {
+        "pattern": {
+          "name": "Pattern",
+          "description": "Which colours the bulbs show, repeated along the string."
+        },
+        "effect": {
+          "name": "Effect",
+          "description": "How the pattern moves: Steady, Twinkle, Chase and more."
+        },
+        "speed": {
+          "name": "Speed",
+          "description": "1 (slow) to 100 (fast); 50 is normal."
+        }
+      }
     }
   }
 }
