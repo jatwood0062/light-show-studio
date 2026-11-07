@@ -133,6 +133,7 @@ class C9StringLight(_Base, RestoreEntity):
             ctl.effect, ctl.show_mode = effect, False
         elif ctl.is_on:  # on with a plain colour
             ctl.show_mode = False
+        ctl.resume_after_restart()  # a moving effect froze when Home Assistant stopped: start it again
 
     @property
     def is_on(self) -> bool:

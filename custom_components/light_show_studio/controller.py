@@ -68,6 +68,7 @@ class C9Controller:
         self._misses = 0
         self._identifying = False
         self._identify_task: asyncio.Task | None = None
+        self._resume_handle: asyncio.TimerHandle | None = None
         # zones (see mapmanager): zone id -> (name, [(first pixel, colours)]) for the runs of it on this light
         self._zones: dict[str, tuple[str, list[tuple[int, list[Colour]]]]] = {}
         self._zone_prev_show = False  # show mode before the first zone took over
@@ -177,10 +178,27 @@ class C9Controller:
         self._stop_animation()
         if not self.is_on or self.show_mode or self._zones:
             return  # in show mode the sequencer's frames are the picture; with a zone, the zone's
-        if self.effect in ANIMATED or (self.effect == PATTERN and patterns.is_animated(self.pattern_effect)):
+        if self._is_animated():
             self._task = self.hass.async_create_background_task(self._animate(), "light_show_studio effect")
         else:
             self._send_frame(self._base_frame(0))
+
+    def _is_animated(self) -> bool:
+        return self.effect in ANIMATED or (self.effect == PATTERN and patterns.is_animated(self.pattern_effect))
+
+    @callback
+    def resume_after_restart(self, delay: float = 3.0) -> None:
+        """After Home Assistant restarts, start a moving effect again (it froze when the old process stopped).
+
+        Only moving effects: a still colour or a show is left alone, so nothing else (an xLights show, another
+        integration driving the same light) is overridden at startup."""
+        def _go() -> None:
+            self._resume_handle = None
+            if self.is_on and not self.show_mode and not self._zones and not self._identifying \
+                    and self._task is None and self._is_animated():
+                self._render()
+        if self._resume_handle is None:
+            self._resume_handle = self.hass.loop.call_later(delay, _go)
 
     async def _animate(self) -> None:
         # effect time runs at the speed setting; accumulating it lets the speed change smoothly mid-effect
@@ -411,7 +429,7 @@ class C9Controller:
         self._stop_animation()
         if self._identify_task:  # don't let a flash wake a light that's being removed
             self._identify_task.cancel()
-        for handle in (self._flush_handle, self._whole_handle):
+        for handle in (self._flush_handle, self._whole_handle, self._resume_handle):
             if handle:
                 handle.cancel()
         self._hw_close()

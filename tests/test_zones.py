@@ -368,3 +368,32 @@ async def test_large_zone_runs_slower(hass):
     assert runner.interval == pytest.approx(1 / 20)
     small = zoneplayer.ZoneRunner(make_plan(), 50, {}.get, hass.async_create_background_task)
     assert small.interval == pytest.approx(1 / 25)
+
+
+# --- resuming after a restart ------------------------------------------------------------------
+@aio
+async def test_moving_effect_resumes_after_restart(hass):
+    ctl = FakeLight(hass, 10)
+    ctl.effect, ctl.show_mode = "Pattern", False  # as restored from the last state
+    ctl.pattern_effect = "Twinkle"
+    ctl.resume_after_restart(delay=0.01)
+    await asyncio.sleep(0.15)
+    assert ctl._task is not None and ctl.sent  # animating again
+    ctl._stop_animation()
+
+
+@aio
+async def test_still_colour_show_and_off_are_not_touched_after_restart(hass):
+    still = FakeLight(hass, 10)
+    still.effect, still.show_mode = None, False
+    steady = FakeLight(hass, 10)
+    steady.effect, steady.pattern_effect, steady.show_mode = "Pattern", "Steady", False
+    show = FakeLight(hass, 10)
+    show.show_mode = True
+    off = FakeLight(hass, 10, on=False)
+    off.effect, off.show_mode = "Twinkle", False
+    for c in (still, steady, show, off):
+        c.resume_after_restart(delay=0.01)
+    await asyncio.sleep(0.1)
+    for c in (still, steady, show, off):
+        assert c._task is None and not c.sent and not c.powered
