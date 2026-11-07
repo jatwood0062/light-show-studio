@@ -1,19 +1,21 @@
-// Light Show Studio sidebar app: Play / Library / Schedule / Lights / Map / Studio in one page. Ships with light_show_studio.
+// Light Show Studio sidebar app: Areas / Schedule / Shows (Play, Library, Playlists) / Map in one page. A light's controls open in a sheet. Ships with light_show_studio.
 // Reuses the two cards, so light-show-studio-card.js and light-show-studio-player-card.js must be loaded too.
 // Custom element: light-show-studio-panel (HA sets hass, narrow, route, panel on it).
 
 const TABS = [
-  ["play", "Play", "M8 5v14l11-7z"],
-  ["library", "Library", "M4 6H2v14c0 1.1.9 2 2 2h14v-2H4zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10zm-4 4H9v-2h6zm4-8H9V5h10z"],
+  ["areas", "Areas", "M12 2a7 7 0 0 0-4 12.7V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.3A7 7 0 0 0 12 2zM9 20h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1z"],
   ["schedule", "Schedule", "M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"],
-  ["lights", "Lights", "M12 2a7 7 0 0 0-4 12.7V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.3A7 7 0 0 0 12 2zM9 20h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1z"],
+  ["shows", "Shows", "M8 5v14l11-7z"],
   ["map", "Map", "M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"],
-  ["studio", "Studio", "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"],
 ];
-// tabs from older versions of the app that now live elsewhere
-const OLD_TABS = { add: "library", setup: null };
+// the Shows section's sub-tabs (today's Play / Library / Playlists)
+const SUBS = [["play", "Play"], ["library", "Library"], ["playlists", "Playlists"]];
+// tabs from older versions of the app and where they live now: [tab, sub-tab?]; null = gone
+const OLD_TABS = { play: ["shows", "play"], library: ["shows", "library"], add: ["shows", "library"], lights: ["areas"], studio: ["areas"], setup: null };
 const INTEGRATION_PATH = "/config/integrations/integration/light_show_studio";
 const STORE_KEY = "light_show_studio_panel_tab";
+const SUB_KEY = "light_show_studio_panel_shows";
+const THEME_KEY = "light_show_studio_panel_theme"; // auto | light | dark
 const SEL_KEY = "light_show_studio_panel_light";
 const BANNER_KEY = "light_show_studio_panel_banner"; // the first-run banner was dismissed for this set of missing steps
 const SWATCHES = ["#ff0000", "#ff5000", "#ffc800", "#00ff00", "#00ffc8", "#0040ff", "#8200ff", "#ff1478", "#ffb43c", "#ffffff"];
@@ -66,6 +68,10 @@ const PANEL_ICON = {
   layers: "M11.99 18.54l-7.37-5.73L3 14.07l9 7 9-7-1.63-1.27-7.38 5.74zM12 16l7.36-5.73L21 9l-9-7-9 7 1.63 1.27L12 16z",
   route: "M19 15.18V7c0-2.21-1.79-4-4-4s-4 1.79-4 4v10c0 1.1-.9 2-2 2s-2-.9-2-2V8.82C8.16 8.4 9 7.3 9 6c0-1.66-1.34-3-3-3S3 4.34 3 6c0 1.3.84 2.4 2 2.82V17c0 2.21 1.79 4 4 4s4-1.79 4-4V7c0-1.1.9-2 2-2s2 .9 2 2v8.18c-1.16.41-2 1.51-2 2.82 0 1.66 1.34 3 3 3s3-1.34 3-3c0-1.3-.84-2.4-2-2.82z",
   palette: "M12 3a9 9 0 0 0 0 18c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1.1.9-2 2-2h2.4c3 0 5.1-2.3 5.1-5.2C22 6.2 17.5 3 12 3zM6.5 12a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3-4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm3 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z",
+  sliders: "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z",
+  sun: "M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM2 13h2v-2H2v2zm18 0h2v-2h-2v2zM11 2v2h2V2h-2zm0 18v2h2v-2h-2zM5.99 4.58 4.58 5.99l1.41 1.42 1.42-1.42-1.42-1.41zm12.02 12.01-1.42 1.42 1.42 1.41 1.41-1.41-1.41-1.42zM4.58 18.01l1.41 1.41 1.42-1.41-1.42-1.42-1.41 1.42zM18.01 5.99l1.41-1.41-1.41-1.41-1.42 1.41 1.42 1.41z",
+  power: "M13 3h-2v10h2zm4.8 2.2-1.4 1.4A6 6 0 1 1 7.6 6.6L6.2 5.2a8 8 0 1 0 11.6 0z",
+  edit: "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z",
   gear: "M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65A.49.49 0 0 0 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z",
   list: "M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z",
   clock: "M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z",
@@ -97,6 +103,8 @@ const store = (key) => ({
 });
 const stored = store(STORE_KEY);
 const storedBanner = store(BANNER_KEY);
+const storedSub = store(SUB_KEY);
+const storedTheme = store(THEME_KEY);
 const storedLight = store(SEL_KEY);
 
 class LightShowStudioPanel extends HTMLElement {
@@ -106,7 +114,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._strands = null; // from light_show_studio/strands
     this._studioSel = storedLight.get(); // entry id (or entity id from a deep link) shown in the Studio tab
     try {
-      this._deepLink = new URLSearchParams(location.search).get("studio");
+      this._deepLink = new URLSearchParams(location.search).get("studio"); // ?studio=<light> opens that light's sheet
     } catch (e) {
       this._deepLink = null;
     }
@@ -118,12 +126,17 @@ class LightShowStudioPanel extends HTMLElement {
     this._map = null;
     this._mapSel = { zone: null, run: null, area: null };
     this._wiz = null;
+    this._sub = storedSub.get() || "play"; // Shows sub-tab
+    this._glowEls = new Set(); // canvases that glow with a light's live colours (area cards, schedule previews)
+    this._sheet = null; // {kind, opener, ...} while a sheet is open
+    this._lsch = null; // light schedules (light_schedules/list)
+    this._lschOld = false; // backend without light schedules
   }
 
   connectedCallback() {
     this._startPolling();
     this._syncWatch();
-    if (this._tab === "schedule") this._subscribeSchedule();
+    if (this._tab === "schedule" || this._tab === "areas") this._subscribeSchedule();
   }
 
   disconnectedCallback() {
@@ -131,6 +144,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._poll = null;
     this._unsubscribeSchedule();
     this._unsubscribeMap();
+    this._stopPreview?.();
     this._closeScan();
     this._disposeViewers();
     this._watchFrames([]);
@@ -138,7 +152,9 @@ class LightShowStudioPanel extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._themeDark = hass?.themes?.darkMode;
     if (!this._built) this._build();
+    else this._applyTheme();
     this._update();
     this._startPolling();
   }
@@ -178,19 +194,32 @@ class LightShowStudioPanel extends HTMLElement {
     const root = this.attachShadow({ mode: "open" });
     root.innerHTML = `
       <style>
-        /* ---- design tokens: HA theme variables with fallbacks, so light and dark both work ---- */
-        :host { --lss-bg: var(--primary-background-color, #f2f3f7); --lss-card: var(--card-background-color, #fff);
-                --lss-text: var(--primary-text-color, #1d2129); --lss-mut: var(--secondary-text-color, #667085);
-                --lss-line: var(--divider-color, #e1e4ea); --lss-acc: var(--primary-color, #03a9f4);
-                --lss-onacc: var(--text-primary-color, #fff);
+        /* ---- design tokens ----
+           Auto: Home Assistant's theme variables, with the "Home Cards" palette as the fallback.
+           Light / Dark (the settings button): that palette is forced and handed to the embedded cards too. */
+        :host { --f-bg: #F5F6F8; --f-card: #ffffff; --f-text: #14181F; --f-mut: #5B6475; --f-line: #E3E6EC; --f-acc: #2350D8; --f-onacc: #ffffff;
+                --f-seg: #E7EAF0; --f-strip: #0F1218; --f-off: #ECEEF2; --f-dotoff: #BFC5D1; --f-accsoft: #EEF2FD; --f-tag-in-bg: #FFF1DD;
+                --f-tag-in: #8A4B00; --f-sun: #C2670A; --f-sunbg: #FFF4E0; --f-sunline: #F2D6A4; --f-suntext: #7A4A00; --f-sunglow: #F08A1C;
+                --glow: 1; --glow-a: .4; color-scheme: light; }
+        :host([data-theme=dark]) { --f-bg: #111318; --f-card: #1C1F26; --f-text: #E8EAF0; --f-mut: #A3A9B7; --f-line: #2E333F; --f-acc: #4D7BFF;
+                --f-seg: #232733; --f-strip: #07090D; --f-off: #171A21; --f-dotoff: #3A3F4C; --f-accsoft: #232A45; --f-tag-in-bg: #3A2A14;
+                --f-tag-in: #FFC27A; --f-sun: #FFB547; --f-sunbg: #2A2112; --f-sunline: #4A3512; --f-suntext: #FFC27A; --glow: 1.7; --glow-a: .62; color-scheme: dark; }
+        :host([data-mode=light]), :host([data-mode=dark]) { --primary-background-color: var(--f-bg); --card-background-color: var(--f-card);
+                --primary-text-color: var(--f-text); --secondary-text-color: var(--f-mut); --divider-color: var(--f-line); --primary-color: var(--f-acc);
+                --text-primary-color: var(--f-onacc); --secondary-background-color: var(--f-seg); --disabled-text-color: var(--f-dotoff); }
+        :host { --lss-bg: var(--primary-background-color, var(--f-bg)); --lss-card: var(--card-background-color, var(--f-card));
+                --lss-text: var(--primary-text-color, var(--f-text)); --lss-mut: var(--secondary-text-color, var(--f-mut));
+                --lss-line: var(--divider-color, var(--f-line)); --lss-acc: var(--primary-color, var(--f-acc));
+                --lss-onacc: var(--text-primary-color, var(--f-onacc));
                 --lss-ok: var(--success-color, #2e9e5b); --lss-err: var(--error-color, #db4437); --lss-warn: var(--warning-color, #d98a00);
                 --lss-soft: rgba(127,127,127,.12); --lss-soft2: rgba(127,127,127,.2);
                 --lss-tint: rgba(127,127,127,.14);
+                --lss-strip: var(--f-strip); --lss-off: var(--f-off); --lss-dotoff: var(--f-dotoff);
                 --r1: 8px; --r2: 12px; --r3: 16px; --ease: cubic-bezier(.2,.8,.2,1);
-                --shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 14px rgba(0,0,0,.05);
+                --shadow: 0 1px 2px rgba(20,24,31,.04);
                 display: flex; flex-direction: column; height: 100%; min-height: 100vh; box-sizing: border-box;
                 background: var(--lss-bg); color: var(--lss-text);
-                font-family: var(--paper-font-body1_-_font-family, Roboto, "Segoe UI", system-ui, sans-serif);
+                font-family: Inter, var(--paper-font-body1_-_font-family, Roboto), "Segoe UI", system-ui, sans-serif;
                 -webkit-text-size-adjust: 100%; }
         @supports (color: color-mix(in srgb, red 10%, blue)) {
           :host { --lss-tint: color-mix(in srgb, var(--lss-acc) 14%, transparent); }
@@ -206,34 +235,37 @@ class LightShowStudioPanel extends HTMLElement {
         @keyframes lss-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
         @keyframes lss-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
         @keyframes lss-pulse { 0% { box-shadow: 0 0 0 0 rgba(67,200,110,.55); } 100% { box-shadow: 0 0 0 8px rgba(67,200,110,0); } }
+        @keyframes lss-sheet { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
         .tabin { animation: lss-in .22s var(--ease); }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
         }
-        /* ---- header ---- */
-        header { display: flex; align-items: center; gap: 4px; min-height: 64px; padding: 0 8px 0 16px; flex: none;
-                 background: var(--app-header-background-color, var(--lss-acc));
-                 color: var(--app-header-text-color, var(--lss-onacc)); position: relative; z-index: 6;
-                 box-shadow: 0 2px 8px rgba(0,0,0,.18); }
-        .narrow header { padding-left: 4px; min-height: 60px; }
-        .menu { width: 48px; height: 48px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex: none; }
-        .menu:hover { background: rgba(255,255,255,.15); }
-        .brand { display: flex; align-items: center; gap: 12px; min-width: 0; margin-right: 12px; }
-        .logo { width: 40px; height: 40px; border-radius: 12px; flex: none; display: inline-flex; align-items: center; justify-content: center;
-                background: rgba(255,255,255,.2); box-shadow: inset 0 0 0 1px rgba(255,255,255,.25); }
-        .bt { min-width: 0; }
-        h1 { font-size: 19px; line-height: 1.15; font-weight: 600; letter-spacing: .01em; margin: 0; white-space: nowrap; }
-        .hstat { display: flex; align-items: center; gap: 7px; font-size: 12.5px; opacity: .92; margin-top: 2px; min-width: 0; }
-        .hstat .htxt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .hdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: rgba(255,255,255,.5); }
-        .hdot.on { background: #ffd54a; }
-        .hdot.run { background: #5be38b; animation: lss-pulse 1.6s ease-out infinite; }
-        nav { display: flex; margin-left: auto; align-self: stretch; }
-        nav button { position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px; height: 100%;
-                     font-size: 13px; font-weight: 600; letter-spacing: .03em; opacity: .75; transition: opacity .15s, background .15s; }
+        /* ---- top bar: sections + settings ---- */
+        .topbar { display: flex; align-items: center; gap: 10px; padding: 14px 16px 0; flex: none; width: 100%; max-width: 960px; margin: 0 auto; position: relative; z-index: 6; }
+        .menu { width: 44px; height: 44px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+        .menu:hover { background: var(--lss-soft); }
+        nav { flex: 1; min-width: 0; display: flex; gap: 2px; padding: 4px; background: var(--f-seg); border-radius: 15px; }
+        :host([data-mode=auto]) nav { background: var(--lss-soft2); }
+        nav button { flex: 1 1 0; min-width: 0; height: 44px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+                     font-size: 14px; font-weight: 600; color: var(--lss-mut); transition: background .15s, color .15s; padding: 0 4px; }
         nav button .ic { display: inline-flex; }
-        nav button[aria-selected=true] { opacity: 1; box-shadow: inset 0 -3px 0 currentColor; }
-        nav button:hover { opacity: 1; background: rgba(255,255,255,.1); }
+        nav button:hover { color: var(--lss-text); }
+        nav button[aria-selected=true] { background: var(--lss-card); color: var(--lss-acc); box-shadow: 0 1px 2px rgba(20,24,31,.14), 0 0 0 1px var(--lss-line); }
+        .gearbtn { width: 52px; height: 52px; border-radius: 16px; border: 1px solid var(--lss-line); background: var(--lss-card); color: var(--lss-text);
+                   display: inline-flex; align-items: center; justify-content: center; flex: none; }
+        .gearbtn:hover { border-color: var(--lss-acc); }
+        .gearbtn[aria-expanded=true] { border-color: var(--lss-acc); color: var(--lss-acc); }
+        .narrow .topbar { gap: 6px; padding: 12px 10px 0; }
+        .narrow nav button { font-size: 13px; padding: 0 2px; }
+        .narrow nav button .ic { display: none; }
+        .narrow .gearbtn { width: 44px; height: 44px; border-radius: 14px; }
+        .settings { position: absolute; right: 16px; top: calc(100% + 8px); width: min(340px, calc(100vw - 32px)); z-index: 12; padding: 16px;
+                    background: var(--lss-card); border: 1px solid var(--lss-line); border-radius: var(--r3); box-shadow: 0 12px 40px rgba(0,0,0,.22); }
+        .narrow .settings { right: 10px; }
+        .settings h2 { font-size: 15px; margin: 0 0 12px; font-weight: 700; }
+        .settings > * + * { margin-top: 14px; }
+        .settings .lb { display: block; margin-bottom: 6px; }
+        .settings-extra:empty { display: none; }
         /* ---- page ---- */
         main { flex: 1; overflow-x: hidden; overflow-y: auto; padding: 20px 16px 28px; width: 100%; max-width: 960px; margin: 0 auto; }
         section > * + * { margin-top: 16px; }
@@ -395,19 +427,8 @@ class LightShowStudioPanel extends HTMLElement {
         @media (max-width: 480px) {
           .edit label { flex: 1 1 130px; } .edit input, .st-set .edit input, .st-set .edit label.ip input { width: 100%; }
         }
-        /* ---- phones: tabs become a bottom bar ---- */
-        .narrow nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 8; margin: 0; height: auto;
-                      background: var(--lss-card); color: var(--lss-mut); border-top: 1px solid var(--lss-line);
-                      box-shadow: 0 -4px 16px rgba(0,0,0,.08); padding-bottom: env(safe-area-inset-bottom);
-                      overflow-x: auto; scrollbar-width: none; }
-        .narrow nav::-webkit-scrollbar { display: none; }
-        .narrow nav button { flex: 1 0 56px; flex-direction: column; justify-content: center; gap: 3px; height: 62px; padding: 0 2px;
-                             font-size: 11px; font-weight: 500; letter-spacing: 0; opacity: 1; min-width: 0; }
-        .narrow nav button .ic { width: 52px; height: 28px; border-radius: 14px; align-items: center; justify-content: center; transition: background .2s, color .2s; }
-        .narrow nav button:hover { background: none; }
-        .narrow nav button[aria-selected=true] { color: var(--lss-text); font-weight: 700; box-shadow: none; }
-        .narrow nav button[aria-selected=true] .ic { background: var(--lss-tint); color: var(--lss-acc); }
-        .narrow main { padding: 14px 12px calc(88px + env(safe-area-inset-bottom)); }
+        /* ---- phones ---- */
+        .narrow main { padding: 14px 12px 28px; }
         .narrow .box { padding: 14px; }
         .narrow .lhead h2 { font-size: 19px; }
         /* ---- playlists + schedule ---- */
@@ -580,43 +601,281 @@ class LightShowStudioPanel extends HTMLElement {
         .pls .lhead { margin-bottom: 4px; }
         .pls .lhead + .serr, .pls .skel { margin-top: 12px; }
         .box.empty .empty, .pls .empty { padding: 20px 8px; }
+        /* ================= Home Cards restyle + new screens ================= */
+        main > section { display: flex; flex-direction: column; gap: 14px; }
+        main > section > * + * { margin-top: 0; }
+        section > * + * { margin-top: 0; }
+        .box { box-shadow: var(--shadow); }
+        .btn { border-radius: 14px; box-shadow: none; }
+        .btn.alt { background: var(--lss-card); box-shadow: none; border: 1px solid var(--lss-line); }
+        .btn.alt:hover:not(:disabled) { background: var(--lss-soft); border-color: var(--lss-acc); }
+        .chip { background: var(--lss-card); }
+        .st-body { display: flex; flex-direction: column; gap: 14px; }
+        .st-body > * + *, .st-ctl > * + * { margin-top: 0; }
+        .st-ctl { display: flex; flex-direction: column; gap: 14px; }
+        .pg-h { margin: 0; font-size: 28px; line-height: 34px; font-weight: 700; letter-spacing: -.5px; }
+        .pg-sub { font-size: 14px; line-height: 20px; color: var(--lss-mut); }
+        .narrow .pg-h { font-size: 25px; line-height: 30px; }
+        .tonight { display: flex; flex-direction: column; gap: 12px; }
+        .th { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; }
+        .th .hstat { display: flex; align-items: center; gap: 7px; font-size: 14px; color: var(--lss-mut); margin: 0; min-width: 0; }
+        .hdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--lss-dotoff); }
+        .hdot.on { background: #ffb43c; box-shadow: 0 0 8px 1px #ffb43c88; }
+        .hdot.run { background: #43c86e; animation: lss-pulse 1.6s ease-out infinite; }
+        .sunpill { display: inline-flex; align-items: center; gap: 6px; height: 44px; padding: 0 14px; border-radius: 999px; background: var(--lss-card);
+                   border: 1px solid var(--lss-line); font-size: 13px; font-weight: 600; white-space: nowrap; }
+        .sunpill svg { color: var(--f-sun); }
+        .upnext { display: inline-flex; align-items: center; gap: 10px; align-self: flex-start; min-height: 36px; padding: 6px 14px; border-radius: 999px;
+                  background: var(--f-sunbg); border: 1px solid var(--f-sunline); font-size: 13px; font-weight: 500; color: var(--f-suntext); max-width: 100%; }
+        .upnext i { width: 8px; height: 8px; border-radius: 50%; background: var(--f-sunglow); box-shadow: 0 0 8px 2px #F08A1C99; flex: none; }
+        .upnext span { min-width: 0; overflow-wrap: anywhere; }
+        .scenes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        .scene { min-height: 48px; padding: 0 6px; background: var(--lss-card); border: 1px solid var(--lss-line); border-radius: 14px;
+                 display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12.5px; font-weight: 600; transition: border-color .15s, transform .1s; }
+        .scene:hover:not(:disabled) { border-color: var(--lss-acc); }
+        .scene:active:not(:disabled) { transform: scale(.97); }
+        .scene:disabled { opacity: .5; cursor: default; }
+        .scene .sd { display: inline-flex; gap: 2px; }
+        .scene .sd i { width: 7px; height: 7px; border-radius: 50%; background: var(--c); box-shadow: 0 0 calc(5px * var(--glow)) var(--c); }
+        .scenes:has(.scene:nth-child(5)) { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+        .asec { display: flex; flex-direction: column; gap: 8px; }
+        .asec + .asec { margin-top: 6px; }
+        .ahead { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+        .ahead .an { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .ahead h2 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ahead .cnt { font-size: 12.5px; color: var(--lss-mut); }
+        .atag { padding: 2px 8px; border-radius: 999px; font-size: 11.5px; line-height: 16px; font-weight: 600; letter-spacing: .3px; flex: none;
+                background: var(--f-accsoft); color: var(--lss-acc); }
+        .atag.in { background: var(--f-tag-in-bg); color: var(--f-tag-in); }
+        .atag.other { background: var(--lss-soft); color: var(--lss-mut); }
+        .aact { display: flex; gap: 8px; flex-wrap: wrap; }
+        .grp2 { display: flex; background: var(--lss-card); border: 1px solid var(--lss-line); border-radius: 12px; overflow: hidden; }
+        .grp2 button { height: 44px; padding: 0 14px; font-size: 13px; font-weight: 600; }
+        .grp2 button + button { border-left: 1px solid var(--lss-line); }
+        .grp2 button:hover:not(:disabled) { background: var(--lss-soft); }
+        .grp2 button:disabled { opacity: .45; cursor: default; }
+        .playbtn { flex: 1 1 150px; min-height: 46px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px;
+                   background: var(--lss-card); border: 1px solid var(--lss-line); border-radius: 12px; font-size: 13px; font-weight: 600; color: var(--lss-acc); }
+        .playbtn:hover:not(:disabled) { border-color: var(--lss-acc); }
+        .playbtn:disabled { opacity: .45; cursor: default; }
+        .playbtn.stop { color: var(--lss-err); flex: 0 0 auto; }
+        .lcgrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+        .lcgrid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        @media (min-width: 700px) { .lcgrid.two { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); } }
+        .lc { background: var(--lss-card); border: 1px solid var(--lss-line); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0;
+              transition: border-color .15s, box-shadow .15s; }
+        .lcgrid.two .lc { padding: 12px; gap: 8px; }
+        .lc:hover { border-color: var(--lss-acc); }
+        .lc-top { display: flex; align-items: center; gap: 10px; }
+        .lc-open { flex: 1; min-width: 0; text-align: left; border-radius: 8px; padding: 2px 0; }
+        .lc-n { display: block; font-size: 16px; line-height: 22px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .lcgrid.two .lc-n { font-size: 15px; line-height: 20px; }
+        .lc-s { display: block; font-size: 13px; line-height: 18px; color: var(--lss-mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .lcgrid.two .lc-s { font-size: 12.5px; }
+        .lc.off .lc-n { color: var(--lss-text); }
+        .pwr { width: 44px; height: 44px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex: none;
+               border: 1px solid var(--lss-dotoff); color: var(--lss-mut); background: var(--lss-card); transition: background .15s, color .15s, box-shadow .15s; }
+        .pwr[aria-pressed=true] { background: var(--lss-acc); border-color: var(--lss-acc); color: var(--lss-onacc); box-shadow: 0 2px 10px var(--lss-tint); }
+        .pwr:disabled { opacity: .4; cursor: default; }
+        .glowb { display: block; width: 100%; padding: 0; border-radius: 12px; }
+        canvas.glow { display: block; width: 100%; height: 40px; border-radius: 12px; background: var(--lss-strip); }
+        .lcgrid.two canvas.glow { height: 30px; border-radius: 10px; }
+        .lc.off canvas.glow { background: var(--lss-off); }
+        .lc .serr { font-size: 12.5px; }
+        .lc-note { font-size: 12px; color: var(--lss-mut); }
+        details.manage { padding: 0; }
+        details.manage > summary { cursor: pointer; min-height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 16px; font-weight: 600; font-size: 15px; }
+        details.manage[open] > summary { border-bottom: 1px solid var(--lss-line); }
+        details.manage > div { padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 14px; }
+        details.manage .box { box-shadow: none; }
+        .hook { min-width: 0; }
+        /* ---- bottom sheet / dialog ---- */
+        .sheet-back { position: fixed; inset: 0; z-index: 30; background: rgba(8,10,16,.52); display: flex; align-items: flex-end; justify-content: center; }
+        .sheet { width: 100%; max-width: 760px; max-height: 94vh; max-height: 94dvh; display: flex; flex-direction: column; background: var(--lss-bg); color: var(--lss-text);
+                 border-radius: 20px 20px 0 0; box-shadow: 0 -8px 40px rgba(0,0,0,.3); animation: lss-sheet .22s var(--ease); overflow: hidden; }
+        @media (min-width: 760px) { .sheet-back { align-items: center; padding: 20px; } .sheet { border-radius: 20px; max-height: 90vh; } }
+        .sheet-head { display: flex; align-items: center; gap: 8px; padding: 12px 8px 10px 18px; flex: none; border-bottom: 1px solid var(--lss-line); }
+        .sheet-head h2 { flex: 1; min-width: 0; margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .sheet-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 16px 20px; display: flex; flex-direction: column; gap: 14px; overscroll-behavior: contain; }
+        .sheet-body > * { flex: none; }
+        .sheet-foot { flex: none; display: flex; gap: 8px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--lss-line); background: var(--lss-bg); }
+        .sheet-foot .btn { flex: 1; min-height: 48px; }
+        .sheet-foot .btn:not(.alt) { flex: 2; }
+        .sheet .box { box-shadow: none; }
+        .sheet .ad-pat { border: none; background: none; padding: 0; }
+        .kindbtn { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; padding: 16px; background: var(--lss-card); border: 1px solid var(--lss-line); border-radius: 16px; min-height: 76px; }
+        .kindbtn:hover { border-color: var(--lss-acc); }
+        .kindbtn b { display: block; font-size: 16px; }
+        .kindbtn span.d { display: block; font-size: 13px; color: var(--lss-mut); margin-top: 2px; }
+        /* ---- settings popover ---- */
+        .settings .seg { background: var(--lss-soft); }
+        /* ---- shows: sub tabs ---- */
+        .subnav { display: flex; gap: 8px; flex-wrap: wrap; }
+        .subnav button { min-height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid var(--lss-line); background: var(--lss-card); font-size: 14px; font-weight: 600; color: var(--lss-mut); }
+        .subnav button:hover { border-color: var(--lss-acc); }
+        .subnav button[aria-selected=true] { background: var(--lss-acc); border-color: var(--lss-acc); color: var(--lss-onacc); }
+        .sub { display: flex; flex-direction: column; gap: 14px; }
+        .sub > * + * { margin-top: 0; }
+        /* ---- schedule ---- */
+        .tl { padding: 12px 14px 10px; display: flex; flex-direction: column; gap: 8px; }
+        .tl-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+        .tl-h h2 { margin: 0; font-size: 15px; font-weight: 700; }
+        .tl-h span { font-size: 12.5px; font-weight: 500; color: var(--f-suntext); }
+        .tl-grid { display: flex; gap: 10px; }
+        .tl-names { display: flex; flex-direction: column; gap: 8px; width: 74px; flex: none; }
+        .tl-names span { font-size: 12px; line-height: 20px; color: var(--lss-mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tl-lanes { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; gap: 8px; }
+        .tl-lane { position: relative; height: 20px; border-radius: 10px; background: var(--lss-strip); overflow: hidden; }
+        .tl-lane .none { position: absolute; left: 10px; top: 0; bottom: 0; display: flex; align-items: center; font-size: 11.5px; color: #9AA1B0; }
+        .tl-bar { position: absolute; top: 0; bottom: 0; border-radius: 10px; overflow: hidden; display: flex; box-shadow: 0 0 calc(10px * var(--glow)) 1px var(--g, #fff6); min-width: 4px; }
+        .tl-bar i { flex: 1; background: var(--c); }
+        .tl-bar.show i { background: var(--lss-acc); }
+        .tl-mark { position: absolute; top: -4px; width: 2px; margin-left: -1px; border-radius: 1px; pointer-events: none; }
+        .tl-sun { background: var(--f-sunglow); box-shadow: 0 0 8px 1px var(--f-sunglow); }
+        .tl-now { background: var(--lss-err); }
+        .tl-axis { position: relative; height: 16px; margin-top: 2px; font-size: 11px; line-height: 16px; color: var(--lss-mut); }
+        .tl-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+        .tl-axis span:first-child { transform: none; }
+        .tl-axis span:last-child { transform: translateX(-100%); }
+        .grph { margin: 4px 0 0 2px; font-size: 13px; line-height: 18px; font-weight: 600; color: var(--lss-mut); letter-spacing: .4px; text-transform: uppercase; }
+        .sgroup { display: flex; flex-direction: column; gap: 8px; }
+        .sc { padding: 12px 8px 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+        .sc + .sc { margin-top: 0; }
+        .sc.off { background: var(--lss-soft); }
+        .sc.off .sbody { opacity: 1; }
+        .sc .top .sn { font-size: 16px; line-height: 22px; }
+        .sc .top { gap: 8px; }
+        .sc .kind { font-size: 11px; font-weight: 700; letter-spacing: .3px; padding: 1px 8px; border-radius: 999px; background: var(--lss-soft); color: var(--lss-mut); text-transform: uppercase; margin-left: 6px; vertical-align: middle; }
+        .sc .sub2 { font-size: 13px; line-height: 18px; color: var(--lss-mut); overflow-wrap: anywhere; }
+        .sc .sub2 b { color: var(--lss-text); font-weight: 600; }
+        .tgl { width: 56px; height: 44px; margin: 0; background: none !important; display: flex; align-items: center; justify-content: flex-end; border-radius: 0; }
+        .tgl::before { content: ""; width: 44px; height: 26px; border-radius: 13px; background: var(--lss-dotoff); transition: background .18s; }
+        .tgl::after { top: 12px; left: auto; right: 21px; width: 20px; height: 20px; transform: none; transition: right .18s var(--ease); }
+        .tgl[aria-checked=true]::before { background: var(--lss-acc); }
+        .tgl[aria-checked=true]::after { transform: none; right: 3px; }
+        .tgl { position: relative; }
+        .tgl::after { position: absolute; }
+        .looks { display: flex; align-items: center; gap: 8px; padding-right: 8px; flex-wrap: wrap; }
+        .lookdots { display: inline-flex; gap: 4px; align-items: center; padding: 5px 8px; border-radius: 8px; background: var(--lss-strip); }
+        .lookdots i { width: 8px; height: 10px; border-radius: 50%; background: var(--c); box-shadow: 0 0 calc(5px * var(--glow)) 1px var(--c), 0 0 calc(10px * var(--glow)) 2px color-mix(in srgb, var(--c) 40%, transparent); }
+        .looks .lt { font-size: 13px; line-height: 18px; font-weight: 500; }
+        .nextl { display: flex; align-items: center; gap: 6px; padding-top: 8px; margin-right: 8px; border-top: 1px solid var(--lss-line); font-size: 12.5px; line-height: 16px; font-weight: 500; color: var(--lss-acc); flex-wrap: wrap; }
+        .nextl.on { color: var(--lss-ok); }
+        .sacts { margin: 0 8px 0 0; gap: 6px; }
+        .sacts .btn { flex: 0 1 auto; }
+        .schead { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; }
+        .addbar { display: flex; }
+        .addbar .btn { width: 100%; min-height: 52px; font-size: 15px; border-radius: 14px; }
+        .sbanner { border-left-width: 4px; }
+        /* ---- light schedule editor ---- */
+        .ed-sec { display: flex; flex-direction: column; gap: 8px; }
+        .ed-sec > .ed-lb { font-size: 13px; font-weight: 600; color: var(--lss-mut); display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+        .ed-sec > .ed-lb em { font-style: normal; font-weight: 500; font-size: 12.5px; }
+        .ed-card { background: var(--lss-card); border: 1px solid var(--lss-line); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+        .ed-name { font-size: 18px; font-weight: 600; min-height: 52px; width: 100%; border-radius: 14px; }
+        .ed-pick { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 44px; font-size: 13.5px; font-weight: 500; color: var(--lss-acc); text-align: left; }
+        .ed-pick .m { color: var(--lss-mut); font-size: 12.5px; }
+        .ed-lights { max-height: 240px; overflow: auto; border: 1px solid var(--lss-line); border-radius: 12px; padding: 2px 12px; }
+        .ed-hint { font-size: 12.5px; color: var(--lss-mut); }
+        .ed-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .ed-row input[type=number] { width: 96px; }
+        .dsel button { width: 40px; height: 44px; border-radius: 12px; flex: 1 1 0; max-width: 56px; min-width: 36px; }
+        .dsel { flex-wrap: nowrap; }
+        .pv { height: 48px; border-radius: 12px; background: var(--lss-strip); display: flex; align-items: center; padding: 0 12px; }
+        .pv canvas { display: block; width: 100%; height: 30px; }
+        .pvt { font-size: 12.5px; color: var(--lss-mut); }
+        .pats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+        .patopt { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 12px; min-height: 64px; border: 1px solid var(--lss-line); border-radius: 12px; background: var(--lss-card); text-align: left; font-size: 13.5px; font-weight: 500; }
+        .patopt:hover { border-color: var(--lss-acc); }
+        .patopt[aria-checked=true] { border-color: var(--lss-acc); box-shadow: 0 0 0 2px var(--lss-tint); font-weight: 600; background: var(--f-accsoft); }
+        .patopt .dots { display: inline-flex; align-items: center; height: 14px; border-radius: 7px; overflow: hidden; background: var(--lss-strip); }
+        .patopt .dots i { display: block; width: 8px; height: 14px; }
+        .patopt .dots.rb { width: 40px; }
+        .patopt .dots.none { width: 40px; background: var(--lss-soft2); }
+        .ed-two { display: grid; grid-template-columns: 1fr; gap: 14px; }
+        .rng { display: flex; flex-direction: column; gap: 2px; }
+        .rng .rl { display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; }
+        .rng .rl span:last-child { color: var(--lss-acc); }
+        .rng input { width: 100%; height: 44px; }
+        .rng .ends { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--lss-mut); margin-top: -8px; }
+        /* ---- map restyle bits ---- */
+        .swrow { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+        .swrow .tgl { width: 52px; }
+        .mp-areas { grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); }
+        .ac-top h3 { display: flex; align-items: center; gap: 8px; }
+        .ad-head { flex-wrap: wrap; }
+        .ad-head input[type=text] { flex: 1 1 160px; }
       </style>
       <div class="root">
-        <header>
+        <div class="topbar">
           <button class="menu" aria-label="Open the sidebar menu" hidden>${svg("M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z")}</button>
-          <div class="brand">
-            <span class="logo">${svg(PANEL_ICON.bulb, 24)}</span>
-            <div class="bt"><h1>Light Shows</h1>
-              <div class="hstat" role="status" aria-live="polite"><span class="hdot"></span><span class="htxt">Connecting\u2026</span></div></div>
-          </div>
           <nav role="tablist" aria-label="Light Shows sections"></nav>
-        </header>
+          <button class="gearbtn" type="button" aria-label="Settings" aria-haspopup="dialog" aria-expanded="false">${svg(PANEL_ICON.sliders, 20)}</button>
+          <div class="settings" role="dialog" aria-label="Settings" hidden></div>
+        </div>
         <main>
           <div class="box banner" role="region" aria-label="Getting started" hidden></div>
-          <section id="p-play" role="tabpanel"></section>
-          <section id="p-library" role="tabpanel">
-            <div class="libcard"></div>
-            <details class="box add">
-              <summary><span class="hi">${svg(PANEL_ICON.upload)}</span>Add shows</summary>
-              <ol>
-                <li>In xLights open your sequence and render it (it saves a <code>.fseq</code> next to the <code>.xsq</code>).</li>
-                <li>Add the <code>.fseq</code> and the song here — same name, like <code>My Show.fseq</code> and <code>My Show.m4a</code>.</li>
-                <li>Press Play.</li>
-              </ol>
-              <div class="ulcard"></div>
+          <section id="p-areas" role="tabpanel" aria-label="Areas">
+            <div class="tonight">
+              <div class="th">
+                <div><h1 class="pg-h">Tonight</h1>
+                  <div class="hstat" role="status" aria-live="polite"><span class="hdot"></span><span class="htxt">Connecting…</span></div></div>
+                <span class="sunpill" hidden></span>
+              </div>
+              <div class="upnext" hidden><i></i><span></span></div>
+            </div>
+            <div class="scenes" role="group" aria-label="Quick scenes"></div>
+            <div class="hook" data-hook="areas-top" hidden><!-- hook: Music mode / spatial map effects add their entry cards here --></div>
+            <div class="skel areas-skel" aria-busy="true" aria-label="Loading lights"><i></i><i></i><i></i></div>
+            <div class="serr areas-err" role="alert" hidden></div>
+            <div class="alist"></div>
+            <div class="box empty no-lights" hidden><span class="eic">${svg(PANEL_ICON.bulb)}</span><div class="et">No lights yet</div>
+              <div class="ed">Add a Wi-Fi light strip and it will show up here with a live preview.</div>
+              <button class="btn" type="button">${svg(PANEL_ICON.add)}Add a light</button></div>
+            <details class="box manage">
+              <summary><span class="hi">${svg(PANEL_ICON.gear)}</span>Manage lights</summary>
+              <div>
+                <div class="lhead"><h2><span class="hi">${svg(PANEL_ICON.bulb)}</span>All lights</h2><button class="btn alt sm add-light" type="button" hidden>${svg(PANEL_ICON.add)}Add a light</button></div>
+                <div class="skel lights-skel" aria-busy="true" aria-label="Loading lights"><i></i><i></i><i></i></div>
+                <div class="box strands" role="list" aria-label="Light strands" hidden></div>
+                <div class="box xl" hidden></div>
+              </div>
             </details>
-            <div class="box pls" aria-label="Playlists"></div>
           </section>
-          <section id="p-schedule" role="tabpanel">
-            <div class="box sbanner" role="status" aria-live="polite"></div>
-            <div class="lhead"><h2><span class="hi">${svg(PANEL_ICON.clock)}</span>Schedules</h2><button class="btn sm add-sched" type="button" hidden>${svg(PANEL_ICON.add)}Add schedule</button></div>
+          <section id="p-schedule" role="tabpanel" aria-label="Schedule" hidden>
+            <div class="schead"><div><h1 class="pg-h">Schedule</h1><div class="pg-sub sch-sub">Loading…</div></div></div>
+            <div class="box tl" aria-label="Tonight timeline"></div>
+            <div class="box sbanner" role="status" aria-live="polite" hidden></div>
             <div class="box sed" hidden></div>
             <div class="slist"></div>
+            <div class="addbar"><button class="btn add-sched" type="button" hidden>${svg(PANEL_ICON.add)}Add schedule</button></div>
           </section>
-          <section id="p-lights" role="tabpanel"></section>
-          <section id="p-map" role="tabpanel" class="mp"></section>
-          <section id="p-studio" role="tabpanel" class="st"></section>
+          <section id="p-shows" role="tabpanel" aria-label="Shows" hidden>
+            <div class="subnav" role="tablist" aria-label="Shows sections"></div>
+            <div class="sub" id="p-play" role="tabpanel"></div>
+            <div class="sub" id="p-library" role="tabpanel">
+              <div class="libcard"></div>
+              <details class="box add">
+                <summary><span class="hi">${svg(PANEL_ICON.upload)}</span>Add shows</summary>
+                <ol>
+                  <li>In xLights open your sequence and render it (it saves a <code>.fseq</code> next to the <code>.xsq</code>).</li>
+                  <li>Add the <code>.fseq</code> and the song here — same name, like <code>My Show.fseq</code> and <code>My Show.m4a</code>.</li>
+                  <li>Press Play.</li>
+                </ol>
+                <div class="ulcard"></div>
+              </details>
+            </div>
+            <div class="sub" id="p-playlists" role="tabpanel"><div class="box pls" aria-label="Playlists"></div></div>
+          </section>
+          <section id="p-map" role="tabpanel" class="mp" hidden></section>
         </main>
+        <div class="sheet-back" hidden>
+          <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-t" tabindex="-1">
+            <div class="sheet-head"><h2 id="sheet-t"></h2><button class="ib2 sheet-x" type="button" aria-label="Close">${svg(PANEL_ICON.close, 22)}</button></div>
+            <div class="sheet-body"></div>
+            <div class="sheet-foot" hidden></div>
+          </div>
+        </div>
       </div>`;
     this._root = root.querySelector(".root");
     this._root.classList.toggle("narrow", !!this._narrow);
@@ -624,6 +883,8 @@ class LightShowStudioPanel extends HTMLElement {
     this._menu.hidden = !this._narrow;
     this._menu.onclick = () => this.dispatchEvent(new Event("hass-toggle-menu", { bubbles: true, composed: true }));
     this._sections = Object.fromEntries(TABS.map(([id]) => [id, root.querySelector(`#p-${id}`)]));
+    this._subSecs = Object.fromEntries(SUBS.map(([id]) => [id, root.querySelector(`#p-${id}`)]));
+    this._applyTheme();
 
     const nav = root.querySelector("nav");
     this._tabBtns = {};
@@ -631,34 +892,46 @@ class LightShowStudioPanel extends HTMLElement {
       const b = document.createElement("button");
       b.setAttribute("role", "tab");
       b.setAttribute("aria-controls", `p-${id}`);
-      b.innerHTML = `<span class="ic">${svg(path, 22)}</span><span>${label}</span>`;
+      b.innerHTML = `<span class="ic">${svg(path, 20)}</span><span>${label}</span>`;
       b.onclick = () => this._select(id, true);
       nav.append(b);
       this._tabBtns[id] = b;
     }
+    this._tabKeys(nav, TABS.map(([id]) => id), (id) => this._select(id, true), () => this._tabBtns);
+    const subnav = root.querySelector(".subnav");
+    this._subBtns = {};
+    for (const [id, label] of SUBS) {
+      const b = document.createElement("button");
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-controls", `p-${id}`);
+      b.textContent = label;
+      b.onclick = () => this._selectSub(id, true);
+      subnav.append(b);
+      this._subBtns[id] = b;
+    }
+    this._tabKeys(subnav, SUBS.map(([id]) => id), (id) => this._selectSub(id, true), () => this._subBtns);
     this._banner = root.querySelector(".banner");
     this._addShows = root.querySelector("details.add");
     this._player = this._card("light-show-studio-player-card", { mode: "player" });
-    this._sections.play.append(this._player);
+    this._subSecs.play.append(this._player);
     this._library = this._card("light-show-studio-player-card", { mode: "library", title: "Shows" });
     root.querySelector(".libcard").append(this._library);
     this._adder = this._card("light-show-studio-player-card", { mode: "upload", title: "" });
     root.querySelector(".ulcard").append(this._adder);
-    this._sections.lights.innerHTML = `
-      <div class="lhead"><h2><span class="hi">${svg(PANEL_ICON.bulb)}</span>Lights</h2><button class="btn alt sm add-light" type="button" hidden>${svg(PANEL_ICON.add)}Add a light</button></div>
-      <div class="skel lights-skel" aria-busy="true" aria-label="Loading lights"><i></i><i></i><i></i></div>
-      <div class="box strands" role="list" aria-label="Light strands" hidden></div>
-      <div class="box empty no-lights" hidden><span class="eic">${svg(PANEL_ICON.bulb)}</span><div class="et">No lights yet</div>
-        <div class="ed">Add a Wi-Fi light strip and it will show up here with a live preview.</div>
-        <button class="btn" type="button">${svg(PANEL_ICON.add)}Add a light</button></div>
-      <div class="box xl" hidden></div>`;
-    const q = (c) => this._sections.lights.querySelector(c);
+    const q = (c) => this._sections.areas.querySelector(c);
     this._strandBox = q(".strands");
     this._xlBox = q(".xl");
     this._addLight = q(".add-light");
     this._noLights = q(".no-lights");
     this._lightsSkel = q(".lights-skel");
+    this._manage = q(".manage");
+    this._aSkel = q(".areas-skel");
+    this._aErr = q(".areas-err");
+    this._aList = q(".alist");
+    this._scenesEl = q(".scenes");
     this._addLight.onclick = q(".no-lights .btn").onclick = () => this._navigate(INTEGRATION_PATH);
+    this._sunPill = q(".sunpill");
+    this._upNext = q(".upnext");
     this._buildStudio();
     this._buildMap();
     this._hstat = root.querySelector(".hstat");
@@ -668,11 +941,32 @@ class LightShowStudioPanel extends HTMLElement {
     this._schBanner = root.querySelector(".sbanner");
     this._sed = root.querySelector(".sed");
     this._schList = root.querySelector(".slist");
+    this._schSub = root.querySelector(".sch-sub");
+    this._tlBox = root.querySelector(".tl");
     this._addSched = root.querySelector(".add-sched");
-    this._addSched.onclick = () => this._openEditor();
+    this._addSched.onclick = () => this._addScheduleChooser();
+    // sheet (light detail, play-a-pattern, light schedule editor)
+    this._sheetBack = root.querySelector(".sheet-back");
+    this._sheetEl = root.querySelector(".sheet");
+    this._sheetT = root.querySelector("#sheet-t");
+    this._sheetBody = root.querySelector(".sheet-body");
+    this._sheetFoot = root.querySelector(".sheet-foot");
+    root.querySelector(".sheet-x").onclick = () => this._closeSheet();
+    this._sheetBack.addEventListener("pointerdown", (e) => {
+      this._sheetDown = e.target === this._sheetBack;
+    });
+    this._sheetBack.addEventListener("click", (e) => {
+      if (e.target === this._sheetBack && this._sheetDown) this._closeSheet();
+    });
+    this._sheetBack.addEventListener("keydown", (e) => this._sheetKey(e));
+    // settings
+    this._gear = root.querySelector(".gearbtn");
+    this._settings = root.querySelector(".settings");
+    this._buildSettings();
     this._renderPlaylists();
     this._renderSchedBanner();
     this._renderSchedules();
+    this._renderTonight();
   }
 
   // a card element that works whether or not its script has loaded yet
@@ -696,27 +990,211 @@ class LightShowStudioPanel extends HTMLElement {
     if (this._hass && el._ready) el.hass = this._hass;
   }
 
-  _select(id, user) {
+  _select(id, user, keepSheet) {
+    if (id in OLD_TABS) {
+      const m = OLD_TABS[id];
+      if (m && m[1]) {
+        this._sub = m[1];
+        if (user) storedSub.set(m[1]);
+      }
+      id = m ? m[0] : "areas";
+    }
+    if (!this._sections[id]) id = "areas";
+    const prev = this._tab;
     this._tab = id;
+    if (prev !== id && !keepSheet) this._closeSheet();
+    this._closeSettings();
     for (const [t, s] of Object.entries(this._sections)) s.hidden = t !== id;
-    for (const [t, b] of Object.entries(this._tabBtns)) b.setAttribute("aria-selected", String(t === id));
+    for (const [t, b] of Object.entries(this._tabBtns)) {
+      b.setAttribute("aria-selected", String(t === id));
+      b.tabIndex = t === id ? 0 : -1;
+    }
     if (user) stored.set(id);
-    if (id === "lights" || id === "studio" || id === "map") this._loadStrands();
-    if (id === "studio") this._renderStudio();
-    if (id !== "map") {
-      this._unsubscribeMap();
-      this._closeScan();
+    if (id === "areas" || id === "map") this._subscribeMap();
+    else this._unsubscribeMap();
+    if (id !== "map") this._closeScan();
+    if (id === "areas" || id === "map") this._loadStrands();
+    if (id === "areas") {
+      this._loadMap();
+      this._loadSchedules();
+      this._loadLightSchedules();
+      this._renderHome();
+      this._renderTonight();
     }
     if (id === "map") {
-      this._subscribeMap();
       this._loadMap();
+      this._loadMods().then(() => {
+        if (this._tab === "map" && this._map && this._mapStale) this._renderMap();
+      });
       requestAnimationFrame(() => this._drawMap());
     }
     this._syncWatch();
-    if (id === "library") this._loadPlaylists();
+    if (id === "shows") this._selectSub(this._sub, false);
     if (id === "schedule") {
+      this._loadMap(); // area names and outdoor flags for the timeline and the target text
       this._loadSchedules();
-      this._subscribeSchedule();
+      this._loadLightSchedules();
+      this._renderTimeline();
+    }
+    if (id === "schedule" || id === "areas") this._subscribeSchedule();
+    if (user) this.scrollToTop?.();
+  }
+
+  scrollToTop() {
+    const m = this._root?.querySelector("main");
+    if (m) m.scrollTop = 0;
+  }
+
+  _selectSub(id, user) {
+    if (!this._subSecs[id]) id = "play";
+    this._sub = id;
+    if (user) storedSub.set(id);
+    for (const [t, s] of Object.entries(this._subSecs)) s.hidden = t !== id;
+    for (const [t, b] of Object.entries(this._subBtns)) {
+      b.setAttribute("aria-selected", String(t === id));
+      b.tabIndex = t === id ? 0 : -1;
+    }
+    if (id === "library" || id === "playlists") this._loadPlaylists();
+  }
+
+  // arrow keys / Home / End move between the buttons of a tab list
+  _tabKeys(el, ids, pick, getBtns) {
+    el.addEventListener("keydown", (e) => {
+      const i = ids.findIndex((id) => getBtns()[id] === e.target || getBtns()[id]?.contains?.(e.target));
+      if (i < 0) return;
+      let j = null;
+      if (e.key === "ArrowRight") j = (i + 1) % ids.length;
+      else if (e.key === "ArrowLeft") j = (i + ids.length - 1) % ids.length;
+      else if (e.key === "Home") j = 0;
+      else if (e.key === "End") j = ids.length - 1;
+      if (j === null) return;
+      e.preventDefault();
+      pick(ids[j]);
+      getBtns()[ids[j]].focus();
+    });
+  }
+
+  // --- theme: follow Home Assistant (Auto) or force Light / Dark -----------------------------------------------------
+  _themeMode() {
+    const v = storedTheme.get();
+    return v === "light" || v === "dark" ? v : "auto";
+  }
+
+  _applyTheme() {
+    const mode = this._themeMode();
+    let dark;
+    if (mode === "auto") {
+      dark = typeof this._themeDark === "boolean" ? this._themeDark : !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    } else dark = mode === "dark";
+    if (this.getAttribute("data-mode") !== mode) this.setAttribute("data-mode", mode);
+    const th = dark ? "dark" : "light";
+    if (this.getAttribute("data-theme") !== th) {
+      this.setAttribute("data-theme", th);
+      this._glowLast = 0;
+      this._drawStrips?.();
+    }
+    this._dark = dark;
+  }
+
+  _buildSettings() {
+    const box = this._settings;
+    const draw = () => {
+      box.textContent = "";
+      box.append(this._el("h2", "", "Settings"));
+      const f = this._el("div", "fld");
+      f.append(this._el("span", "lb", "Theme"));
+      f.append(this._seg([["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]], this._themeMode(), "Theme", (v) => {
+        storedTheme.set(v);
+        this._applyTheme();
+        draw();
+      }));
+      f.append(this._el("span", "muted", this._themeMode() === "auto" ? "Auto follows your Home Assistant theme." : "Fixed for this browser."));
+      box.append(f);
+      // hook: later work adds the default transition and fade settings here
+      const hook = this._el("div", "hook settings-extra");
+      hook.dataset.hook = "settings-extra";
+      box.append(hook);
+    };
+    draw();
+    this._gear.onclick = () => {
+      const open = box.hidden;
+      box.hidden = !open;
+      this._gear.setAttribute("aria-expanded", String(open));
+      if (open) box.querySelector("[aria-checked=true]")?.focus();
+    };
+    this._root.addEventListener("pointerdown", (e) => {
+      if (box.hidden) return;
+      const path = e.composedPath();
+      if (!path.includes(box) && !path.includes(this._gear)) this._closeSettings();
+    });
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        this._closeSettings();
+        this._gear.focus();
+      }
+    });
+  }
+
+  _closeSettings() {
+    if (!this._settings || this._settings.hidden) return;
+    this._settings.hidden = true;
+    this._gear.setAttribute("aria-expanded", "false");
+  }
+
+  // --- sheets: a bottom sheet on phones, a dialog on wide screens ----------------------------------------------------
+  _openSheet(kind, title, opts = {}) {
+    const same = this._sheet && this._sheet.kind === kind;
+    if (!same) this._closeSheet();
+    const opener = same ? this._sheet.opener : this._root.getRootNode().activeElement || null;
+    this._sheet = { ...(same ? this._sheet : {}), kind, opener, ...opts };
+    this._sheetT.textContent = title;
+    this._sheetBack.hidden = false;
+    this._sheetFoot.hidden = true;
+    this._sheetFoot.textContent = "";
+    if (!same) {
+      this._sheetBody.textContent = "";
+      this._sheetBody.scrollTop = 0;
+    }
+    requestAnimationFrame(() => {
+      if (this._sheet && !this._sheetBack.contains(this._root.getRootNode().activeElement)) this._sheetEl.querySelector(".sheet-x")?.focus();
+    });
+    return this._sheetBody;
+  }
+
+  _closeSheet() {
+    const sh = this._sheet;
+    if (!sh) return;
+    this._sheet = null;
+    this._stopPreview?.();
+    this._sheetBack.hidden = true;
+    this._sheetBody.textContent = "";
+    this._sheetFoot.textContent = "";
+    if (this._dref && this._dref.sheet) this._dref = null;
+    this._lsDraft = null;
+    this._formDirty = false;
+    this._syncWatch();
+    const o = sh.opener;
+    if (o && o.isConnected && o.focus) o.focus();
+  }
+
+  _sheetKey(e) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      this._closeSheet();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const f = [...this._sheetEl.querySelectorAll("button, input, select, textarea, summary, [tabindex]:not([tabindex='-1'])")].filter(
+      (x) => !x.disabled && x.offsetParent !== null && !x.closest("[hidden]")
+    );
+    if (!f.length) return;
+    const act = this._root.getRootNode().activeElement;
+    if (e.shiftKey && (act === f[0] || act === this._sheetEl)) {
+      e.preventDefault();
+      f[f.length - 1].focus();
+    } else if (!e.shiftKey && act === f[f.length - 1]) {
+      e.preventDefault();
+      f[0].focus();
     }
   }
 
@@ -726,13 +1204,16 @@ class LightShowStudioPanel extends HTMLElement {
     this._loadStrands();
     this._poll = setInterval(() => {
       if (document.hidden) return;
-      if (this._tab === "lights" || this._tab === "studio" || this._tab === "map") this._loadStrands();
+      if (this._tab === "areas" || this._tab === "map") this._loadStrands();
+      if (this._tab === "areas") this._loadMap();
       this._syncWatch();
-      if (this._tab === "library") this._loadPlaylists();
-      if (this._tab === "schedule") {
+      if (this._tab === "shows" && this._sub !== "play") this._loadPlaylists();
+      if (this._tab === "schedule" || this._tab === "areas") {
         if (!this._draft) this._loadSchedules();
+        this._loadLightSchedules();
         this._subscribeSchedule();
       }
+      this._renderTonight();
     }, 15000);
   }
 
@@ -747,17 +1228,20 @@ class LightShowStudioPanel extends HTMLElement {
     } catch (err) {
       this._strandsError = (typeof err === "string" ? err : err?.message) || "Couldn't load the strands.";
     }
+    this._strandsLoaded = true;
     this._loading = false;
     if (this._deepLink && this._strands) {
       const hit = this._resolveStrand(this._deepLink);
       this._deepLink = null;
       if (hit) {
         this._studioSel = hit.entry_id;
-        this._select("studio", false);
+        this._select("areas", false);
+        this._openStudio(hit);
       }
     }
     this._renderStrands();
     this._renderStudio();
+    this._renderHome();
     this._syncWatch();
     if (this._tab === "map") {
       this._syncZones();
@@ -945,12 +1429,16 @@ class LightShowStudioPanel extends HTMLElement {
     return (this._strands || []).find((s) => s.entry_id === key || s.entity_id === key) || null;
   }
 
+  // a light's controls open in a sheet over the Areas page
   _openStudio(s) {
     this._studioSel = s.entry_id;
     storedLight.set(s.entry_id);
     this._formKey = null; // reload the settings form for this light
-    this._select("studio", true);
-    this.scrollTo?.(0, 0);
+    if (this._tab !== "areas") this._select("areas", false, true);
+    const body = this._openSheet("light", s.title, { entry: s.entry_id });
+    if (this._studioRoot.parentNode !== body) body.replaceChildren(this._studioRoot);
+    this._renderStudio();
+    this._syncWatch();
   }
 
   _currentStrand() {
@@ -959,7 +1447,7 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   _buildStudio() {
-    const sec = this._sections.studio;
+    const sec = (this._studioRoot = this._el("div", "st"));
     sec.innerHTML = `
       <div class="skel st-skel" aria-busy="true" aria-label="Loading"><i></i><i></i><i></i></div>
       <div class="box empty st-empty" hidden></div>
@@ -981,6 +1469,7 @@ class LightShowStudioPanel extends HTMLElement {
           <div class="sws" role="group" aria-label="Colour"></div>
         </div>
         <div class="pat-slot"></div>
+        <div class="hook" data-hook="light-sheet-extra" hidden><!-- hook: Music mode, Pattern painter, spatial map effects and fade settings mount here for this light --></div>
         <div class="box st-fx"><h2><span class="hi">${svg(PANEL_ICON.palette)}</span>Effects</h2><div class="groups"></div></div>
         <form class="box st-set edit" novalidate>
           <h2><span class="hi">${svg(PANEL_ICON.gear)}</span>Settings</h2>
@@ -1141,7 +1630,7 @@ class LightShowStudioPanel extends HTMLElement {
   // header, live card, form: what only changes with the strands list or the selection
   _renderStudio() {
     const st = this._st;
-    if (!st) return;
+    if (!st || this._sheet?.kind !== "light") return;
     const list = this._strands;
     const none = !!list && !list.length;
     st.skel.hidden = !!list || !!this._strandsError;
@@ -1155,6 +1644,7 @@ class LightShowStudioPanel extends HTMLElement {
     if (st.body.hidden) return;
     const s = this._currentStrand();
     this._studioSel = s.entry_id;
+    if (this._sheetT.textContent !== s.title) this._sheetT.textContent = s.title;
     const online = (x) => (x.online === true ? "●" : x.online === false ? "○" : "◌");
     const sig = JSON.stringify(list.map((x) => [x.entry_id, x.title, x.kind, x.model, x.host, x.online]));
     if (sig !== this._pickSig) {
@@ -1284,7 +1774,7 @@ class LightShowStudioPanel extends HTMLElement {
   _renderStudioControls() {
     const st = this._st;
     const s = this._currentStrand();
-    if (!st || !s || !this._hass) return;
+    if (!st || !s || !this._hass || this._sheet?.kind !== "light") return;
     const e = s.entity_id ? this._hass.states[s.entity_id] : null;
     const usable = !!e && e.state !== "unavailable" && e.state !== "unknown";
     const on = usable && e.state === "on";
@@ -1411,13 +1901,14 @@ class LightShowStudioPanel extends HTMLElement {
 
   _wantedFrames() {
     const strands = this._strands || [];
-    if (this._tab === "lights") return strands.map((s) => s.entity_id).filter(Boolean);
-    if (this._tab === "studio") {
+    const out = [];
+    if (this._sheet?.kind === "light") {
       const s = this._currentStrand();
-      return s?.entity_id ? [s.entity_id] : [];
+      if (s?.entity_id) out.push(s.entity_id);
     }
-    if (this._tab === "map") return this._mapEntities();
-    return [];
+    if (this._sheet?.kind === "play" || this._tab === "areas") for (const s of strands) if (s.entity_id && s.loaded) out.push(s.entity_id);
+    if (this._tab === "map") out.push(...this._mapEntities());
+    return [...new Set(out)];
   }
 
   _syncWatch() {
@@ -1426,7 +1917,7 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   _watchFrames(ids) {
-    const want = new Set(ids.slice(0, 16));
+    const want = new Set(ids.slice(0, 40));
     for (const [id, u] of this._subs) {
       if (want.has(id)) continue;
       this._subs.delete(id);
@@ -1462,6 +1953,7 @@ class LightShowStudioPanel extends HTMLElement {
       this._raf = 0;
       this._drawStrips();
       if (this._tab === "map") this._drawMap();
+      this._syncHomeFrames?.();
     });
   }
 
@@ -1469,6 +1961,10 @@ class LightShowStudioPanel extends HTMLElement {
     for (const c of this._stripEls) {
       if (!c.isConnected) this._stripEls.delete(c);
       else if (c.offsetParent !== null) this._paintStrip(c);
+    }
+    for (const c of this._glowEls) {
+      if (!c.isConnected) this._glowEls.delete(c);
+      else if (c.offsetParent !== null) this._paintGlow(c);
     }
   }
 
@@ -1783,7 +2279,7 @@ class LightShowStudioPanel extends HTMLElement {
     if (!this._hass || this._mapLoading) return;
     if (this._map && this._mapDirty() && !force) return;
     this._mapLoading = true;
-    this._loadMods();
+    if (this._tab === "map") this._loadMods(); // the 3D and scan scripts only matter on the Map screen
     try {
       const r = await this._hass.callWS({ type: "light_show_studio/map/get" });
       this._mapOld = false;
@@ -1798,8 +2294,18 @@ class LightShowStudioPanel extends HTMLElement {
       else this._mapLoadErr = this._mapErrText(err, "Couldn't load the map.");
     }
     this._mapLoading = false;
-    await this._loadMods();
-    this._renderMap();
+    if (this._tab === "map") {
+      await this._loadMods();
+      this._mapStale = false;
+      this._renderMap();
+    } else this._mapStale = true;
+    this._renderHome();
+    if (this._tab === "schedule" || this._tab === "areas") {
+      this._tlSig = null;
+      if (!this._draft) this._renderSchedules();
+      this._renderTonight();
+    }
+    if (this._sheet?.kind === "lsched") this._renderLightEditor();
   }
 
   _renderMap() {
@@ -1986,6 +2492,7 @@ class LightShowStudioPanel extends HTMLElement {
     const { runs, mapped } = this._areaState(a);
     const top = this._el("div", "ac-top");
     const name = this._el("h3", "", a.name);
+    name.append(this._el("span", "atag " + (a.outdoor ? "" : "in"), a.outdoor ? "Outdoor" : "Indoor"));
     const pills = this._el("div", "ac-pills");
     const run = this._el("span", "pill", "Idle");
     run.hidden = true;
@@ -2048,9 +2555,10 @@ class LightShowStudioPanel extends HTMLElement {
       ref.stop.hidden = !running;
       ref.stop.disabled = !admin;
     }
+    this._syncHome();
     const d = this._dref;
-    if (d && this._mapSel.area) {
-      const a = this._area(this._mapSel.area);
+    if (d && d.areaId) {
+      const a = this._area(d.areaId);
       const running = a && this._areaRunning(a);
       d.pill.className = "pill " + (running ? "ok run" : "");
       d.pill.textContent = running ? "Running" : "Idle";
@@ -2104,6 +2612,49 @@ class LightShowStudioPanel extends HTMLElement {
     return all[id];
   }
 
+  // "run a pattern in this area": pattern, effect, speed, how it moves, Start / Stop. Used by the Map screen's area page and by the Areas sheet.
+  _areaPlayBlock(area, admin) {
+    const ap = this._areaPat(area.id);
+    const patWrap = this._el("div", "box ad-pat");
+    const pb = this._patternBox({
+      title: `Run a pattern in ${area.name}`, speedText: "Speed: how fast it moves",
+      onPick: (key, n) => {
+        ap[key] = n;
+        if (this._areaRunning(area)) {
+          clearTimeout(this._zT);
+          this._zT = setTimeout(() => this._areaCall("start", area.id), 250);
+        }
+      },
+      onSpeed: (v) => {
+        ap.speed = v;
+        if (this._areaRunning(area)) this._areaCall("speed", area.id);
+      },
+    });
+    const [pats, pfx] = this._patternLists();
+    this._patternFill(pb, pats, pfx);
+    this._patternSync(pb, { pattern: ap.pattern, effect: ap.effect, speed: ap.speed, moving: !STILL.has(ap.effect) });
+    const motion = this._motionControls(ap, () => {
+      this._renderAreaDetailBits();
+      if (this._areaRunning(area)) this._areaCall("start", area.id);
+    });
+    const err = this._el("div", "serr");
+    err.setAttribute("role", "alert");
+    err.hidden = true;
+    const acts = this._el("div", "zacts");
+    const start = this._btn("", "btn", () => this._areaCall("start", area.id));
+    const stop = this._btn("", "btn alt", () => this._areaCall("stop", area.id));
+    stop.innerHTML = `${svg(PANEL_ICON.stop)}Stop`;
+    acts.append(start, stop);
+    patWrap.append(pb, motion, err, acts);
+    // hook: spatial map effects and music mode add their controls to this block later
+    const hook = this._el("div", "hook");
+    hook.dataset.hook = "area-pattern-extra";
+    hook.hidden = true;
+    patWrap.append(hook);
+    if (!admin) patWrap.querySelectorAll("input,select,textarea,button").forEach((e) => (e.disabled = true));
+    return { patWrap, ref: { start, stop, err, busy: false, motion } };
+  }
+
   // ---- one area, in detail -----------------------------------------------------------------------------------------
   _renderAreaDetail() {
     const area = this._area(this._mapSel.area), box = this._mp.detail, admin = this._isAdmin();
@@ -2131,7 +2682,16 @@ class LightShowStudioPanel extends HTMLElement {
       del.disabled = true;
       del.title = "Move or remove this area's runs first";
     }
-    head.append(back, nm, pill, del);
+    // outdoor areas are what "All outdoor" light schedules target (map/set areas[].outdoor, a real boolean; omitted = indoor)
+    const out = this._el("span", "swrow");
+    const outTg = this._toggle(!!area.outdoor, `${area.name} is outdoor`, !admin, `out-${area.id}`, (on, tg) => {
+      if (on) area.outdoor = true;
+      else delete area.outdoor;
+      tg.setAttribute("aria-checked", String(on));
+      this._mapChanged();
+    });
+    out.append(document.createTextNode("Outdoor"), outTg);
+    head.append(back, nm, out, pill, del);
     // 3D view
     const vb = this._el("div", "box mp-canvasbox");
     const ch = this._el("div", "mp-chead");
@@ -2211,41 +2771,9 @@ class LightShowStudioPanel extends HTMLElement {
       wrap.replaceWith(this._el("div", "muted", "The 3D view couldn't load" + (this._modsErr ? ` (${this._modsErr})` : "") + ". Reload the page after updating Light Show Studio."));
     }
     // pattern here
-    const ap = this._areaPat(area.id);
-    const patWrap = this._el("div", "box ad-pat");
-    const pb = this._patternBox({
-      title: `Run a pattern in ${area.name}`, speedText: "Speed: how fast it moves",
-      onPick: (key, n) => {
-        ap[key] = n;
-        if (this._areaRunning(area)) {
-          clearTimeout(this._zT);
-          this._zT = setTimeout(() => this._areaCall("start", area.id), 250);
-        }
-      },
-      onSpeed: (v) => {
-        ap.speed = v;
-        if (this._areaRunning(area)) this._areaCall("speed", area.id);
-      },
-    });
-    const [pats, pfx] = this._patternLists();
-    this._patternFill(pb, pats, pfx);
-    this._patternSync(pb, { pattern: ap.pattern, effect: ap.effect, speed: ap.speed, moving: !STILL.has(ap.effect) });
-    const motion = this._motionControls(ap, () => {
-      this._renderAreaDetailBits();
-      if (this._areaRunning(area)) this._areaCall("start", area.id);
-    });
-    const err = this._el("div", "serr");
-    err.setAttribute("role", "alert");
-    err.hidden = true;
-    const acts = this._el("div", "zacts");
-    const start = this._btn("", "btn", () => this._areaCall("start", area.id));
-    const stop = this._btn("", "btn alt", () => this._areaCall("stop", area.id));
-    stop.innerHTML = `${svg(PANEL_ICON.stop)}Stop`;
-    acts.append(start, stop);
-    patWrap.append(pb, motion, err, acts);
-    box.append(patWrap);
-    this._dref = { pill, start, stop, err, busy: false, motion };
-    if (!admin) patWrap.querySelectorAll("input,select,textarea,button").forEach((e) => (e.disabled = true));
+    const blk = this._areaPlayBlock(area, admin);
+    box.append(blk.patWrap);
+    this._dref = { pill, areaId: area.id, ...blk.ref };
     // runs
     const rh = this._el("div", "lhead");
     rh.innerHTML = `<h2><span class="hi">${svg(PANEL_ICON.route)}</span>Runs in ${""}</h2>`;
@@ -2480,7 +3008,8 @@ class LightShowStudioPanel extends HTMLElement {
 
   _rerenderMotion() {
     // the owner re-renders its card; area detail and zone cards both call their own render in `changed`
-    if (this._mapSel.area) this._renderAreaDetail();
+    if (this._sheet?.kind === "play") this._openPlaySheet(this._sheet.area);
+    else if (this._mapSel.area) this._renderAreaDetail();
     else this._renderMapZones();
   }
 
@@ -2643,10 +3172,10 @@ class LightShowStudioPanel extends HTMLElement {
     try {
       const unsub = await this._hass.connection.subscribeMessage((m) => {
         this._mapRunning = new Set(Array.isArray(m?.running) ? m.running : []);
-        this._syncZones();
+        if (this._tab === "map") this._syncZones();
         this._syncAreas();
       }, { type: "light_show_studio/map/subscribe" });
-      if (this._tab === "map" && this.isConnected) this._mapUnsub = unsub;
+      if ((this._tab === "map" || this._tab === "areas") && this.isConnected) this._mapUnsub = unsub;
       else unsub();
     } catch (err) {
       /* older backend: the zone attribute on the lights is used instead */
@@ -3347,7 +3876,7 @@ class LightShowStudioPanel extends HTMLElement {
       head.append(nb);
     }
     box.append(head);
-    head.append(this._el("span", "hsub muted", "A named, ordered list of shows (Halloween, Christmas). Pick one on the Play tab or in a schedule."));
+    head.append(this._el("span", "hsub muted", "A named, ordered list of shows (Halloween, Christmas). Pick one on the Play screen or in a schedule."));
     if (this._plError) box.append(this._el("div", "serr", this._plError));
     if (!this._pl) {
       const sk = this._el("div", "skel");
@@ -3543,6 +4072,7 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   _subscribeSchedule() {
+    this._subscribeLightSchedules();
     if (this._schUnsub || this._schSubscribing || !this._hass?.connection || !this.isConnected) return;
     this._schSubscribing = true;
     this._hass.connection
@@ -3568,6 +4098,12 @@ class LightShowStudioPanel extends HTMLElement {
       /* connection already closed */
     }
     this._schUnsub = null;
+    try {
+      this._lschUnsub?.();
+    } catch (e) {
+      /* connection already closed */
+    }
+    this._lschUnsub = null;
   }
 
   async _loadSchedules() {
@@ -3600,6 +4136,7 @@ class LightShowStudioPanel extends HTMLElement {
     if (!b) return;
     const sum = this._schSummary;
     b.textContent = "";
+    b.hidden = !(this._sch && this._sch.length);
     if (!sum) {
       b.append(this._el("div", "muted", this._schError || "Loading the schedule…"));
       return;
@@ -3636,6 +4173,7 @@ class LightShowStudioPanel extends HTMLElement {
     if (this._schError) b.append(this._el("div", "serr", this._schError));
   }
 
+  // one list for both kinds: light schedules (new) and show schedules (playlists), grouped Today / This week / Seasonal
   _renderSchedules() {
     const box = this._schList;
     if (!box) return;
@@ -3643,23 +4181,57 @@ class LightShowStudioPanel extends HTMLElement {
     this._addSched.hidden = !admin || !!this._draft;
     box.textContent = "";
     if (this._schNotice) box.append(this._el("div", "box notice", this._schNotice));
-    if (!this._sch) return;
-    if (!this._sch.length) {
-      const e = this._el("div", "box empty");
-      this._emptyState(e, PANEL_ICON.clock, "No schedules yet", "Start a playlist automatically at sunset, or at a time you choose, on the days you pick.",
-        admin ? "Add schedule" : "", () => this._openEditor());
-      box.append(e);
+    if (this._lschErr) box.append(this._el("div", "serr", this._lschErr));
+    const hasL = this._lsch !== null && this._lsch !== undefined, hasS = !!this._sch;
+    if (!hasL && !hasS) {
+      const sk = this._el("div", "skel");
+      sk.setAttribute("aria-busy", "true");
+      sk.append(document.createElement("i"), document.createElement("i"));
+      box.append(sk);
       return;
     }
-    for (const s of this._sch) box.append(this._schedCard(s, admin));
+    const items = [
+      ...(this._lsch || []).map((s) => ({ kind: "light", s, t: s.enabled && s.next_on ? Date.parse(s.next_on) : NaN, active: !!s.active })),
+      ...(this._sch || []).map((s) => ({ kind: "show", s, t: s.enabled && !s.skipped && s.next_start ? Date.parse(s.next_start) : NaN, active: s.state === "running" })),
+    ];
+    if (!items.length) {
+      const e = this._el("div", "box empty");
+      this._emptyState(e, PANEL_ICON.clock, "No schedules yet", "Turn lights on at sunset with a look of your choice, or start a playlist of shows at a time you pick.",
+        admin ? "Add schedule" : "", () => this._addScheduleChooser());
+      box.append(e);
+      this._renderSchSub();
+      return;
+    }
+    const now = new Date();
+    const group = (it) => {
+      if (it.s.date_from && it.s.date_to) return "seasonal";
+      if (it.active || (!isNaN(it.t) && LightShowStudioPanel._sameDay(new Date(it.t), now))) return "today";
+      if (!isNaN(it.t) && it.t - now.getTime() < 7 * 86400000) return "week";
+      return "later";
+    };
+    const buckets = { today: [], week: [], seasonal: [], later: [] };
+    for (const it of items) buckets[group(it)].push(it);
+    const order = (a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || (isNaN(a.t) ? 1 : 0) - (isNaN(b.t) ? 1 : 0) || a.t - b.t || String(a.s.name).localeCompare(b.s.name);
+    for (const [k, title] of [["today", "Today"], ["week", "This week"], ["seasonal", "Seasonal"], ["later", "Later"]]) {
+      if (!buckets[k].length) continue;
+      const sec = this._el("section", "sgroup");
+      sec.setAttribute("aria-label", title);
+      sec.append(this._el("h2", "grph", title));
+      for (const it of buckets[k].sort(order)) sec.append(it.kind === "light" ? this._lschedCard(it.s, admin) : this._schedCard(it.s, admin));
+      box.append(sec);
+    }
     this._restoreFocus();
+    this._renderSchSub();
+    this._renderTimeline();
   }
 
   _schedCard(s, admin) {
     const card = this._el("div", "box sc" + (s.enabled ? "" : " off"));
     card.setAttribute("role", "listitem");
     const top = this._el("div", "top");
-    top.append(this._el("div", "sn", s.name));
+    const sn = this._el("div", "sn", s.name);
+    sn.append(this._el("span", "kind", "Show"));
+    top.append(sn);
     const tg = this._el("button", "tgl");
     tg.type = "button";
     tg.setAttribute("role", "switch");
@@ -3949,7 +4521,7 @@ class LightShowStudioPanel extends HTMLElement {
       o.value = d.playlist_id;
       pl.append(o);
     }
-    if (!pl.options.length) pl.append(Object.assign(this._el("option", "", "No playlists: make one in the Library tab"), { value: "" }));
+    if (!pl.options.length) pl.append(Object.assign(this._el("option", "", "No playlists: make one in Shows > Playlists"), { value: "" }));
     pl.value = d.playlist_id;
     d.playlist_id = pl.value;
     pl.onchange = () => (d.playlist_id = pl.value);
@@ -4070,7 +4642,7 @@ class LightShowStudioPanel extends HTMLElement {
     if (!d.days.length) return fail("Pick at least one day.");
     if (d.start.type === "time" && !HHMM.test(d.start.time || "")) return fail("Enter a start time.");
     if (d.end && d.end.type === "time" && !HHMM.test(d.end.time || "")) return fail("Enter an end time.");
-    if (!d.playlist_id) return fail("Pick a playlist (make one in the Library tab first).");
+    if (!d.playlist_id) return fail("Pick a playlist (make one in Shows > Playlists first).");
     if (d.at_end === "effect" && !d.end_effect) return fail("Pick the effect to show at the end.");
     const edge = (e) => (e.type === "time" ? { type: "time", time: e.time, offset_min: 0 } : { type: e.type, offset_min: Number(e.offset_min) || 0 });
     const msg = {
@@ -4096,6 +4668,1344 @@ class LightShowStudioPanel extends HTMLElement {
     }
   }
 
+  // --- Areas: the home screen --------------------------------------------------------------------------------------
+  // One section per map area (outdoor first), each with its lights. Lights that no area claims go in "Other". A light's glowing
+  // strip is the same live frame feed the old Studio tab used (light_show_studio/subscribe), sampled down to a handful of bulbs.
+  static _SCENES = [
+    // quick scenes: a pattern + effect on every light. Later work (music mode, painted looks) can append entries or fill the
+    // data-hook="areas-top" mount point in the template.
+    { id: "festive", label: "Festive", dots: ["#FF0000", "#00C84A", "#003CFF"], pattern: "Classic Multicolor", effect: "Twinkle" },
+    { id: "warm", label: "Warm", dots: ["#FFB347", "#FFD9A0"], pattern: "Warm White", effect: "Steady" },
+    { id: "party", label: "Party", dots: ["#FF0078", "#FF5000", "#003CFF"], pattern: "Rainbow", effect: "Wave" },
+  ];
+
+  _homeGroups() {
+    const strands = this._strands || [];
+    const byEntry = new Map(strands.map((s) => [s.entry_id, s]));
+    const m = this._map && !this._mapOld ? this._map : null;
+    const groups = [];
+    const used = new Set();
+    if (m) {
+      for (const a of m.areas) {
+        const per = new Map();
+        for (const r of m.runs) {
+          if (r.area !== a.id || !byEntry.has(r.entry_id)) continue;
+          if (!per.has(r.entry_id)) per.set(r.entry_id, []);
+          if (Number.isInteger(r.count) && r.count > 0) per.get(r.entry_id).push([r.first, r.count, r.name]);
+        }
+        if (!per.size) continue;
+        const lights = [...per].map(([id, ranges]) => {
+          used.add(id);
+          return { s: byEntry.get(id), ranges };
+        });
+        groups.push({ id: a.id, area: a, name: a.name, tag: a.outdoor ? "out" : "in", lights });
+      }
+      groups.sort((x, y) => (x.tag === "out" ? 0 : 1) - (y.tag === "out" ? 0 : 1));
+    }
+    const rest = strands.filter((s) => !used.has(s.entry_id)).map((s) => ({ s, ranges: [] }));
+    if (rest.length) groups.push({ id: "_other", area: null, name: groups.length ? "Other" : "Lights", tag: "other", lights: rest });
+    return groups;
+  }
+
+  _renderHome() {
+    if (!this._aList) return;
+    const strands = this._strands;
+    const none = !!strands && !strands.length && !this._strandsError;
+    this._aSkel.hidden = !!strands || !!this._strandsError;
+    this._aErr.hidden = !(this._strandsError && !strands);
+    this._aErr.textContent = this._strandsError && !strands ? this._strandsError : "";
+    this._noLights.hidden = !none;
+    this._manage.hidden = none;
+    this._scenesEl.hidden = !strands || none;
+    if (!strands || none) {
+      this._aList.textContent = "";
+      this._homeSig = null;
+      this._homeRefs = [];
+      return;
+    }
+    const groups = this._homeGroups();
+    const sig = JSON.stringify([groups.map((g) => [g.id, g.name, g.tag, g.lights.map((l) => [l.s.entry_id, l.s.title, l.s.kind, l.s.model, l.s.entity_id, l.ranges])]), this._isAdmin()]);
+    if (sig !== this._homeSig) {
+      this._homeSig = sig;
+      const focus = this._root.getRootNode().activeElement;
+      const keep = focus && this._aList.contains(focus) ? focus.dataset.fk : null;
+      this._aList.textContent = "";
+      this._homeRefs = [];
+      this._groupRefs = [];
+      for (const g of groups) this._aList.append(this._areaSection(g));
+      if (keep) [...this._aList.querySelectorAll("[data-fk]")].find((e) => e.dataset.fk === keep)?.focus();
+    }
+    this._renderScenes();
+    this._syncHome();
+  }
+
+  _areaSection(g) {
+    const sec = this._el("section", "asec");
+    sec.setAttribute("aria-label", g.name);
+    const head = this._el("div", "ahead");
+    const an = this._el("div", "an");
+    an.append(this._el("h2", "", g.name), this._el("span", "atag " + (g.tag === "out" ? "" : g.tag === "in" ? "in" : "other"), g.tag === "out" ? "Outdoor" : g.tag === "in" ? "Indoor" : "Unassigned"));
+    const cnt = this._el("span", "cnt");
+    head.append(an, cnt);
+    const acts = this._el("div", "aact");
+    const ents = g.lights.map((l) => l.s.entity_id).filter(Boolean);
+    const grp = this._el("div", "grp2");
+    grp.setAttribute("role", "group");
+    grp.setAttribute("aria-label", `All lights in ${g.name}`);
+    const allOn = this._btn("All on", "", () => this._lightsPower(ents, true));
+    const allOff = this._btn("All off", "", () => this._lightsPower(ents, false));
+    allOn.dataset.fk = `on-${g.id}`;
+    allOff.dataset.fk = `off-${g.id}`;
+    grp.append(allOn, allOff);
+    acts.append(grp);
+    const ref = { cnt, ents, group: g, play: null, stop: null };
+    if (g.area) {
+      const play = this._btn("", "playbtn", () => this._openPlaySheet(g.area.id));
+      play.innerHTML = `${svg(PANEL_ICON.play, 16)}Play pattern in area`;
+      play.dataset.fk = `play-${g.id}`;
+      play.disabled = !this._isAdmin();
+      const stop = this._btn("", "playbtn stop", () => this._homeStop(g.area.id));
+      stop.innerHTML = `${svg(PANEL_ICON.stop, 16)}Stop`;
+      stop.hidden = true;
+      stop.setAttribute("aria-label", `Stop the pattern in ${g.name}`);
+      acts.append(play, stop);
+      ref.play = play;
+      ref.stop = stop;
+    }
+    // hook: the pattern painter and spatial map effects add per-area actions here
+    const hook = this._el("span", "hook");
+    hook.dataset.hook = "area-actions";
+    hook.hidden = true;
+    acts.append(hook);
+    const grid = this._el("div", "lcgrid" + (g.lights.length > 1 ? " two" : ""));
+    grid.setAttribute("role", "list");
+    for (const l of g.lights) grid.append(this._lightCard(l, g, g.lights.length > 1));
+    sec.append(head, acts, grid);
+    this._groupRefs.push(ref);
+    return sec;
+  }
+
+  _lightCard(l, g, two) {
+    const s = l.s;
+    const card = this._el("div", "lc");
+    card.setAttribute("role", "listitem");
+    const top = this._el("div", "lc-top");
+    const open = this._el("button", "lc-open");
+    open.type = "button";
+    open.dataset.fk = `open-${g.id}-${s.entry_id}`;
+    open.setAttribute("aria-label", `${s.title}: open controls`);
+    const n = this._el("span", "lc-n", s.title);
+    const st = this._el("span", "lc-s");
+    open.append(n, st);
+    open.onclick = () => this._openStudio(s);
+    const pwr = this._el("button", "pwr");
+    pwr.type = "button";
+    pwr.innerHTML = svg(PANEL_ICON.power, 20);
+    pwr.dataset.fk = `pwr-${g.id}-${s.entry_id}`;
+    pwr.onclick = () => this._lightsPower([s.entity_id], pwr.getAttribute("aria-pressed") !== "true");
+    top.append(open, pwr);
+    const gb = this._el("button", "glowb");
+    gb.type = "button";
+    gb.tabIndex = -1;
+    gb.setAttribute("aria-hidden", "true");
+    const cv = this._el("canvas", "glow");
+    if (s.entity_id) cv.dataset.e = s.entity_id;
+    cv._rng = l.ranges.map((r) => [r[0], r[1]]);
+    gb.append(cv);
+    gb.onclick = () => this._openStudio(s);
+    this._glowEls.add(cv);
+    card.append(top, gb);
+    this._homeRefs.push({ card, s, st, pwr, cv, open, runs: l.ranges, group: g });
+    requestAnimationFrame(() => this._paintGlow(cv));
+    return card;
+  }
+
+  _lightStatus(s) {
+    const e = s.entity_id ? this._hass?.states[s.entity_id] : null;
+    const usable = !!e && e.state !== "unavailable" && e.state !== "unknown";
+    const on = usable && e.state === "on";
+    const a = (usable && e.attributes) || {};
+    let desc;
+    if (!s.entity_id || !s.loaded) desc = "Not loaded";
+    else if (!usable) desc = "Offline";
+    else if (!on) desc = "Off";
+    else if (a.effect === SHOW) desc = "Following the show";
+    else if (a.effect === "Pattern") desc = [a.pattern, a.pattern_effect].filter(Boolean).join(" · ") || "Pattern";
+    else if (a.effect) desc = a.effect;
+    else if (a.per_bulb) desc = "Your painting";
+    else desc = "Colour";
+    if (usable && a.zone) desc = `Zone ${a.zone}`;
+    return { usable, on, desc, attrs: a };
+  }
+
+  // names, counts, power state: patched in place on every state change
+  _syncHome() {
+    if (!this._homeRefs || !this._hass) return;
+    for (const r of this._homeRefs) {
+      if (!r.card.isConnected) continue;
+      const { usable, on, desc } = this._lightStatus(r.s);
+      const kind = LightShowStudioPanel._kind(r.s);
+      const text = `${kind} · ${desc}`;
+      if (r.st.textContent !== text) r.st.textContent = text;
+      r.card.classList.toggle("off", !on);
+      r.pwr.setAttribute("aria-pressed", String(on));
+      r.pwr.setAttribute("aria-label", `Turn ${r.s.title} ${on ? "off" : "on"}`);
+      r.pwr.title = on ? "Turn off" : "Turn on";
+      r.pwr.disabled = !usable;
+      r.cv.dataset.on = on ? "1" : "";
+    }
+    for (const g of this._groupRefs || []) {
+      if (!g.cnt.isConnected) continue;
+      const on = g.ents.filter((id) => this._hass.states[id]?.state === "on").length;
+      g.cnt.textContent = `${on} of ${g.ents.length} on`;
+      if (g.group.area) {
+        const running = this._areaRunning(g.group.area);
+        g.stop.hidden = !running;
+        if (g.play.lastChild.nodeType === 3) g.play.lastChild.textContent = running ? "Change pattern" : "Play pattern in area";
+      }
+    }
+    this._drawStrips();
+  }
+
+  _syncHomeFrames() {
+    /* the glow canvases repaint in _drawStrips; nothing else follows the frames */
+  }
+
+  async _lightsPower(ents, on) {
+    const ids = [...new Set(ents.filter(Boolean))].filter((id) => {
+      const s = this._hass.states[id];
+      return s && s.state !== "unavailable";
+    });
+    if (!ids.length) return;
+    this._aErr.hidden = true;
+    try {
+      await this._hass.callService("light", on ? "turn_on" : "turn_off", { entity_id: ids });
+    } catch (err) {
+      this._aErr.textContent = this._err(err, "That didn't work.");
+      this._aErr.hidden = false;
+    }
+  }
+
+  async _homeStop(areaId) {
+    this._aErr.hidden = true;
+    try {
+      await this._hass.callWS({ type: "light_show_studio/map/zone/stop", zone_id: "area:" + areaId });
+      const s = new Set(this._mapRunning || []);
+      s.delete("area:" + areaId);
+      this._mapRunning = s;
+    } catch (err) {
+      this._aErr.textContent = this._mapErrText(err, "Couldn't stop that.");
+      this._aErr.hidden = false;
+    }
+    this._syncAreas();
+  }
+
+  _renderScenes() {
+    const box = this._scenesEl;
+    const [pats] = this._patternLists();
+    const list = LightShowStudioPanel._SCENES.filter((sc) => pats.includes(sc.pattern));
+    const sig = list.map((x) => x.id).join();
+    if (box.dataset.sig === sig) return;
+    box.dataset.sig = sig;
+    box.textContent = "";
+    const off = this._btn("", "scene", () => this._lightsPower(this._strands.map((s) => s.entity_id), false));
+    off.innerHTML = `${svg(PANEL_ICON.power, 14)}All off`;
+    box.append(off);
+    for (const sc of list) {
+      const b = this._btn("", "scene", async () => {
+        const ids = this._strands.filter((s) => s.entity_id && this._hass.states[s.entity_id]?.state !== "unavailable").map((s) => s.entity_id);
+        if (!ids.length) return;
+        this._aErr.hidden = true;
+        try {
+          await this._hass.callService("light_show_studio", "set_pattern", { pattern: sc.pattern, effect: sc.effect }, { entity_id: ids });
+        } catch (err) {
+          this._aErr.textContent = this._err(err, "That didn't work.");
+          this._aErr.hidden = false;
+        }
+      });
+      const dots = this._el("span", "sd");
+      dots.setAttribute("aria-hidden", "true");
+      for (const c of sc.dots) {
+        const i = document.createElement("i");
+        i.style.setProperty("--c", c);
+        dots.append(i);
+      }
+      b.append(dots, document.createTextNode(sc.label));
+      b.setAttribute("aria-label", `${sc.label}: ${sc.pattern}, ${sc.effect}, on every light`);
+      box.append(b);
+    }
+  }
+
+  // a canvas of a few glowing bulbs sampled from the light's live frame (or its settings while no frame has arrived)
+  _paintGlow(cv) {
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+    }
+    const g = cv.getContext("2d");
+    g.clearRect(0, 0, cv.width, cv.height);
+    const ent = cv.dataset.e;
+    const e = ent ? this._hass?.states[ent] : null;
+    const on = !!e && e.state === "on";
+    const m = ent ? this._frames[ent] : null;
+    const pitch = h > 34 ? 22 : 18;
+    const pad = 14;
+    const n = Math.max(5, Math.min(40, Math.floor((w - pad * 2) / pitch) + 1));
+    const total = cv._rng && cv._rng.length ? cv._rng.reduce((a, r) => a + r[1], 0) : m?.bulbs || 1;
+    const rw = Math.min(4.8, Math.max(3.4, h * 0.14)) * dpr, rh = rw * 1.35;
+    const glow = this._dark ? 1.7 : 1;
+    const off = this._dark ? "#3A3F4C" : "#BFC5D1";
+    const fall = on ? this._staticColours(e) : null;
+    const live = on && m && m.on && m.frame;
+    for (let i = 0; i < n; i++) {
+      const x = (pad + (n === 1 ? 0 : (i * (w - pad * 2)) / (n - 1))) * dpr, y = (cv.height) / 2;
+      let col = off, lit = false;
+      if (on) {
+        if (live) {
+          let k = n === 1 ? 0 : Math.round((i / (n - 1)) * (total - 1));
+          let idx = k;
+          if (cv._rng && cv._rng.length) {
+            idx = 0;
+            for (const r of cv._rng) {
+              if (k < r[1]) {
+                idx = r[0] + k;
+                break;
+              }
+              k -= r[1];
+            }
+          }
+          const v = parseInt(m.frame.substr(Math.min(idx, (m.bulbs || 1) - 1) * 6, 6), 16);
+          const rr = (v >> 16) & 255, gg = (v >> 8) & 255, bb = v & 255;
+          if (rr + gg + bb > 45) {
+            col = `rgb(${rr},${gg},${bb})`;
+            lit = true;
+          } else col = this._dark ? "#2A2E39" : "#4A4F5C";
+        } else if (fall) {
+          const c = fall[i % fall.length];
+          col = `rgb(${c[0]},${c[1]},${c[2]})`;
+          lit = true;
+        }
+      }
+      if (lit) {
+        g.save();
+        g.globalAlpha = Math.min(1, 0.4 * glow);
+        g.shadowColor = col;
+        g.shadowBlur = 14 * glow * dpr;
+        g.fillStyle = col;
+        g.beginPath();
+        g.ellipse(x, y, rw * 1.5, rh * 1.5, 0, 0, 6.2832);
+        g.fill();
+        g.restore();
+        g.save();
+        g.shadowColor = col;
+        g.shadowBlur = 7 * glow * dpr;
+        g.fillStyle = col;
+        g.beginPath();
+        g.ellipse(x, y, rw, rh, 0, 0, 6.2832);
+        g.fill();
+        g.restore();
+      } else {
+        g.fillStyle = col;
+        g.beginPath();
+        g.ellipse(x, y, rw, rh, 0, 0, 6.2832);
+        g.fill();
+      }
+    }
+  }
+
+  // colours to show before a frame arrives: the pattern's, the chosen colour, or warm white
+  _staticColours(e) {
+    const a = e?.attributes || {};
+    if (a.effect === "Pattern" && PATTERN_COLOURS[a.pattern]) {
+      const [cols, width] = PATTERN_COLOURS[a.pattern];
+      if (!cols.length) return [[255, 0, 0], [255, 220, 0], [0, 255, 0], [0, 220, 255], [0, 60, 255], [240, 0, 240]];
+      return cols.flatMap((c) => Array.from({ length: width }, () => c));
+    }
+    if (!a.effect && Array.isArray(a.rgb_color)) return [a.rgb_color];
+    return [[255, 196, 107], [255, 217, 160]];
+  }
+
+  // run a pattern across a whole area (the area's ad-hoc zone) from the Areas screen
+  _openPlaySheet(areaId) {
+    const area = this._area(areaId);
+    if (!area) return;
+    const admin = this._isAdmin();
+    const body = this._openSheet("play", `Play a pattern in ${area.name}`, { area: areaId });
+    body.textContent = "";
+    const top = this._el("div", "inl");
+    const pill = this._el("span", "pill", "Idle");
+    top.append(pill, this._el("span", "muted", "Runs on every light in this area as one."));
+    const blk = this._areaPlayBlock(area, admin);
+    this._dref = { pill, areaId, sheet: true, ...blk.ref };
+    body.append(top, blk.patWrap);
+    this._syncAreas();
+    this._syncWatch();
+  }
+
+  // --- Tonight: sunset, what is next, and the timeline ----------------------------------------------------------------
+  // today's sunset and the sunrise that follows, from sun.sun; times of day are what matter, so they are re-dated as needed
+  _sun() {
+    const a = this._hass?.states["sun.sun"]?.attributes;
+    if (!a) return null;
+    const ns = Date.parse(a.next_setting), nr = Date.parse(a.next_rising);
+    if (isNaN(ns) && isNaN(nr)) return null;
+    const out = {};
+    if (!isNaN(ns)) out.set = ns;
+    if (!isNaN(nr)) out.rise = nr;
+    return out;
+  }
+
+  // the sunset (or sunrise) clock time moved onto the given day
+  _sunOn(kind, day) {
+    const sun = this._sun();
+    const t = sun && (kind === "sunset" ? sun.set : sun.rise);
+    if (t == null) return null;
+    const d = new Date(t);
+    return new Date(day.getFullYear(), day.getMonth(), day.getDate(), d.getHours(), d.getMinutes());
+  }
+
+  _edgeAt(e, day) {
+    if (!e) return null;
+    if (e.type === "time") {
+      const [h, m] = String(e.time || "00:00").split(":").map(Number);
+      return new Date(day.getFullYear(), day.getMonth(), day.getDate(), h || 0, m || 0);
+    }
+    const base = this._sunOn(e.type, day);
+    return base ? new Date(base.getTime() + (Number(e.offset_min) || 0) * 60000) : null;
+  }
+
+  static _hm(d) {
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  static _sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+
+  _inSeason(s, day) {
+    if (!s.date_from || !s.date_to) return true;
+    const md = `${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+    return s.date_from <= s.date_to ? md >= s.date_from && md <= s.date_to : md >= s.date_from || md <= s.date_to;
+  }
+
+  // everything the Areas header and the timeline need; cheap, so it runs on every state change but only touches the DOM when it changed
+  _renderTonight() {
+    if (!this._upNext || !this._hass || (this._tab !== "areas" && this._tab !== "schedule")) return;
+    const sun = this._sun();
+    const now = new Date();
+    let pill = "";
+    if (sun) {
+      const st = this._hass.states["sun.sun"];
+      const up = st?.state === "above_horizon";
+      const t = up && sun.set != null ? sun.set : sun.rise != null && !up ? sun.rise : sun.set;
+      const label = up || sun.rise == null ? "Sunset" : "Sunrise";
+      if (t != null) pill = `${label} ${LightShowStudioPanel._hm(new Date(t))}`;
+    }
+    this._sunPill.hidden = !pill;
+    if (pill && this._sunPill.dataset.t !== pill) {
+      this._sunPill.dataset.t = pill;
+      this._sunPill.innerHTML = `${svg(PANEL_ICON.sun, 16)}`;
+      this._sunPill.append(pill);
+    }
+    // up next: the soonest start of any enabled schedule, or what is on now
+    const cands = [];
+    for (const s of this._lsch || []) {
+      if (s.active) cands.push({ now: true, name: s.name, until: s.next_off });
+      else if (s.enabled && s.next_on) cands.push({ t: Date.parse(s.next_on), name: s.name, edge: s.start });
+    }
+    for (const s of this._sch || []) {
+      if (s.state === "running") cands.push({ now: true, name: s.name, until: s.next_end, show: true });
+      else if (s.enabled && !s.skipped && s.next_start) cands.push({ t: Date.parse(s.next_start), name: s.name, edge: s.start, show: true });
+    }
+    const next = cands.filter((c) => c.t > now.getTime()).sort((a, b) => a.t - b.t)[0];
+    let text = "";
+    if (next) {
+      const d = new Date(next.t);
+      const lab = next.edge && next.edge.type !== "time" ? LightShowStudioPanel._edgeText(next.edge) : LightShowStudioPanel._hm(d);
+      const whenTxt = LightShowStudioPanel._sameDay(d, now) ? `at ${lab}` : `${d.toLocaleDateString([], { weekday: "short" })} ${lab}`;
+      text = `Up next: ${next.name}${next.show ? " (show)" : ""} on ${whenTxt}`;
+    } else {
+      const act = cands.find((c) => c.now);
+      if (act) text = `On now: ${act.name}${act.until ? ` until ${LightShowStudioPanel._hm(new Date(act.until))}` : ""}`;
+    }
+    this._upNext.hidden = !text;
+    if (text && this._upNext.lastChild.textContent !== text) this._upNext.lastChild.textContent = text;
+    this._renderTimeline();
+    this._renderSchSub();
+  }
+
+  _renderSchSub() {
+    if (!this._schSub) return;
+    const items = [...(this._lsch || []), ...(this._sch || [])];
+    if (this._lsch === null && this._sch === null) {
+      this._schSub.textContent = this._schError || this._lschErr || "Loading…";
+      return;
+    }
+    const active = items.filter((s) => s.enabled).length;
+    const next = [
+      ...(this._lsch || []).filter((s) => s.enabled && s.next_on).map((s) => Date.parse(s.next_on)),
+      ...(this._sch || []).filter((s) => s.enabled && !s.skipped && s.next_start).map((s) => Date.parse(s.next_start)),
+    ].filter((t) => t > Date.now()).sort((a, b) => a - b)[0];
+    const t = `${active} active${next ? ` · next run ${LightShowStudioPanel._when(new Date(next).toISOString())}` : ""}`;
+    if (this._schSub.textContent !== t) this._schSub.textContent = t;
+  }
+
+  // which map areas a schedule's targets cover: [area ids], plus "_other" for lights no area claims
+  _targetAreas(t) {
+    const m = this._map && !this._mapOld ? this._map : null;
+    const out = new Set();
+    if (!m) return out;
+    for (const refRaw of t?.areas || []) {
+      const ref = String(refRaw).toLowerCase();
+      if (ref === "all") m.areas.forEach((a) => out.add(a.id));
+      else if (ref === "outdoor") m.areas.filter((a) => a.outdoor).forEach((a) => out.add(a.id));
+      else if (ref === "indoor") m.areas.filter((a) => !a.outdoor).forEach((a) => out.add(a.id));
+      else {
+        const a = m.areas.find((x) => x.id.toLowerCase() === ref || String(x.name).toLowerCase() === ref || String(x.ha_area_id || "").toLowerCase() === ref);
+        if (a) out.add(a.id);
+      }
+    }
+    for (const id of t?.lights || []) {
+      const hit = m.runs.filter((r) => r.entry_id === id).map((r) => r.area);
+      if (hit.length) hit.forEach((a) => out.add(a));
+      else out.add("_other");
+    }
+    return out;
+  }
+
+  _targetText(t) {
+    const m = this._map && !this._mapOld ? this._map : null;
+    const names = [];
+    for (const refRaw of t?.areas || []) {
+      const ref = String(refRaw).toLowerCase();
+      if (ref === "all") names.push("Whole house");
+      else if (ref === "outdoor") names.push("All outdoor");
+      else if (ref === "indoor") names.push("All indoor");
+      else {
+        const a = m?.areas.find((x) => x.id.toLowerCase() === ref || String(x.name).toLowerCase() === ref || String(x.ha_area_id || "").toLowerCase() === ref);
+        names.push(a ? a.name : String(refRaw));
+      }
+    }
+    for (const id of t?.lights || []) {
+      const s = (this._strands || []).find((x) => x.entry_id === id) || (this._mapLights || []).find((x) => x.entry_id === id);
+      names.push(s ? s.title : "a light");
+    }
+    if (!names.length) return "No lights";
+    return names.length > 2 ? `${names[0]}, ${names[1]} +${names.length - 2}` : names.join(", ");
+  }
+
+  _lookColours(pattern) {
+    const p = PATTERN_COLOURS[pattern];
+    if (!p) return [[255, 196, 107], [255, 217, 160]];
+    if (!p[0].length) return [[255, 0, 0], [255, 220, 0], [0, 255, 0], [0, 220, 255], [0, 60, 255], [240, 0, 240]];
+    return p[0].flatMap((c) => Array.from({ length: p[1] }, () => c));
+  }
+
+  _lookDots(pattern, n = 5) {
+    const cols = this._lookColours(pattern);
+    const d = this._el("span", "lookdots");
+    d.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < n; i++) {
+      const i2 = document.createElement("i");
+      i2.style.setProperty("--c", `rgb(${cols[i % cols.length].join(",")})`);
+      d.append(i2);
+    }
+    return d;
+  }
+
+  // lanes per area for tonight, with the sunset marker and a line for now
+  _renderTimeline() {
+    const box = this._tlBox;
+    if (!box || !this._hass) return;
+    const now = new Date();
+    const base = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (now.getHours() < 5 ? 1 : 0));
+    const T0 = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 15, 0).getTime();
+    const T1 = T0 + 12 * 3600000;
+    const m = this._map && !this._mapOld ? this._map : null;
+    const wd = (base.getDay() + 6) % 7;
+    const lanes = new Map();
+    const lane = (id, name, outdoor) => {
+      if (!lanes.has(id)) lanes.set(id, { id, name, outdoor, bars: [] });
+      return lanes.get(id);
+    };
+    if (m) for (const a of m.areas) lane(a.id, a.name, !!a.outdoor);
+    const bar = (id, o) => {
+      const L = lanes.get(id) || (id === "_other" ? lane("_other", "Other", false) : null);
+      if (L) L.bars.push(o);
+    };
+    for (const s of this._lsch || []) {
+      let a = null, b = null;
+      if (s.enabled && s.days.includes(wd) && this._inSeason(s, base)) {
+        a = this._edgeAt(s.start, base);
+        if (a) {
+          if (!s.end) b = new Date(T1);
+          else if (s.end.type === "duration") b = new Date(a.getTime() + s.end.minutes * 60000);
+          else {
+            b = this._edgeAt(s.end, base);
+            if (b && b <= a) b = new Date(b.getTime() + 86400000);
+          }
+        }
+      }
+      if (s.active && (!a || !b || now < a || now > b)) {
+        a = now;
+        b = s.next_off ? new Date(s.next_off) : new Date(T1);
+      }
+      if (!a || !b) continue;
+      const ids = this._targetAreas(s.targets);
+      const bo = { a: a.getTime(), b: b.getTime(), name: s.name, pattern: s.look?.pattern };
+      if (!m) bar("_other", bo);
+      else for (const id of ids) bar(id, bo);
+    }
+    const shows = [];
+    for (const s of this._sch || []) {
+      if (!s.enabled || s.skipped) continue;
+      const a = s.next_start ? Date.parse(s.next_start) : NaN;
+      const b = s.next_end ? Date.parse(s.next_end) : NaN;
+      let ra = a, rb = b;
+      if (s.state === "running") {
+        ra = now.getTime();
+        rb = isNaN(b) ? T1 : b;
+      }
+      if (isNaN(ra) || ra >= T1 || (!isNaN(rb) && rb <= T0)) continue;
+      shows.push({ a: ra, b: isNaN(rb) ? ra + 3600000 : rb, name: s.name, show: true });
+    }
+    let list = [...lanes.values()];
+    list.sort((x, y) => (x.id === "_other") - (y.id === "_other") || (y.outdoor ? 1 : 0) - (x.outdoor ? 1 : 0));
+    if (list.length > 8) list = list.filter((l) => l.bars.length).slice(0, 8);
+    if (shows.length) list.push({ id: "_shows", name: "Shows", bars: shows });
+    const sun = this._sunOn("sunset", base);
+    const sig = JSON.stringify([T0, Math.floor(now.getTime() / 60000), sun?.getTime(), list.map((l) => [l.id, l.name, l.bars.map((b) => [b.a, b.b, b.pattern])])]);
+    if (sig === this._tlSig) return;
+    this._tlSig = sig;
+    box.textContent = "";
+    const pct = (t) => Math.max(0, Math.min(100, ((t - T0) / (T1 - T0)) * 100));
+    const head = this._el("div", "tl-h");
+    head.append(this._el("h2", "", "Tonight"), this._el("span", "", sun ? `Sunset ${LightShowStudioPanel._hm(sun)}` : ""));
+    box.append(head);
+    if (!list.length) {
+      box.append(this._el("div", "muted", "Nothing is scheduled tonight."));
+      return;
+    }
+    const grid = this._el("div", "tl-grid");
+    const names = this._el("div", "tl-names");
+    const col = this._el("div", "tl-lanes");
+    const wrap = this._el("div", "");
+    wrap.style.cssText = "position:relative;display:flex;flex-direction:column;gap:8px";
+    for (const L of list) {
+      names.append(this._el("span", "", L.name));
+      const ln = this._el("div", "tl-lane");
+      ln.dataset.lane = L.id;
+      if (!L.bars.length) ln.append(this._el("span", "none", "Off tonight"));
+      for (const b of L.bars) {
+        const l = pct(b.a), r = pct(b.b);
+        if (r <= l) continue;
+        const el = this._el("div", "tl-bar" + (b.show ? " show" : ""));
+        el.style.left = l + "%";
+        el.style.width = Math.max(1.5, r - l) + "%";
+        el.setAttribute("role", "img");
+        el.setAttribute("aria-label", `${b.name}, ${LightShowStudioPanel._hm(new Date(b.a))} to ${LightShowStudioPanel._hm(new Date(b.b))}`);
+        el.title = el.getAttribute("aria-label");
+        if (b.show) el.append(document.createElement("i"));
+        else if (b.pattern && PATTERN_COLOURS[b.pattern] && !PATTERN_COLOURS[b.pattern][0].length) {
+          el.style.background = RAINBOW_CSS;
+          el.style.setProperty("--g", "#ff7a00aa");
+        } else {
+          const cols = this._lookColours(b.pattern);
+          el.style.setProperty("--g", `rgba(${cols[0].join(",")},.67)`);
+          for (let i = 0; i < 8; i++) {
+            const seg = document.createElement("i");
+            seg.style.setProperty("--c", `rgb(${cols[i % cols.length].join(",")})`);
+            el.append(seg);
+          }
+        }
+        ln.append(el);
+      }
+      wrap.append(ln);
+    }
+    const marks = this._el("div", "");
+    marks.style.cssText = "position:absolute;inset:-4px 0 -4px 0;pointer-events:none";
+    if (sun && sun.getTime() >= T0 && sun.getTime() <= T1) {
+      const mk = this._el("div", "tl-mark tl-sun");
+      mk.style.cssText = `left:${pct(sun.getTime())}%;top:0;bottom:0`;
+      mk.setAttribute("aria-hidden", "true");
+      marks.append(mk);
+    }
+    if (now.getTime() >= T0 && now.getTime() <= T1) {
+      const mk = this._el("div", "tl-mark tl-now");
+      mk.style.cssText = `left:${pct(now.getTime())}%;top:0;bottom:0`;
+      mk.setAttribute("aria-hidden", "true");
+      marks.append(mk);
+    }
+    wrap.append(marks);
+    const axis = this._el("div", "tl-axis");
+    axis.setAttribute("aria-hidden", "true");
+    [1, 4, 7, 10].forEach((h, i) => {
+      const d = new Date(T0 + h * 3600000);
+      const hr = d.getHours();
+      const txt = i === 0 || i === 3 ? d.toLocaleTimeString([], { hour: "numeric" }) : String(hr % 12 || 12);
+      const sp = this._el("span", "", txt);
+      sp.style.left = pct(d.getTime()) + "%";
+      axis.append(sp);
+    });
+    col.append(wrap, axis);
+    grid.append(names, col);
+    box.append(grid);
+    box.setAttribute("aria-label", `Tonight timeline${sun ? ", sunset " + LightShowStudioPanel._hm(sun) : ""}`);
+  }
+
+  // --- light schedules (docs/LIGHT_SCHEDULES.md) -------------------------------------------------------------------------
+  async _loadLightSchedules() {
+    if (!this._hass || this._lschOld) return;
+    if (this._lschLoading) {
+      this._lschAgain = true;
+      return;
+    }
+    this._lschLoading = true;
+    do {
+      this._lschAgain = false;
+      try {
+        const r = await this._hass.callWS({ type: "light_show_studio/light_schedules/list" });
+        this._lsch = Array.isArray(r?.schedules) ? r.schedules : [];
+        this._lschErr = "";
+      } catch (err) {
+        if (err?.code === "unknown_command" || /unknown command/i.test(String(err?.message || err))) this._lschOld = true;
+        else this._lschErr = this._err(err, "Couldn't load the light schedules.");
+        this._lsch = this._lsch || [];
+      }
+    } while (this._lschAgain);
+    this._lschLoading = false;
+    if (!this._draft) this._renderSchedules();
+    this._renderTonight();
+  }
+
+  _subscribeLightSchedules() {
+    if (this._lschUnsub || this._lschSubscribing || this._lschOld || !this._hass?.connection || !this.isConnected) return;
+    this._lschSubscribing = true;
+    this._hass.connection
+      .subscribeMessage((m) => {
+        if (Array.isArray(m?.schedules)) {
+          this._lsch = m.schedules;
+          if (!this._draft) this._renderSchedules();
+          this._renderTonight();
+        }
+      }, { type: "light_show_studio/light_schedules/subscribe" })
+      .then((unsub) => {
+        if (this.isConnected) this._lschUnsub = unsub;
+        else unsub();
+      })
+      .catch((err) => {
+        if (err?.code === "unknown_command") this._lschOld = true;
+      })
+      .finally(() => {
+        this._lschSubscribing = false;
+      });
+  }
+
+  async _lsCall(type, data, fallback) {
+    try {
+      const r = await this._hass.callWS({ type: `light_show_studio/light_schedules/${type}`, ...data });
+      this._lschErr = "";
+      return r;
+    } catch (err) {
+      this._lschErr = this._err(err, fallback);
+      return null;
+    } finally {
+      await this._loadLightSchedules();
+    }
+  }
+
+  static _daysText(days) {
+    const k = [...days].sort().join();
+    if (k === "0,1,2,3,4,5,6") return "Every day";
+    if (k === "0,1,2,3,4") return "Weekdays";
+    if (k === "5,6") return "Weekends";
+    return days.map((d) => LightShowStudioPanel._DAYS[d]).join(", ");
+  }
+
+  static _endText(e) {
+    if (!e) return "stays on";
+    if (e.type === "duration") return `after ${e.minutes >= 60 ? `${Math.floor(e.minutes / 60)} h${e.minutes % 60 ? ` ${e.minutes % 60} min` : ""}` : `${e.minutes} min`}`;
+    return LightShowStudioPanel._edgeText(e);
+  }
+
+  _lschedCard(s, admin) {
+    const L = LightShowStudioPanel;
+    const card = this._el("div", "box sc light" + (s.enabled ? "" : " off"));
+    card.setAttribute("role", "listitem");
+    card.dataset.kind = "light";
+    const top = this._el("div", "top");
+    const nm = this._el("div", "sn", s.name);
+    top.append(nm, this._toggle(s.enabled, `${s.name} enabled`, !admin, `lt-${s.id}`, async (on) => {
+      s.enabled = on;
+      this._keepFocus(`lt-${s.id}`);
+      this._renderSchedules();
+      await this._lsCall("toggle", { schedule_id: s.id, enabled: on }, "Couldn't change the schedule.");
+      this._keepFocus(`lt-${s.id}`);
+      this._renderSchedules();
+    }));
+    card.append(top);
+    const sub = this._el("div", "sub2");
+    const b = this._el("b", "", this._targetText(s.targets));
+    const endTxt = !s.end ? "stays on" : L._endText(s.end);
+    sub.append(b, ` \u00b7 ${L._daysText(s.days)} \u00b7 ${L._edgeText(s.start)} \u2192 ${endTxt}`);
+    card.append(sub);
+    if (s.date_from && s.date_to) card.append(this._el("div", "sub2", `Season: ${L._mdText(s.date_from)} \u2013 ${L._mdText(s.date_to)}, every year`));
+    const look = this._el("div", "looks");
+    look.append(this._lookDots(s.look?.pattern), this._el("span", "lt", `${s.look?.pattern || "Pattern"} \u00b7 ${s.look?.effect || ""} \u00b7 ${s.look?.brightness ?? 100}%`));
+    card.append(look);
+    const nx = this._el("div", "nextl" + (s.active ? " on" : ""));
+    nx.innerHTML = svg("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm.5 5H11v6l5.25 3.15.75-1.23-4.5-2.67z", 16);
+    let txt;
+    if (s.active) txt = s.next_off ? `On now \u00b7 off at ${L._hm(new Date(s.next_off))}` : "On now \u00b7 stays on";
+    else if (!s.enabled) txt = "Paused";
+    else if (s.next_on) txt = `Next on: ${L._when(s.next_on)}${s.next_off ? ` \u00b7 off ${L._hm(new Date(s.next_off))}` : ""}`;
+    else txt = "Nothing coming up" + (s.date_from ? " (out of season)" : "");
+    nx.append(txt);
+    card.append(nx);
+    if (admin) {
+      const acts = this._el("div", "sacts");
+      if (this._lschConfirm === s.id) {
+        acts.append(this._el("span", "muted", `Delete "${s.name}"?`),
+          this._btn("Delete", "btn sm warnb", async () => {
+            this._lschConfirm = null;
+            await this._lsCall("delete", { schedule_id: s.id }, "Couldn't delete the schedule.");
+          }),
+          this._btn("Cancel", "btn alt sm", () => {
+            this._lschConfirm = null;
+            this._renderSchedules();
+          }));
+      } else {
+        const run = this._btn("Run now", "btn alt sm", () => this._lsCall("run_now", { schedule_id: s.id }, "Couldn't run it."));
+        run.setAttribute("aria-label", `Run ${s.name} now`);
+        acts.append(run);
+        if (s.active) {
+          const stop = this._btn("Stop", "btn alt sm", () => this._lsCall("stop", { schedule_id: s.id }, "Couldn't stop it."));
+          stop.setAttribute("aria-label", `Stop ${s.name}`);
+          acts.append(stop);
+        }
+        const ed = this._btn("Edit", "btn alt sm", (e) => this._openLightEditor(s));
+        ed.setAttribute("aria-label", `Edit ${s.name}`);
+        const del = this._btn("Delete", "btn alt sm danger", () => {
+          this._lschConfirm = s.id;
+          this._renderSchedules();
+        });
+        del.setAttribute("aria-label", `Delete ${s.name}`);
+        acts.append(ed, del);
+      }
+      card.append(acts);
+    }
+    return card;
+  }
+
+  // a switch (role=switch) in the schedule look
+  _toggle(on, label, disabled, fk, onChange) {
+    const tg = this._el("button", "tgl");
+    tg.type = "button";
+    tg.setAttribute("role", "switch");
+    tg.setAttribute("aria-checked", String(!!on));
+    tg.setAttribute("aria-label", label);
+    tg.disabled = !!disabled;
+    if (fk) tg.dataset.fk = fk;
+    tg.onclick = () => onChange(tg.getAttribute("aria-checked") !== "true", tg);
+    return tg;
+  }
+
+  _addScheduleChooser() {
+    if (this._lschOld || !this._isAdmin()) return this._openEditor();
+    const body = this._openSheet("kind", "Add a schedule");
+    body.textContent = "";
+    const mk = (title, d, icon, fn) => {
+      const b = this._el("button", "kindbtn");
+      b.type = "button";
+      b.innerHTML = `<span class="hi">${svg(icon)}</span><span><b>${title}</b><span class="d">${d}</span></span>`;
+      b.onclick = fn;
+      return b;
+    };
+    body.append(
+      mk("Light schedule", "Turn lights or areas on with a look, and off again, at sunset or a time.", PANEL_ICON.bulb, () => {
+        this._closeSheet();
+        this._openLightEditor();
+      }),
+      mk("Show schedule", "Play a playlist of xLights shows with music at a set time.", PANEL_ICON.play, () => {
+        this._closeSheet();
+        this._openEditor();
+      })
+    );
+  }
+
+  _lsNew() {
+    return {
+      id: null, name: "", enabled: true, days: [0, 1, 2, 3, 4, 5, 6],
+      start: { type: "sunset", time: "18:00", offset_min: 0 },
+      end: { type: "time", time: "23:00", offset_min: 0, minutes: 240 },
+      season: false, date_from: "11-25", date_to: "01-06",
+      areas: [], lights: [],
+      look: { pattern: this._patternLists()[0].includes("Classic Multicolor") ? "Classic Multicolor" : this._patternLists()[0][0], effect: "Steady", speed: 50, brightness: 100 },
+    };
+  }
+
+  _lsFrom(s) {
+    const d = this._lsNew();
+    const m = this._map && !this._mapOld ? this._map : null;
+    Object.assign(d, {
+      id: s.id, name: s.name, enabled: s.enabled, days: [...s.days],
+      start: { type: s.start.type, time: s.start.time || "18:00", offset_min: s.start.offset_min || 0 },
+      season: !!(s.date_from && s.date_to), date_from: s.date_from || "11-25", date_to: s.date_to || "01-06",
+      areas: (s.targets?.areas || []).map((r) => {
+        const low = String(r).toLowerCase();
+        if (["all", "outdoor", "indoor"].includes(low)) return low;
+        const a = m?.areas.find((x) => x.id.toLowerCase() === low || String(x.name).toLowerCase() === low || String(x.ha_area_id || "").toLowerCase() === low);
+        return a ? a.id : String(r);
+      }),
+      lights: [...(s.targets?.lights || [])],
+      look: { pattern: s.look.pattern, effect: s.look.effect, speed: s.look.speed ?? 50, brightness: s.look.brightness ?? 100 },
+    });
+    const e = s.end;
+    d.end = !e ? { type: "none", time: "23:00", offset_min: 0, minutes: 240 }
+      : e.type === "duration" ? { type: "duration", time: "23:00", offset_min: 0, minutes: e.minutes }
+      : { type: e.type, time: e.time || "23:00", offset_min: e.offset_min || 0, minutes: 240 };
+    return d;
+  }
+
+  _openLightEditor(s) {
+    this._lsDraft = s ? this._lsFrom(s) : this._lsNew();
+    this._lsError = "";
+    this._lsLightsOpen = false;
+    if (!this._map) this._loadMap();
+    this._openSheet("lsched", s ? "Edit schedule" : "Add schedule");
+    this._renderLightEditor();
+  }
+
+  _lsMd(label, key, d) {
+    const [m, dd] = d[key].split("-").map(Number);
+    const wrap = this._el("div", "md");
+    wrap.append(this._el("span", "", label));
+    const ms = this._el("select");
+    ms.setAttribute("aria-label", `${label} month`);
+    LightShowStudioPanel._MONTHS.forEach((mn, i) => ms.append(Object.assign(this._el("option", "", mn), { value: i + 1 })));
+    ms.value = m;
+    const ds = this._el("select");
+    ds.setAttribute("aria-label", `${label} day`);
+    const fill = () => {
+      const max = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][Number(ms.value) - 1];
+      const cur = Number(ds.value) || dd;
+      ds.textContent = "";
+      for (let i = 1; i <= max; i++) ds.append(Object.assign(this._el("option", "", String(i)), { value: i }));
+      ds.value = Math.min(cur, max);
+    };
+    fill();
+    const upd = () => (d[key] = `${String(ms.value).padStart(2, "0")}-${String(ds.value).padStart(2, "0")}`);
+    ms.onchange = () => {
+      fill();
+      upd();
+    };
+    ds.onchange = upd;
+    wrap.append(ms, ds);
+    return wrap;
+  }
+
+  // one on/off edge: Time / Sunset / Sunrise (+ After duration / Leave on for the off edge)
+  _lsEdge(key, label, extra, again) {
+    const d = this._lsDraft, e = d[key];
+    const sec = this._el("div", "ed-sec");
+    sec.append(this._el("div", "ed-lb", label));
+    const card = this._el("div", "ed-card");
+    const opts = [["time", "Time"], ["sunset", "Sunset"], ["sunrise", "Sunrise"], ...(extra || [])];
+    card.append(this._seg(opts, e.type, label, (v) => {
+      e.type = v;
+      again();
+    }));
+    const row = this._el("div", "ed-row");
+    if (e.type === "time") {
+      const t = this._el("input");
+      t.type = "time";
+      t.value = e.time || "";
+      t.setAttribute("aria-label", `${label} time`);
+      t.oninput = () => {
+        e.time = t.value;
+        hint();
+      };
+      row.append(t);
+    } else if (e.type === "sunset" || e.type === "sunrise") {
+      const n = this._el("input");
+      n.type = "number";
+      n.step = 5;
+      n.min = -720;
+      n.max = 720;
+      n.value = e.offset_min || 0;
+      n.setAttribute("aria-label", `${label} ${e.type} offset in minutes`);
+      n.oninput = () => {
+        e.offset_min = n.value === "" ? 0 : Math.round(Number(n.value));
+        hint();
+      };
+      row.append(n, this._el("span", "ed-hint", `minutes after ${e.type} (negative = before)`));
+    } else if (e.type === "duration") {
+      const n = this._el("input");
+      n.type = "number";
+      n.step = 15;
+      n.min = 1;
+      n.max = 1440;
+      n.value = e.minutes || 240;
+      n.setAttribute("aria-label", "Minutes to stay on");
+      n.oninput = () => {
+        e.minutes = Math.round(Number(n.value)) || 0;
+        hint();
+      };
+      row.append(n, this._el("span", "ed-hint", "minutes after it turns on (up to 1440)"));
+    } else row.append(this._el("span", "ed-hint", "Turns on and stays on. Nothing turns it off."));
+    card.append(row);
+    const ht = this._el("div", "ed-hint");
+    const hint = () => {
+      const today = new Date();
+      let txt = "";
+      if (e.type === "duration") txt = `Stays on for ${LightShowStudioPanel._endText(e).slice(6)}`;
+      else if (e.type === "none") txt = "";
+      else {
+        const t = key === "end" && d.end.type !== "duration" ? this._edgeAt(e, today) : this._edgeAt(e, today);
+        if (t && (e.type !== "time" || /^\d\d:\d\d$/.test(e.time || ""))) txt = `${key === "start" ? "Turns on" : "Turns off"} at ${LightShowStudioPanel._hm(t)} today`;
+        else if (e.type !== "time") txt = "Sunset and sunrise follow your location.";
+      }
+      ht.textContent = txt;
+    };
+    hint();
+    card.append(ht);
+    sec.append(card);
+    return sec;
+  }
+
+  _renderLightEditor() {
+    if (this._sheet?.kind !== "lsched" || !this._lsDraft) return;
+    const d = this._lsDraft;
+    const body = this._sheetBody;
+    const scroll = body.scrollTop;
+    this._stopPreview?.();
+    body.textContent = "";
+    const again = () => this._renderLightEditor();
+    const m = this._map && !this._mapOld ? this._map : null;
+    // name
+    const name = this._el("input", "ed-name");
+    name.type = "text";
+    name.maxLength = 60;
+    name.value = d.name;
+    name.placeholder = "Name, e.g. Porch evenings";
+    name.setAttribute("aria-label", "Schedule name");
+    name.oninput = () => (d.name = name.value);
+    body.append(name);
+    // where
+    {
+      const sec = this._el("div", "ed-sec");
+      const lb = this._el("div", "ed-lb");
+      const count = d.areas.length + d.lights.length;
+      lb.append(this._el("span", "", "Where"), this._el("em", "", count ? `${count} selected` : "pick at least one"));
+      const card = this._el("div", "ed-card");
+      const chips = this._el("div", "chips");
+      chips.setAttribute("role", "group");
+      chips.setAttribute("aria-label", "Areas");
+      const chip = (val, text) => {
+        const b = this._btn(text, "chip", () => {
+          d.areas = d.areas.includes(val) ? d.areas.filter((x) => x !== val) : [...d.areas, val];
+          again();
+        });
+        b.setAttribute("aria-pressed", String(d.areas.includes(val)));
+        chips.append(b);
+      };
+      for (const a of m?.areas || []) chip(a.id, a.name);
+      chip("outdoor", "All outdoor");
+      chip("indoor", "All indoor");
+      chip("all", "Whole house");
+      // areas this schedule names that the map no longer has stay as chips so they are not lost
+      for (const r of d.areas) if (!["outdoor", "indoor", "all"].includes(r) && !(m?.areas || []).some((a) => a.id === r)) chip(r, String(r));
+      card.append(chips);
+      const lights = (this._mapLights && this._mapLights.length ? this._mapLights : this._strands || []).map((l) => ({ id: l.entry_id, title: l.title }));
+      const pick = this._el("button", "ed-pick");
+      pick.type = "button";
+      pick.setAttribute("aria-expanded", String(this._lsLightsOpen));
+      const names = d.lights.map((id) => lights.find((l) => l.id === id)?.title || "a light");
+      pick.append(this._el("span", "", "or pick lights"), this._el("span", "m", names.length ? (names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0]) : `${lights.length} lights`));
+      pick.onclick = () => {
+        this._lsLightsOpen = !this._lsLightsOpen;
+        again();
+      };
+      card.append(pick);
+      if (this._lsLightsOpen) {
+        const list = this._el("div", "ed-lights");
+        if (!lights.length) list.append(this._el("div", "muted", "No lights found"));
+        for (const l of lights) {
+          const lab = this._el("label", "chk");
+          const cb = this._el("input");
+          cb.type = "checkbox";
+          cb.checked = d.lights.includes(l.id);
+          cb.onchange = () => {
+            d.lights = d.lights.filter((x) => x !== l.id);
+            if (cb.checked) d.lights.push(l.id);
+            lb.lastChild.textContent = d.areas.length + d.lights.length ? `${d.areas.length + d.lights.length} selected` : "pick at least one";
+          };
+          lab.append(cb, this._el("span", "", l.title));
+          list.append(lab);
+        }
+        card.append(list);
+      }
+      sec.append(lb, card);
+      body.append(sec);
+    }
+    body.append(this._lsEdge("start", "When on", null, again));
+    body.append(this._lsEdge("end", "When off", [["duration", "After"], ["none", "Leave on"]], again));
+    // repeat
+    {
+      const sec = this._el("div", "ed-sec");
+      sec.append(this._el("div", "ed-lb", "Repeat"));
+      const card = this._el("div", "ed-card");
+      const ds = this._el("div", "dsel");
+      ds.setAttribute("role", "group");
+      ds.setAttribute("aria-label", "Days of the week");
+      const FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+      LightShowStudioPanel._DAYS.forEach((dn, i) => {
+        const b = this._btn(dn[0], "", () => {
+          d.days = d.days.includes(i) ? d.days.filter((x) => x !== i) : [...d.days, i].sort();
+          b.setAttribute("aria-pressed", String(d.days.includes(i)));
+        });
+        b.title = FULL[i];
+        b.setAttribute("aria-label", FULL[i]);
+        b.setAttribute("aria-pressed", String(d.days.includes(i)));
+        ds.append(b);
+      });
+      const quick = this._el("div", "inl");
+      quick.append(this._btn("Every day", "btn alt sm", () => { d.days = [0, 1, 2, 3, 4, 5, 6]; again(); }),
+        this._btn("Weekdays", "btn alt sm", () => { d.days = [0, 1, 2, 3, 4]; again(); }),
+        this._btn("Weekends", "btn alt sm", () => { d.days = [5, 6]; again(); }));
+      card.append(ds, quick);
+      sec.append(card);
+      body.append(sec);
+    }
+    // active dates
+    {
+      const sec = this._el("div", "ed-sec");
+      const lb = this._el("div", "ed-lb");
+      lb.append(this._el("span", "", "Active dates"));
+      const sw = this._el("span", "swrow");
+      sw.append(document.createTextNode("Season"), this._toggle(d.season, "Only during a season", false, "ls-season", (on) => {
+        d.season = on;
+        again();
+      }));
+      lb.append(sw);
+      sec.append(lb);
+      if (d.season) {
+        const card = this._el("div", "ed-card");
+        const row = this._el("div", "seas");
+        row.append(this._lsMd("From", "date_from", d), this._lsMd("To", "date_to", d));
+        card.append(row, this._el("div", "ed-hint", "Repeats every year. A season can cross New Year, like Nov 25 to Jan 6."));
+        sec.append(card);
+      }
+      body.append(sec);
+    }
+    // look
+    {
+      const sec = this._el("div", "ed-sec");
+      sec.append(this._el("div", "ed-lb", "Look"));
+      const card = this._el("div", "ed-card");
+      const pv = this._el("div", "pv");
+      pv.setAttribute("role", "img");
+      const cv = this._el("canvas");
+      pv.append(cv);
+      const pvt = this._el("div", "pvt");
+      const upd = () => {
+        const t = `Preview \u00b7 ${d.look.pattern} \u00b7 ${d.look.effect}`;
+        pvt.textContent = t;
+        pv.setAttribute("aria-label", `Live preview: ${d.look.pattern}, ${d.look.effect}`);
+      };
+      upd();
+      card.append(pv, pvt);
+      const [pats, pfx] = this._patternLists();
+      const grid = this._el("div", "pats");
+      grid.setAttribute("role", "radiogroup");
+      grid.setAttribute("aria-label", "Pattern");
+      for (const p of pats) {
+        const b = this._btn("", "patopt", () => {
+          d.look.pattern = p;
+          grid.querySelectorAll(".patopt").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
+          upd();
+        });
+        b.setAttribute("role", "radio");
+        b.setAttribute("aria-checked", String(d.look.pattern === p));
+        const dots = this._dots(p);
+        if (dots.style.display === "none") dots.classList.add("none");
+        b.append(dots, document.createTextNode(p));
+        grid.append(b);
+      }
+      card.append(grid);
+      const fx = this._el("div", "ed-sec");
+      fx.append(this._el("div", "ed-lb", "Effect"));
+      const chips = this._el("div", "chips");
+      chips.setAttribute("role", "group");
+      chips.setAttribute("aria-label", "Effect");
+      for (const n of pfx) {
+        const b = this._btn(n, "chip", () => {
+          d.look.effect = n;
+          chips.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+          upd();
+        });
+        if (EFFECT_INFO[n]) b.title = EFFECT_INFO[n];
+        b.setAttribute("aria-pressed", String(d.look.effect === n));
+        chips.append(b);
+      }
+      fx.append(chips);
+      card.append(fx);
+      const rng = (label, key, min, max, ends, fmt) => {
+        const w = this._el("div", "rng");
+        const rl = this._el("div", "rl");
+        const v = this._el("span", "", fmt(d.look[key]));
+        const idn = `ls-${key}`;
+        const l = this._el("label", "", label);
+        l.htmlFor = idn;
+        rl.append(l, v);
+        const r = this._el("input");
+        r.type = "range";
+        r.id = idn;
+        r.min = min;
+        r.max = max;
+        r.value = d.look[key];
+        r.oninput = () => {
+          d.look[key] = Number(r.value);
+          v.textContent = fmt(d.look[key]);
+        };
+        const en = this._el("div", "ends");
+        en.append(...ends.map((t) => this._el("span", "", t)));
+        w.append(rl, r, en);
+        return w;
+      };
+      const two = this._el("div", "ed-two");
+      two.append(rng("Speed", "speed", 1, 100, ["Slow", "Normal is 50", "Fast"], (x) => `${(x / 50).toFixed(x % 50 ? 1 : 0)}x`),
+        rng("Brightness", "brightness", 1, 100, ["Dim", "Bright"], (x) => `${x}%`));
+      card.append(two);
+      // hook: the pattern painter, music mode and spatial map effects add their looks here (later steps)
+      const hook = this._el("div", "hook");
+      hook.dataset.hook = "lsched-look-extra";
+      hook.hidden = true;
+      card.append(hook);
+      sec.append(card);
+      body.append(sec);
+      this._startPreview(cv, () => d.look);
+    }
+    const err = this._el("div", "serr", this._lsError);
+    err.setAttribute("role", "alert");
+    err.hidden = !this._lsError;
+    body.append(err);
+    // footer
+    const foot = this._sheetFoot;
+    foot.hidden = false;
+    foot.textContent = "";
+    const cancel = this._btn("Cancel", "btn alt", () => this._closeSheet());
+    const save = this._btn("Save schedule", "btn save-lsched", () => this._saveLightSchedule());
+    foot.append(cancel, save);
+    body.scrollTop = scroll;
+  }
+
+  async _saveLightSchedule() {
+    const d = this._lsDraft;
+    if (!d) return;
+    const fail = (t) => {
+      this._lsError = t;
+      const e = this._sheetBody.querySelector(".serr");
+      if (e) {
+        e.textContent = t;
+        e.hidden = !t;
+        e.scrollIntoView?.({ block: "nearest" });
+      }
+    };
+    const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+    const name = d.name.trim();
+    if (!name) return fail("Give the schedule a name.");
+    if (!d.areas.length && !d.lights.length) return fail("Pick at least one area or light.");
+    if (!d.days.length) return fail("Pick at least one day.");
+    if (d.start.type === "time" && !HHMM.test(d.start.time || "")) return fail("Enter the time it turns on.");
+    if (d.end.type === "time" && !HHMM.test(d.end.time || "")) return fail("Enter the time it turns off.");
+    if (d.end.type === "duration" && !(d.end.minutes >= 1 && d.end.minutes <= 1440)) return fail("Stay on for 1 to 1440 minutes.");
+    if (!d.look.pattern || !d.look.effect) return fail("Pick a pattern and an effect.");
+    const edge = (e) => (e.type === "time" ? { type: "time", time: e.time, offset_min: 0 } : { type: e.type, offset_min: Number(e.offset_min) || 0 });
+    const msg = {
+      type: "light_show_studio/light_schedules/save", name, enabled: d.enabled, days: d.days, start: edge(d.start),
+      end: d.end.type === "none" ? null : d.end.type === "duration" ? { type: "duration", minutes: d.end.minutes } : edge(d.end),
+      date_from: d.season ? d.date_from : null, date_to: d.season ? d.date_to : null,
+      targets: { areas: d.areas, lights: d.lights },
+      look: { pattern: d.look.pattern, effect: d.look.effect, speed: d.look.speed, brightness: d.look.brightness },
+    };
+    if (d.id) msg.schedule_id = d.id;
+    const btn = this._sheetFoot.querySelector(".save-lsched");
+    if (btn) btn.disabled = true;
+    fail("");
+    try {
+      await this._hass.callWS(msg);
+      this._lschErr = "";
+      this._closeSheet();
+      this._loadLightSchedules();
+    } catch (err) {
+      fail(this._err(err, "Couldn't save the schedule."));
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // a little animated preview of the look: the same pattern colours and motion the lights will show
+  _startPreview(cv, getLook) {
+    this._stopPreview?.();
+    const reduce = !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const t0 = performance.now();
+    const draw = (now) => {
+      if (!cv.isConnected) return;
+      const look = getLook();
+      const w = cv.clientWidth, h = cv.clientHeight;
+      if (w && h) {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        if (cv.width !== Math.round(w * dpr)) {
+          cv.width = Math.round(w * dpr);
+          cv.height = Math.round(h * dpr);
+        }
+        const g = cv.getContext("2d");
+        g.clearRect(0, 0, cv.width, cv.height);
+        const cols = this._lookColours(look.pattern);
+        const n = Math.max(8, Math.floor(w / 16));
+        const t = reduce ? 0 : ((now - t0) / 1000) * (0.4 + (look.speed || 50) / 40);
+        const glow = this._dark ? 1.7 : 1;
+        const bri = Math.max(0.1, (look.brightness || 100) / 100);
+        for (let i = 0; i < n; i++) {
+          let c = cols[i % cols.length], k = 1;
+          switch (look.effect) {
+            case "Twinkle": k = 0.35 + 0.65 * Math.pow(Math.sin(t * 1.6 + i * 2.399), 2); break;
+            case "Chase": c = cols[((i - Math.floor(t * 3)) % cols.length + cols.length) % cols.length]; break;
+            case "Twinkle Swap": k = 0.25 + 0.75 * Math.pow(Math.sin(t * 1.2 + i * 1.7), 2); c = cols[(i + Math.floor(t * 0.7 + i * 0.37)) % cols.length]; break;
+            case "Marquee": k = (i + Math.floor(t * 3)) % 3 === 0 ? 1 : 0.12; break;
+            case "Fade": k = 0.2 + 0.8 * (0.5 + 0.5 * Math.sin(t * 1.4)); break;
+            case "Sparkle": k = 0.7 + 0.3 * Math.sin(t + i); if (Math.sin(t * 7 + i * 12.9898) > 0.96) c = [255, 255, 255]; break;
+            case "Alternate": k = (i + Math.floor(t * 1.5)) % 2 ? 1 : 0.15; break;
+            case "Wave": k = 0.2 + 0.8 * (0.5 + 0.5 * Math.sin(i * 0.5 - t * 3)); break;
+            default: break;
+          }
+          k *= bri;
+          const x = ((i + 0.5) / n) * cv.width, y = cv.height / 2;
+          const r = Math.min(cv.height * 0.3, 6 * dpr);
+          g.save();
+          g.shadowColor = `rgba(${c[0]},${c[1]},${c[2]},${Math.min(1, k)})`;
+          g.shadowBlur = 10 * glow * dpr * k;
+          g.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${0.12 + 0.88 * k})`;
+          g.beginPath();
+          g.ellipse(x, y, r * 0.8, r, 0, 0, 6.2832);
+          g.fill();
+          g.restore();
+        }
+      }
+      this._pvRaf = reduce ? setTimeout(() => draw(performance.now()), 250) : requestAnimationFrame(draw);
+    };
+    this._stopPreview = () => {
+      cancelAnimationFrame(this._pvRaf);
+      clearTimeout(this._pvRaf);
+      this._pvRaf = 0;
+      this._stopPreview = null;
+    };
+    this._pvRaf = requestAnimationFrame(draw);
+  }
+
   // --- live updates ------------------------------------------------------
   _update() {
     const player = this._findPlayer();
@@ -4103,13 +6013,13 @@ class LightShowStudioPanel extends HTMLElement {
     const status = { lights: this._strands ? this._strands.length > 0 : this._lights().length > 0, player: !!player, shows: shows > 0 };
     if (this._tab === null) {
       const saved = stored.get();
-      const mapped = saved in OLD_TABS ? OLD_TABS[saved] : saved;
-      const first = !status.lights ? "lights" : !status.shows ? "library" : "play";
-      this._select(TABS.some(([id]) => id === mapped) ? mapped : first, false);
+      this._select(TABS.some(([id]) => id === saved) || saved in OLD_TABS ? saved : "areas", false);
     }
-    if (this._tab === "studio") this._renderStudioControls();
+    if (this._sheet?.kind === "light") this._renderStudioControls();
     if (this._tab === "map") this._syncZones();
     this._renderHeader();
+    this._syncHome();
+    this._renderTonight();
     for (const el of [this._player, this._library, this._adder]) this._feed(el);
     this._renderBanner(status);
   }
