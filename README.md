@@ -109,6 +109,30 @@ Events: `light_show_studio_schedule_started` and `light_show_studio_schedule_end
 `name`, and for started the `playlist`, `start`, `end`; for ended the `reason`: `window_end`, `preempted`,
 `skipped`, `disabled`, `deleted`, `edited`, `finished` or `stopped`).
 
+## Patterns
+
+Pick **what colours** the string shows, then **how it moves**, then **how fast**, in the Light Shows
+panel (choose the "Pattern" effect on the light, then a pattern, an effect and the speed slider).
+
+- **Pattern**: Classic Multicolor (the old ceramic-bulb order), Warm White, Cool White, Red & Green,
+  Candy Cane, Blue & White, Pastel, Halloween, Rainbow and more.
+- **Effect**: Steady, Twinkle (every bulb swells and fades on its own, like old incandescent bulbs),
+  Chase (the pattern glides along the string), Twinkle Swap, Marquee, Fade, Sparkle, Alternate, Wave.
+- **Speed**: 1-100, 50 is normal (0.25x to 4x). It applies to every animated effect, not only patterns.
+
+Patterns also work from automations with the `light_show_studio.set_pattern` action. All fields are
+optional; sending only `speed` changes the speed of whatever is running.
+
+```yaml
+action: light_show_studio.set_pattern
+target:
+  entity_id: light.c9_string
+data:
+  pattern: Classic Multicolor
+  effect: Twinkle
+  speed: 40
+```
+
 ## Twinkly lights
 
 Twinkly strings are added the same way as Govee lights, and show live in the Studio tab.

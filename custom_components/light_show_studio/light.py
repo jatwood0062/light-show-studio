@@ -123,8 +123,10 @@ class C9StringLight(_Base, RestoreEntity):
             ctl.pattern = attrs["pattern"]
         if attrs.get("pattern_effect") in patterns.PATTERN_EFFECTS:
             ctl.pattern_effect = attrs["pattern_effect"]
-        if isinstance(attrs.get("speed"), int):
-            ctl.speed = max(1, min(100, attrs["speed"]))
+        try:
+            ctl.speed = max(1, min(100, int(attrs["speed"])))
+        except (KeyError, TypeError, ValueError):
+            pass
         if (effect := attrs.get(ATTR_EFFECT)) == SHOW:
             ctl.show_mode = True
         elif effect in EFFECTS or effect == PATTERN:

@@ -4,6 +4,19 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-06
+
+### Added
+- Patterns: pick a pattern (Classic Multicolor, Candy Cane, Rainbow, ...), then how it moves
+  (Steady, Twinkle, Chase, Twinkle Swap, Marquee, Fade, Sparkle, Alternate, Wave), then a speed
+  (1-100, 50 = normal) that also speeds up or slows down every other animated effect. New "Pattern"
+  light effect and the `light_show_studio.set_pattern` action; the choice is restored after a restart.
+  Schedules can end on the Pattern effect.
+
+### Fixed
+- Speed 1 now runs at exactly 0.25x (it was 0.257x). Twinkle is gentler and each bulb swells at its own
+  pace; Chase keeps each bulb its own colour instead of smearing; Sparkle glints fade instead of flickering.
+
 ### Security
 - DDP (UDP 4048) and E1.31 (UDP 5568) accept packets only from private / link-local IPv4 senders, so
   nothing arriving over Tailscale or the internet is processed. New player option "allowed senders"

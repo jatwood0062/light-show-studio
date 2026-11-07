@@ -40,11 +40,15 @@ DEFAULT_SPEED = 50
 
 def speed_factor(speed: int | float) -> float:
     """1-100 -> 0.25x-4x on a log scale, with 50 = 1x."""
-    s = max(1.0, min(100.0, float(speed)))
-    return 2 ** ((s - 50) / 25)
+    try:
+        s = max(1.0, min(100.0, float(speed)))
+    except (TypeError, ValueError):
+        s = 50.0
+    return 4 ** ((s - 50) / 50) if s >= 50 else 4 ** ((s - 50) / 49)
 
 
 def _hash(a: int, b: int = 0) -> float:
+    a, b = int(a) & 0xFFFFFFFF, int(b) & 0xFFFFFFFF
     x = (a * 374761393 + b * 668265263) & 0xFFFFFFFF
     x = ((x ^ (x >> 13)) * 1274126177) & 0xFFFFFFFF
     return ((x ^ (x >> 16)) & 0xFFFF) / 65536.0
@@ -74,7 +78,8 @@ def _colour_at(name: str, pos: float, n: int) -> Colour:
     p = pos % k
     i = int(p)
     a, b = cols[(i // width) % len(cols)], cols[((i + 1) // width) % len(cols)]
-    return _mix(a, b, p - i) if a != b else a
+    f = max(0.0, min(1.0, (p - i - 0.25) / 0.5))  # bulbs hold their colour; only the edges blend
+    return _mix(a, b, f * f * (3 - 2 * f)) if a != b else a
 
 
 def _bulb_colour(name: str, i: int, n: int) -> Colour:
@@ -85,7 +90,12 @@ def _bulb_colour(name: str, i: int, n: int) -> Colour:
 
 
 def render(pattern: str, effect: str, t: float, n: int) -> list[Colour]:
-    """One frame. t is already scaled by the speed."""
+    """One frame. t is already scaled by the speed. Unknown names fall back to the defaults."""
+    n = max(0, int(n))
+    if pattern not in PATTERNS:
+        pattern = DEFAULT_PATTERN
+    if effect not in PATTERN_EFFECTS:
+        effect = DEFAULT_EFFECT
     if effect == CHASE:  # the pattern glides along the string, ~3 bulbs a second
         return [_colour_at(pattern, i - t * 3.0, n) for i in range(n)]
     base = [_bulb_colour(pattern, i, n) for i in range(n)]
@@ -93,8 +103,9 @@ def render(pattern: str, effect: str, t: float, n: int) -> list[Colour]:
         out = []
         for i, c in enumerate(base):
             rate, phase = 0.5 + _hash(i, 1) * 0.9, _hash(i, 2) * 6.283
-            v = 0.5 + 0.5 * math.sin(t * rate * 2.2 + phase)
-            out.append(_scale(c, 0.12 + 0.88 * v ** 2))
+            w = t * rate * 2.2 + phase  # a slow swell with a little wobble so no two bulbs repeat alike
+            v = 0.5 + 0.38 * math.sin(w) + 0.12 * math.sin(w * 2.3 + phase * 3)
+            out.append(_scale(c, 0.1 + 0.9 * max(0.0, min(1.0, v)) ** 2))
         return out
     if effect == "Twinkle Swap":  # each bulb dims out, comes back as another colour from the pattern
         cols = PATTERNS.get(pattern, PATTERNS[DEFAULT_PATTERN])[0]
@@ -116,11 +127,9 @@ def render(pattern: str, effect: str, t: float, n: int) -> list[Colour]:
         v = 0.5 + 0.5 * math.sin(t * 1.6)
         return [_scale(c, 0.1 + 0.9 * v) for c in base]
     if effect == "Sparkle":  # the pattern with quick white glints
-        slot = int(t * 12)
-        out = []
-        for i, c in enumerate(base):
-            out.append((255, 255, 255) if _hash(i, slot) < 0.04 else c)
-        return out
+        x = t * 5  # a few glints a second, each fading out over its slot so it never flickers
+        slot, f = int(math.floor(x)), x - math.floor(x)
+        return [_mix((255, 255, 255), c, f * f) if _hash(i, slot) < 0.05 else c for i, c in enumerate(base)]
     if effect == "Alternate":  # odd and even bulbs take turns
         on_even = int(t * 1.5) % 2 == 0
         return [c if (i % 2 == 0) == on_even else _scale(c, 0.08) for i, c in enumerate(base)]

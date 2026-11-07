@@ -34,6 +34,7 @@ from .const import (
     SCHEDULER_KEY,
 )
 from .effects import EFFECT_LIST
+from .patterns import PATTERN
 from .library import SHOW_PLAYER_KEY
 
 _LOGGER = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ SCHEDULE_FIELDS: dict[Any, Any] = {
     vol.Optional("shuffle", default=False): cv.boolean,
     vol.Optional("repeat"): cv.boolean,
     vol.Optional("at_end", default="off"): vol.In(AT_END),
-    vol.Optional("end_effect"): vol.In(EFFECT_LIST),
+    vol.Optional("end_effect"): vol.In([*EFFECT_LIST, PATTERN]),
 }
 
 
