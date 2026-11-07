@@ -72,6 +72,7 @@ const PANEL_ICON = {
   queue: "M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z",
   upload: "M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z",
   link: "M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z",
+  cam: "M12 12c1.65 0 3-1.35 3-3s-1.35-3-3-3-3 1.35-3 3 1.35 3 3 3zm8-8h-3.17L15 2H9L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 13c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z",
   target: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z",
 };
 
@@ -115,7 +116,8 @@ class LightShowStudioPanel extends HTMLElement {
     this._frames = {}; // entity id -> last frame event
     this._subs = new Map(); // entity id -> unsubscribe function (or a pending marker)
     this._map = null;
-    this._mapSel = { zone: null, run: null };
+    this._mapSel = { zone: null, run: null, area: null };
+    this._wiz = null;
   }
 
   connectedCallback() {
@@ -129,6 +131,8 @@ class LightShowStudioPanel extends HTMLElement {
     this._poll = null;
     this._unsubscribeSchedule();
     this._unsubscribeMap();
+    this._closeScan();
+    this._disposeViewers();
     this._watchFrames([]);
   }
 
@@ -531,6 +535,48 @@ class LightShowStudioPanel extends HTMLElement {
         .zone .zbody > .fld, .zone .zruns { min-width: 0; }
         .zruns h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
         .lhead .hsub.muted { flex: 1 0 100%; }
+        /* ---- map v2: areas, 3D ---- */
+        .mp-areas { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 14px; }
+        .mp-areas > * + *, .mp-over > * + * { margin-top: 0; }
+        .mp-over { display: flex; flex-direction: column; gap: 14px; }
+        .mp-over > .lhead:not(:first-child) { margin-top: 10px; }
+        .areacard { display: flex; flex-direction: column; gap: 12px; padding: 14px; transition: border-color .15s, box-shadow .15s, transform .15s; }
+        .areacard:hover { border-color: var(--lss-acc); box-shadow: 0 0 0 3px var(--lss-tint), var(--shadow); }
+        .ac-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+        .ac-top h3 { margin: 0; font-size: 17px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ac-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+        .ac-pv { display: block; width: 100%; aspect-ratio: 16 / 9; padding: 0; border-radius: var(--r2); overflow: hidden; position: relative; background: #07080c; cursor: pointer; }
+        .ac-pv canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+        .ac-runs { display: flex; flex-direction: column; gap: 6px; }
+        .ac-run { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; font-size: 13px; }
+        .ac-run .rn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+        .ac-run .rc { color: var(--lss-mut); font-size: 12px; font-variant-numeric: tabular-nums; }
+        .ac-run .rstrip { grid-column: 2 / -1; width: 100%; height: 6px; border-radius: 3px; background: #0c0e13; box-shadow: inset 0 0 0 1px rgba(127,127,127,.25); }
+        .ac-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+        .ac-acts .btn { flex: 1 1 auto; }
+        .mp-detail { display: flex; flex-direction: column; gap: 14px; }
+        .mp-detail > * + * { margin-top: 0; }
+        .ad-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
+        .ad-head input[type=text] { flex: 1; font-weight: 600; font-size: 17px; }
+        .mp-canvasbox .mp-wrap { background: #07080c; }
+        .mp-wrap .vt { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; pointer-events: none; z-index: 1; }
+        .mp-wrap .vt > * { pointer-events: auto; }
+        .mp-wrap .vt .seg { background: rgba(0,0,0,.55); border-color: rgba(255,255,255,.18); }
+        .mp-wrap .vt .segb { color: #fff; min-height: 38px; padding: 2px 14px; }
+        .mp-wrap .vt .segb[aria-checked=true] { color: var(--lss-onacc); }
+        .ibv { width: 44px; height: 44px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.18); }
+        .ibv:hover { background: rgba(0,0,0,.75); }
+        .mp-canvasbox .inl { margin-top: 12px; }
+        .mp-canvasbox .mp-legend { flex: 1 1 100%; }
+        .ad-pat > * + * { margin-top: 14px; }
+        .ad-pat .st-pat { box-shadow: none; background: var(--lss-soft); border: none; padding: 14px; }
+        .motion { gap: 8px; }
+        .motion details { margin-top: 4px; }
+        .motion summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-size: 14px; font-weight: 500; color: var(--lss-acc); }
+        .motion .vrow { display: grid; grid-template-columns: 8.5em minmax(0, 1fr) 3em; align-items: center; gap: 8px; }
+        .motion .vrow input { width: 100%; min-height: 44px; accent-color: var(--lss-acc); }
+        .motion .vrow .bv { font-weight: 600; text-align: right; }
+        @media (max-width: 420px) { .motion .vrow { grid-template-columns: 6.5em minmax(0, 1fr) 2.6em; } }
         .pls .lhead { margin-bottom: 4px; }
         .pls .lhead + .serr, .pls .skel { margin-top: 12px; }
         .box.empty .empty, .pls .empty { padding: 20px 8px; }
@@ -657,7 +703,10 @@ class LightShowStudioPanel extends HTMLElement {
     if (user) stored.set(id);
     if (id === "lights" || id === "studio" || id === "map") this._loadStrands();
     if (id === "studio") this._renderStudio();
-    if (id !== "map") this._unsubscribeMap();
+    if (id !== "map") {
+      this._unsubscribeMap();
+      this._closeScan();
+    }
     if (id === "map") {
       this._subscribeMap();
       this._loadMap();
@@ -1522,20 +1571,26 @@ class LightShowStudioPanel extends HTMLElement {
     r.sps.title = moving ? "" : "Speed applies once an effect is running";
   }
 
-  // --- map tab -------------------------------------------------------------------
-  // Zones run one pattern across several runs (a run = a range of pixels on one light). Written to the
-  // websocket contract in docs/MAPPING_PLAN.md: map/get, map/set, map/zone/start|stop|speed.
+  // --- map tab (v2: areas, 3D, scanning) ---------------------------------------------------------------------
+  // Areas hold runs (a run = a range of pixels on one light). Zones run one pattern across runs or whole areas. Written to the
+  // websocket contract in docs/MAPPING_V2.md: map/get, map/set, map/scan/*, map/zone/start|stop|speed. y is UP, z towards the viewer.
   static _clamp01(v) {
     return Math.min(1, Math.max(0, v));
   }
 
+  // the world position [x, y, z] (0-1) of every pixel of a run: its scan if it has one, else its polyline
   static _runPos(run) {
-    const n = Math.max(0, Math.floor(run.count) || 0), pts = run.pts || [];
-    if (!n || !pts.length) return [];
-    if (pts.length === n) return pts;
-    if (pts.length === 1) return Array.from({ length: n }, () => pts[0]);
+    const n = Math.max(0, Math.min(2040, Math.floor(run.count) || 0)), pts = run.pts || [];
+    if (!n) return [];
+    if (Array.isArray(run.positions) && run.positions.length === n * 3) {
+      return Array.from({ length: n }, (_, i) => [run.positions[i * 3] / 1000, run.positions[i * 3 + 1] / 1000, run.positions[i * 3 + 2] / 1000]);
+    }
+    if (!pts.length) return [];
+    const P = (p) => [p[0], p[1], p.length > 2 ? p[2] : 0.5];
+    if (pts.length === n) return pts.map(P);
+    if (pts.length === 1) return Array.from({ length: n }, () => P(pts[0]));
     const cum = [0];
-    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1], (pts[i][2] ?? 0.5) - (pts[i - 1][2] ?? 0.5)));
     const total = cum[cum.length - 1] || 1e-9;
     const out = new Array(n);
     let k = 1;
@@ -1544,19 +1599,27 @@ class LightShowStudioPanel extends HTMLElement {
       while (k < cum.length - 1 && cum[k] < d) k++;
       const span = cum[k] - cum[k - 1] || 1e-9;
       const t = Math.min(1, Math.max(0, (d - cum[k - 1]) / span));
-      out[i] = [pts[k - 1][0] + (pts[k][0] - pts[k - 1][0]) * t, pts[k - 1][1] + (pts[k][1] - pts[k - 1][1]) * t];
+      const a = P(pts[k - 1]), b = P(pts[k]);
+      out[i] = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
     }
     return out;
   }
 
+  _runIndex(id) {
+    return Math.max(0, (this._map?.runs || []).findIndex((r) => r.id === id));
+  }
+
   _runColour(id) {
-    const i = Math.max(0, (this._map?.runs || []).findIndex((r) => r.id === id));
-    return `hsl(${(i * 57 + 200) % 360} 85% 62%)`;
+    return `hsl(${(this._runIndex(id) * 57 + 200) % 360} 85% 62%)`;
+  }
+
+  _runRgb(id) {
+    return this._m?.runRgb ? this._m.runRgb(this._runIndex(id)) : [150, 170, 255];
   }
 
   _lanePts(i) {
-    const y = 0.12 + 0.76 * ((i % 8) / 7);
-    return [[0.12, y], [0.88, y]];
+    const y = 0.88 - 0.76 * ((i % 8) / 7);
+    return [[0.12, y, 0.5], [0.88, y, 0.5]];
   }
 
   _newId(prefix, list) {
@@ -1566,22 +1629,57 @@ class LightShowStudioPanel extends HTMLElement {
     return prefix + n;
   }
 
+  static _DIRS = {
+    left_right: [1, 0, 0], right_left: [-1, 0, 0], rise: [0, 1, 0], fall: [0, -1, 0], front_back: [0, 0, -1], back_front: [0, 0, 1],
+  };
+  static _DIR_NAMES = [
+    ["left_right", "Left to right"], ["right_left", "Right to left"], ["rise", "Up"], ["fall", "Down"],
+    ["front_back", "Front to back"], ["back_front", "Back to front"], ["outward", "Outward from a point"],
+  ];
+
+  _normAxis(a) {
+    const num = (v, d) => (Number.isFinite(Number(v)) && v !== null && v !== "" ? Number(v) : d);
+    const D = LightShowStudioPanel._DIRS;
+    if (a && Array.isArray(a.centre)) return { centre: [num(a.centre[0], 0.5), num(a.centre[1], 0.5), num(a.centre[2], 0.5)], preset: "outward" };
+    if (a && Array.isArray(a.dir)) {
+      const out = { dir: a.dir.slice(0, 3).map((v) => num(v, 0)) };
+      while (out.dir.length < 3) out.dir.push(0);
+      if (a.preset && D[a.preset]) out.preset = a.preset;
+      return out;
+    }
+    if (a && D[a.preset]) return { dir: [...D[a.preset]], preset: a.preset };
+    if (a && a.angle != null) {
+      const r = (num(a.angle, 0) * Math.PI) / 180;
+      return { dir: [Math.cos(r), Math.sin(r), 0] };
+    }
+    return { dir: [1, 0, 0], preset: "left_right" };
+  }
+
   _normMap(m) {
     const num = (v, d) => (Number.isFinite(Number(v)) && v !== null && v !== "" ? Number(v) : d);
+    const pt = (p) => [num(p[0], 0.5), num(p[1], 0.5), p.length > 2 ? num(p[2], 0.5) : 0.5];
+    let areas = (m?.areas || []).filter((a) => a && a.id != null).map((a) => ({ ...a, id: String(a.id), name: a.name || String(a.id) }));
     const runs = (m?.runs || []).map((r, i) => {
-      let pts = Array.isArray(r.pts) ? r.pts.filter((p) => Array.isArray(p) && p.length >= 2).map((p) => [Number(p[0]), Number(p[1])]) : [];
+      let pts = Array.isArray(r.pts) ? r.pts.filter((p) => Array.isArray(p) && p.length >= 2).map(pt) : [];
       if (!pts.length) pts = this._lanePts(i);
-      else if (pts.length === 1) pts = [pts[0], [Math.min(1, pts[0][0] + 0.2), pts[0][1]]];
-      return { ...r, id: String(r.id), entry_id: r.entry_id, name: r.name || `Run ${i + 1}`, first: num(r.first, 0), count: num(r.count, 1), reverse: !!r.reverse, pts };
+      else if (pts.length === 1) pts = [pts[0], [Math.min(1, pts[0][0] + 0.2), pts[0][1], pts[0][2]]];
+      const count = num(r.count, 1);
+      const out = { ...r, id: String(r.id), entry_id: r.entry_id, name: r.name || `Run ${i + 1}`, first: num(r.first, 0), count, reverse: !!r.reverse, pts, area: r.area != null ? String(r.area) : "" };
+      if (Array.isArray(r.positions) && r.positions.length === count * 3 && r.positions.every((v) => Number.isFinite(Number(v)))) out.positions = r.positions.map(Number);
+      else delete out.positions;
+      return out;
     });
+    if (!areas.length) areas = [{ id: "main", name: "House" }];
+    const aids = new Set(areas.map((a) => a.id));
+    for (const r of runs) if (!aids.has(r.area)) r.area = areas[0].id;
     const ids = new Set(runs.map((r) => r.id));
     const zones = (m?.zones || []).map((z, i) => ({
       ...z, id: String(z.id), name: z.name || `Zone ${i + 1}`, runs: (z.runs || []).filter((id) => ids.has(id)),
-      mode: z.mode === "spatial" ? "spatial" : "string",
-      axis: z.axis && Array.isArray(z.axis.centre) ? { centre: [num(z.axis.centre[0], 0.5), num(z.axis.centre[1], 0.5)] } : { angle: num(z.axis?.angle, 0) },
+      areas: (z.areas || []).map(String).filter((id) => aids.has(id)),
+      mode: z.mode === "spatial" ? "spatial" : "string", axis: this._normAxis(z.axis),
       pattern: z.pattern || "Classic Multicolor", effect: z.effect || "Chase", speed: Math.min(100, Math.max(1, Math.round(num(z.speed, 50)))),
     }));
-    return { ...m, version: m?.version || 1, runs, zones, backdrop: { kind: "none", w: 1, h: 1, ...(m?.backdrop || {}) } };
+    return { ...m, version: 2, areas, runs, zones, backdrop: { kind: "none", w: 1, h: 1, ...(m?.backdrop || {}) } };
   }
 
   _mapDirty() {
@@ -1608,26 +1706,53 @@ class LightShowStudioPanel extends HTMLElement {
     return this._err(err, fallback);
   }
 
+  _area(id) {
+    return this._map?.areas.find((a) => a.id === id) || null;
+  }
+
+  _areaRuns(id) {
+    return this._map.runs.filter((r) => r.area === id);
+  }
+
+  // the 3D / scan modules load on demand, so an old cached panel still works if they are missing
+  async _loadMods() {
+    if (this._m) return this._m;
+    if (!this._modsP) {
+      this._modsP = (async () => {
+        const base = new URL(import.meta.url);
+        const get = (n) => {
+          const u = new URL(n, base);
+          u.search = base.search;
+          return import(u.href);
+        };
+        const [v, s, w] = await Promise.all([get("light-show-studio-map3d.js"), get("light-show-studio-scan.js"), get("light-show-studio-scan-wizard.js")]);
+        return (this._m = { Viewer3D: v.Viewer3D, runRgb: v.runRgb, scan: s, ScanWizard: w.ScanWizard });
+      })().catch((e) => {
+        this._modsP = null;
+        this._modsErr = String(e?.message || e);
+        return null;
+      });
+    }
+    return this._modsP;
+  }
+
   _buildMap() {
     const sec = this._sections.map;
     sec.innerHTML = `
       <div class="lhead"><h2><span class="hi">${svg(PANEL_ICON.map)}</span>Map</h2>
-        <span class="hsub">Run one pattern across several lights, or parts of a light, as one thing.</span></div>
+        <span class="hsub">Group your lights into areas, see them in 3D, and run a pattern across them as one.</span></div>
       <div class="skel mp-skel" aria-busy="true" aria-label="Loading the map"><i></i><i></i><i></i></div>
       <div class="box mp-banner mp-note" role="status" hidden></div>
       <div class="mp-body" hidden>
-        <div class="box mp-canvasbox">
-          <div class="mp-chead"><h2><span class="hi">${svg(PANEL_ICON.target)}</span>Layout</h2><div class="mp-legend" role="group" aria-label="Runs"></div></div>
-          <div class="mp-wrap"><canvas class="mp-cv" role="img" aria-label="Layout of the runs. Drag the round handles to place each run."></canvas></div>
-          <div class="muted mp-hint" aria-live="polite"></div>
+        <div class="mp-over">
+          <div class="lhead"><h2><span class="hi">${svg(PANEL_ICON.target)}</span>Areas</h2>
+            <button class="btn alt sm add-area" type="button">${svg(PANEL_ICON.add)}New area</button></div>
+          <div class="mp-areas" role="list" aria-label="Areas"></div>
+          <div class="lhead"><h2><span class="hi">${svg(PANEL_ICON.layers)}</span>Zones</h2>
+            <button class="btn alt sm add-zone" type="button">${svg(PANEL_ICON.add)}New zone</button></div>
+          <div class="mp-zones" role="list" aria-label="Zones"></div>
         </div>
-        <div class="lhead"><h2><span class="hi">${svg(PANEL_ICON.layers)}</span>Zones</h2>
-          <button class="btn alt sm add-zone" type="button">${svg(PANEL_ICON.add)}New zone</button></div>
-        <div class="mp-zones" role="list" aria-label="Zones"></div>
-        <div class="lhead"><h2><span class="hi">${svg(PANEL_ICON.route)}</span>Runs</h2>
-          <div class="mp-tools"><button class="btn alt sm kitchen" type="button" hidden>Kitchen preset</button>
-            <button class="btn alt sm add-run" type="button">${svg(PANEL_ICON.add)}Add a run</button></div></div>
-        <div class="mp-runs" role="list" aria-label="Runs"></div>
+        <div class="mp-detail" hidden></div>
         <div class="savebar" role="region" aria-label="Unsaved map changes" hidden>
           <div class="serr" role="alert" hidden></div>
           <span class="sbt">Unsaved changes</span>
@@ -1637,45 +1762,43 @@ class LightShowStudioPanel extends HTMLElement {
       </div>`;
     const q = (c) => sec.querySelector(c);
     const p = (this._mp = {
-      skel: q(".mp-skel"), note: q(".mp-note"), body: q(".mp-body"), cv: q(".mp-cv"), wrap: q(".mp-wrap"), hint: q(".mp-hint"),
-      legend: q(".mp-legend"), zones: q(".mp-zones"), runs: q(".mp-runs"), kitchen: q(".kitchen"), addZone: q(".add-zone"),
-      addRun: q(".add-run"), bar: q(".savebar"), barErr: q(".savebar .serr"), save: q(".save-map"), discard: q(".discard"),
+      skel: q(".mp-skel"), note: q(".mp-note"), body: q(".mp-body"), over: q(".mp-over"), areas: q(".mp-areas"), detail: q(".mp-detail"),
+      zones: q(".mp-zones"), addArea: q(".add-area"), addZone: q(".add-zone"), bar: q(".savebar"), barErr: q(".savebar .serr"),
+      save: q(".save-map"), discard: q(".discard"),
     });
     p.addZone.onclick = () => this._addZone();
-    p.addRun.onclick = () => this._addRun();
-    p.kitchen.onclick = () => this._kitchenPreset();
+    p.addArea.onclick = () => this._addArea();
     p.save.onclick = () => this._mapSave();
     p.discard.onclick = () => {
       this._map = JSON.parse(this._mapSaved);
       this._mapErr = "";
-      this._pickCentre = null;
       this._renderMap();
     };
-    p.cv.onpointerdown = (e) => this._mapDown(e);
-    p.cv.onpointermove = (e) => this._mapMove(e);
-    p.cv.onpointerup = p.cv.onpointercancel = (e) => this._mapUp(e);
     this._zoneRefs = new Map();
     this._runRefs = new Map();
-    if (typeof ResizeObserver === "function") new ResizeObserver(() => this._drawMap()).observe(p.wrap);
+    this._pv = new Map(); // area id -> {viewer, scene, strips}
   }
 
   async _loadMap(force) {
     if (!this._hass || this._mapLoading) return;
     if (this._map && this._mapDirty() && !force) return;
     this._mapLoading = true;
+    this._loadMods();
     try {
       const r = await this._hass.callWS({ type: "light_show_studio/map/get" });
       this._mapOld = false;
       this._mapLoadErr = "";
       this._mapLights = Array.isArray(r?.lights) ? r.lights : [];
-      this._map = this._normMap(r?.map);
+      this._map = this._normMap(r?.map ? { ...r.map, areas: r.map.areas || r.areas } : r?.map);
       this._mapSaved = JSON.stringify(this._map);
       if (Array.isArray(r?.running)) this._mapRunning = new Set(r.running);
+      this._mapScanning = new Set(Array.isArray(r?.scanning) ? r.scanning : []);
     } catch (err) {
       if (/unknown/i.test(this._mapErrText(err, "")) || err?.code === "unknown_command") this._mapOld = true;
       else this._mapLoadErr = this._mapErrText(err, "Couldn't load the map.");
     }
     this._mapLoading = false;
+    await this._loadMods();
     this._renderMap();
   }
 
@@ -1696,27 +1819,519 @@ class LightShowStudioPanel extends HTMLElement {
       }
     }
     p.body.hidden = !m;
+    this._disposeViewers();
     if (!m) return;
     const sel = this._mapSel;
     if (sel.zone && !m.zones.some((z) => z.id === sel.zone)) sel.zone = null;
     if (sel.run && !m.runs.some((r) => r.id === sel.run)) sel.run = null;
-    const bd = m.backdrop;
-    p.wrap.style.aspectRatio = bd.w !== bd.h ? `${Math.min(2.5, Math.max(0.5, bd.w / bd.h))}` : "4 / 3";
-    p.kitchen.hidden = !(this._isAdmin() && (this._mapLights || []).some((l) => l.kind === "wled" && l.bulbs === 904));
-    p.addRun.hidden = p.addZone.hidden = !this._isAdmin();
-    this._renderLegend();
-    this._renderMapZones();
-    this._renderMapRuns();
+    if (sel.area && !m.areas.some((a) => a.id === sel.area)) sel.area = null;
+    if (sel.run && sel.area && m.runs.find((r) => r.id === sel.run)?.area !== sel.area) sel.run = null;
+    p.addArea.hidden = p.addZone.hidden = !this._isAdmin();
+    p.over.hidden = !!sel.area;
+    p.detail.hidden = !sel.area;
+    if (sel.area) this._renderAreaDetail();
+    else {
+      this._renderAreas();
+      this._renderMapZones();
+    }
     this._renderSaveBar();
     this._refreshProblems();
-    this._applySel();
     this._syncWatch();
+    this._syncAreas();
+  }
+
+  // ---- viewers and live colours ------------------------------------------------------------------------------
+  _disposeViewers() {
+    for (const v of this._pv?.values() || []) v.viewer?.destroy();
+    this._pv = new Map();
+    this._rstrips = new Set();
+    this._dv?.viewer?.destroy();
+    this._dv = null;
+  }
+
+  // flat arrays for one area's runs
+  _areaScene(areaId) {
+    const runs = this._areaRuns(areaId).filter((r) => Number.isInteger(r.count) && r.count > 0);
+    let n = 0;
+    for (const r of runs) n += Math.min(2040, r.count);
+    const pos = new Float32Array(n * 3), base = new Uint8ClampedArray(n * 3);
+    const groups = [], items = [];
+    const sel = this._mapSel.run;
+    let o = 0;
+    for (const run of runs) {
+      const P = LightShowStudioPanel._runPos(run), rgb = this._runRgb(run.id), ent = this._mEntity(run.entry_id);
+      for (let i = 0; i < P.length; i++) {
+        pos.set(P[i], (o + i) * 3);
+        base.set(rgb, (o + i) * 3);
+      }
+      groups.push({ start: o, len: P.length, rgb, sel: sel === run.id, dim: !!sel && sel !== run.id });
+      items.push({ run, start: o, len: P.length, ent });
+      o += P.length;
+    }
+    return { n, pos, base, groups, items, live: new Uint8ClampedArray(n * 3), lit: new Uint8Array(n) };
+  }
+
+  // fill the scene's live colours from the latest light frames
+  _liveInto(sc) {
+    let any = false;
+    for (const it of sc.items) {
+      const fr = it.ent ? this._frames[it.ent] : null;
+      const on = fr && fr.on && fr.frame;
+      for (let i = 0; i < it.len; i++) {
+        const k = it.start + i;
+        let lit = 0;
+        if (on) {
+          const v = parseInt(fr.frame.substr((it.run.first + i) * 6, 6), 16);
+          if (v > 0) {
+            sc.live[k * 3] = v >> 16;
+            sc.live[k * 3 + 1] = (v >> 8) & 255;
+            sc.live[k * 3 + 2] = v & 255;
+            lit = 1;
+            any = true;
+          }
+        }
+        sc.lit[k] = lit;
+      }
+    }
+    return any;
+  }
+
+  _feedViewer(v) {
+    this._liveInto(v.scene);
+    v.viewer.setLive(v.scene.live, v.scene.lit);
+  }
+
+  // redraw everything that shows colours (called when light frames arrive)
+  _drawMap() {
+    if (!this._mp || this._tab !== "map" || this._mp.body.hidden) return;
+    for (const v of this._pv.values()) if (v.viewer) this._feedViewer(v);
+    if (this._dv?.viewer) this._feedViewer(this._dv);
+    for (const s of this._rstrips || []) {
+      if (!s.cv.isConnected) this._rstrips.delete(s);
+      else this._paintRunStrip(s.cv, s.run);
+    }
+  }
+
+  // rebuild the dots after the map changed (positions, counts, colours)
+  _refreshScenes() {
+    if (this._rsRaf) return;
+    this._rsRaf = requestAnimationFrame(() => {
+      this._rsRaf = 0;
+      for (const [id, v] of this._pv) if (v.viewer) this._rescene(v, id);
+      if (this._dv?.viewer) {
+        this._rescene(this._dv, this._mapSel.area);
+        this._setHandles();
+      }
+    });
+  }
+
+  _rescene(v, areaId) {
+    v.scene = this._areaScene(areaId);
+    const s = v.scene;
+    v.viewer.setDots({ n: s.n, pos: s.pos, base: s.base, groups: s.groups });
+    this._feedViewer(v);
+  }
+
+  _paintRunStrip(cv, run) {
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+    }
+    const g = cv.getContext("2d");
+    g.clearRect(0, 0, cv.width, cv.height);
+    const ent = this._mEntity(run.entry_id), m = ent && this._frames[ent];
+    if (!m || !m.on || !m.frame) return;
+    const n = Math.max(1, run.count | 0), W = cv.width, H = cv.height;
+    const step = Math.max(1, Math.floor(n / W));
+    for (let x = 0; x < W; x++) {
+      const i = Math.min(n - 1, Math.floor((x / W) * n / step) * step);
+      g.fillStyle = "#" + m.frame.substr((run.first + i) * 6, 6);
+      g.fillRect(x, 0, 1, H);
+    }
+  }
+
+  // ---- areas overview -------------------------------------------------------------------------------------------
+  _areaState(a) {
+    const runs = this._areaRuns(a.id);
+    const mapped = runs.filter((r) => Array.isArray(r.positions) && r.positions.length === r.count * 3).length;
+    return { runs, mapped };
+  }
+
+  _areaRunning(a) {
+    if (this._mapRunning) return this._mapRunning.has("area:" + a.id) || this._mapRunning.has(a.id);
+    return false;
+  }
+
+  _renderAreas() {
+    const box = this._mp.areas;
+    box.textContent = "";
+    const admin = this._isAdmin();
+    if (!this._map.areas.length) {
+      const e = this._el("div", "box empty");
+      this._emptyState(e, PANEL_ICON.target, "No areas yet", "An area is a place, like the porch or the kitchen. Each one gets its own 3D space.", admin ? "New area" : "", () => this._addArea());
+      box.append(e);
+      return;
+    }
+    this._areaRefs = new Map();
+    for (const a of this._map.areas) box.append(this._areaCard(a, admin));
+  }
+
+  _areaCard(a, admin) {
+    const card = this._el("div", "box areacard");
+    card.setAttribute("role", "listitem");
+    card.dataset.a = a.id;
+    const { runs, mapped } = this._areaState(a);
+    const top = this._el("div", "ac-top");
+    const name = this._el("h3", "", a.name);
+    const pills = this._el("div", "ac-pills");
+    const run = this._el("span", "pill", "Idle");
+    run.hidden = true;
+    const mp = this._el("span", "pill " + (mapped && mapped === runs.length ? "ok" : mapped ? "warn" : ""), !runs.length ? "No runs" : mapped === runs.length ? "3D mapped" : mapped ? "Partly mapped" : "Not scanned");
+    pills.append(run, mp);
+    top.append(name, pills);
+    const pv = this._el("button", "ac-pv");
+    pv.type = "button";
+    pv.setAttribute("aria-label", `Open ${a.name}`);
+    const cv = this._el("canvas");
+    cv.setAttribute("aria-hidden", "true");
+    pv.append(cv);
+    pv.onclick = () => this._openArea(a.id);
+    const list = this._el("div", "ac-runs");
+    for (const r of runs.slice(0, 6)) {
+      const row = this._el("div", "ac-run");
+      const sw = this._el("span", "rsw");
+      sw.style.setProperty("--c", this._runColour(r.id));
+      const t = this._el("span", "rn", r.name);
+      const c = this._el("span", "rc", `${r.count}`);
+      const st = this._el("canvas", "rstrip");
+      st.setAttribute("aria-hidden", "true");
+      this._rstrips.add({ cv: st, run: r });
+      row.append(sw, t, c, st);
+      list.append(row);
+    }
+    if (runs.length > 6) list.append(this._el("div", "muted", `and ${runs.length - 6} more`));
+    if (!runs.length) list.append(this._el("div", "muted", "Nothing here yet. Open the area to add a run."));
+    const acts = this._el("div", "ac-acts");
+    const go = this._btn("Run a pattern", "btn sm", () => this._openArea(a.id, { pattern: true }), PANEL_ICON.play);
+    const stop = this._btn("Stop", "btn alt sm", () => this._areaCall("stop", a.id));
+    stop.hidden = true;
+    const scan = this._btn("Scan", "btn alt sm", () => this._openScan(a.id), PANEL_ICON.cam);
+    const edit = this._btn("Edit", "btn alt sm", () => this._openArea(a.id), PANEL_ICON.gear);
+    go.innerHTML = `${svg(PANEL_ICON.play, 18)}Run a pattern`;
+    scan.innerHTML = `${svg(PANEL_ICON.cam, 18)}Scan`;
+    edit.innerHTML = `${svg(PANEL_ICON.gear, 18)}Edit`;
+    go.disabled = scan.disabled = !admin || !runs.length;
+    acts.append(go, stop, scan, edit);
+    card.append(top, pv, list, acts);
+    this._areaRefs.set(a.id, { card, run, go, stop });
+    if (this._m?.Viewer3D) {
+      const entry = { scene: null, viewer: new this._m.Viewer3D(cv, { spin: 7, fit: true, interactive: false, dotR: 0.011 }) };
+      this._pv.set(a.id, entry);
+      this._rescene(entry, a.id);
+    }
+    return card;
+  }
+
+  _syncAreas() {
+    if (!this._map) return;
+    const admin = this._isAdmin();
+    for (const [id, ref] of this._areaRefs || []) {
+      const a = this._area(id);
+      if (!a || !ref.card.isConnected) continue;
+      const running = this._areaRunning(a);
+      ref.run.hidden = !running;
+      ref.run.className = "pill ok run";
+      ref.run.textContent = "Running";
+      ref.stop.hidden = !running;
+      ref.stop.disabled = !admin;
+    }
+    const d = this._dref;
+    if (d && this._mapSel.area) {
+      const a = this._area(this._mapSel.area);
+      const running = a && this._areaRunning(a);
+      d.pill.className = "pill " + (running ? "ok run" : "");
+      d.pill.textContent = running ? "Running" : "Idle";
+      d.stop.disabled = !running || !admin;
+      if (!d.busy) d.start.innerHTML = `${svg(PANEL_ICON.play)}${running ? "Restart" : "Start"}`;
+      d.start.disabled = d.busy || !admin;
+    }
+  }
+
+  _addArea() {
+    const m = this._map;
+    if (!m) return;
+    const name0 = window.prompt("Name the new area (for example Porch or Garage roofline):", "");
+    const name = (name0 || "").trim().slice(0, 60);
+    if (!name) return;
+    if (m.areas.some((a) => a.name.toLowerCase() === name.toLowerCase())) {
+      this._mapErr = `There is already an area called ${name}.`;
+      this._renderSaveBar();
+      return;
+    }
+    const a = { id: this._newId("a", m.areas), name };
+    m.areas.push(a);
+    this._mapSel = { zone: null, run: null, area: a.id };
+    this._mapChanged();
+    this._renderMap();
+  }
+
+  _openArea(id, opts = {}) {
+    this._mapSel.area = id;
+    this._mapSel.run = null;
+    this._dMode = "3d";
+    this._renderMap();
+    requestAnimationFrame(() => {
+      const t = opts.pattern ? this._mp.detail.querySelector(".ad-pat") : this._mp.detail;
+      t?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    });
+  }
+
+  _closeArea() {
+    this._mapSel.area = null;
+    this._mapSel.run = null;
+    this._renderMap();
+  }
+
+  _areaPat(id) {
+    const all = (this._areaPatState = this._areaPatState || {});
+    if (!all[id]) {
+      const [pats] = this._patternLists();
+      all[id] = { pattern: pats.includes("Classic Multicolor") ? "Classic Multicolor" : pats[0], effect: "Chase", speed: 50, mode: "string", axis: this._normAxis(null) };
+    }
+    return all[id];
+  }
+
+  // ---- one area, in detail -----------------------------------------------------------------------------------------
+  _renderAreaDetail() {
+    const area = this._area(this._mapSel.area), box = this._mp.detail, admin = this._isAdmin();
+    box.textContent = "";
+    this._runRefs = new Map();
+    this._dref = null;
+    if (!area) return;
+    // header
+    const head = this._el("div", "box ad-head");
+    const back = this._iconBtn(PANEL_ICON.up, "Back to all areas", () => this._closeArea());
+    back.innerHTML = svg("M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z", 22);
+    const nm = this._el("input");
+    nm.type = "text";
+    nm.maxLength = 60;
+    nm.value = area.name;
+    nm.setAttribute("aria-label", "Area name");
+    nm.dataset.fk = "an-" + area.id;
+    nm.oninput = () => {
+      area.name = nm.value;
+      this._mapChanged();
+    };
+    const pill = this._el("span", "pill", "Idle");
+    const del = this._iconBtn(PANEL_ICON.trash, `Delete ${area.name}`, () => this._deleteArea(area));
+    if (this._areaRuns(area.id).length) {
+      del.disabled = true;
+      del.title = "Move or remove this area's runs first";
+    }
+    head.append(back, nm, pill, del);
+    // 3D view
+    const vb = this._el("div", "box mp-canvasbox");
+    const ch = this._el("div", "mp-chead");
+    ch.innerHTML = `<h2><span class="hi">${svg(PANEL_ICON.map)}</span>3D view</h2>`;
+    const legend = this._el("div", "mp-legend");
+    legend.setAttribute("role", "group");
+    legend.setAttribute("aria-label", "Runs");
+    ch.append(legend);
+    const wrap = this._el("div", "mp-wrap");
+    const cv = this._el("canvas", "mp-cv");
+    cv.setAttribute("role", "img");
+    cv.setAttribute("aria-label", `${area.name} in 3D. Drag to look around, pinch or scroll to zoom, double tap to reset.`);
+    const tools = this._el("div", "vt");
+    const seg = this._el("div", "seg");
+    seg.setAttribute("role", "radiogroup");
+    seg.setAttribute("aria-label", "View");
+    const reset = this._el("button", "ibv");
+    reset.type = "button";
+    reset.innerHTML = svg("M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z", 20);
+    reset.setAttribute("aria-label", "Reset the view");
+    reset.title = "Reset the view";
+    tools.append(seg, reset);
+    wrap.append(cv, tools);
+    const hint = this._el("div", "muted mp-hint");
+    hint.setAttribute("aria-live", "polite");
+    const sacts = this._el("div", "inl");
+    const scanBtn = this._btn("", "btn sm", () => this._openScan(area.id));
+    scanBtn.innerHTML = `${svg(PANEL_ICON.cam, 18)}Scan this area`;
+    scanBtn.disabled = !admin || !this._areaRuns(area.id).length;
+    const clr = this._btn("Clear scan of the selected run", "btn alt sm", () => {
+      const r = this._map.runs.find((x) => x.id === this._mapSel.run);
+      if (r) {
+        delete r.positions;
+        this._mapChanged();
+        this._renderAreaDetail();
+      }
+    });
+    clr.hidden = true;
+    sacts.append(scanBtn, clr);
+    vb.append(ch, wrap, hint, sacts);
+    box.append(head, vb);
+    // the viewer
+    if (this._m?.Viewer3D) {
+      const viewer = new this._m.Viewer3D(cv, {
+        interactive: true, fit: false, dotR: 0.0085,
+        onEdit: (hit, pos) => this._handleEdit(hit, pos),
+        onEditEnd: () => {
+          this._mapChanged();
+          this._renderAreaDetailBits();
+        },
+        onTap: (x, y, v) => this._viewerTap(x, y, v),
+        onMode: (md) => {
+          this._dMode = md;
+          drawSeg();
+        },
+      });
+      this._dv = { viewer, scene: null, legend, hint, clr };
+      this._rescene(this._dv, area.id);
+      const drawSeg = () => {
+        seg.textContent = "";
+        for (const [md, t] of [["3d", "3D"], ["front", "Front"]]) {
+          const b = this._btn(t, "segb", () => viewer.setMode(md));
+          b.setAttribute("role", "radio");
+          b.setAttribute("aria-checked", String(this._dMode === md));
+          seg.append(b);
+        }
+        viewer.editable = this._dMode === "front" && admin ? "handles" : null;
+        hint.textContent = this._dMode === "front"
+          ? "Drag the round handles to place each run. A run with a scan moves as a whole."
+          : "Drag to look around, pinch or scroll to zoom, double tap to reset. Lit dots show what the lights are doing now. Switch to Front to place runs.";
+        this._setHandles();
+      };
+      reset.onclick = () => viewer.reset();
+      viewer.setMode(this._dMode || "3d", false);
+      drawSeg();
+    } else {
+      wrap.replaceWith(this._el("div", "muted", "The 3D view couldn't load" + (this._modsErr ? ` (${this._modsErr})` : "") + ". Reload the page after updating Light Show Studio."));
+    }
+    // pattern here
+    const ap = this._areaPat(area.id);
+    const patWrap = this._el("div", "box ad-pat");
+    const pb = this._patternBox({
+      title: `Run a pattern in ${area.name}`, speedText: "Speed: how fast it moves",
+      onPick: (key, n) => {
+        ap[key] = n;
+        if (this._areaRunning(area)) {
+          clearTimeout(this._zT);
+          this._zT = setTimeout(() => this._areaCall("start", area.id), 250);
+        }
+      },
+      onSpeed: (v) => {
+        ap.speed = v;
+        if (this._areaRunning(area)) this._areaCall("speed", area.id);
+      },
+    });
+    const [pats, pfx] = this._patternLists();
+    this._patternFill(pb, pats, pfx);
+    this._patternSync(pb, { pattern: ap.pattern, effect: ap.effect, speed: ap.speed, moving: !STILL.has(ap.effect) });
+    const motion = this._motionControls(ap, () => {
+      this._renderAreaDetailBits();
+      if (this._areaRunning(area)) this._areaCall("start", area.id);
+    });
+    const err = this._el("div", "serr");
+    err.setAttribute("role", "alert");
+    err.hidden = true;
+    const acts = this._el("div", "zacts");
+    const start = this._btn("", "btn", () => this._areaCall("start", area.id));
+    const stop = this._btn("", "btn alt", () => this._areaCall("stop", area.id));
+    stop.innerHTML = `${svg(PANEL_ICON.stop)}Stop`;
+    acts.append(start, stop);
+    patWrap.append(pb, motion, err, acts);
+    box.append(patWrap);
+    this._dref = { pill, start, stop, err, busy: false, motion };
+    if (!admin) patWrap.querySelectorAll("input,select,textarea,button").forEach((e) => (e.disabled = true));
+    // runs
+    const rh = this._el("div", "lhead");
+    rh.innerHTML = `<h2><span class="hi">${svg(PANEL_ICON.route)}</span>Runs in ${""}</h2>`;
+    rh.querySelector("h2").append(document.createTextNode(area.name));
+    const tl = this._el("div", "mp-tools");
+    const kit = this._btn("Kitchen preset", "btn alt sm", () => this._kitchenPreset());
+    kit.hidden = !(admin && (this._mapLights || []).some((l) => l.kind === "wled" && l.bulbs === 904));
+    const addRun = this._btn("", "btn alt sm", () => this._addRun());
+    addRun.innerHTML = `${svg(PANEL_ICON.add)}Add a run`;
+    addRun.hidden = !admin;
+    tl.append(kit, addRun);
+    rh.append(tl);
+    const runs = this._el("div", "mp-runs");
+    runs.setAttribute("role", "list");
+    runs.setAttribute("aria-label", "Runs");
+    this._mp.runs = runs;
+    box.append(rh, runs);
+    this._renderLegend();
+    this._renderMapRuns();
+    this._applySel();
+    this._renderAreaDetailBits();
+    this._syncAreas();
+  }
+
+  // pieces that follow edits without rebuilding the whole detail
+  _renderAreaDetailBits() {
+    this._setHandles();
+  }
+
+  _setHandles() {
+    const d = this._dv;
+    if (!d?.viewer) return;
+    const hs = [];
+    const sel = this._mapSel.run;
+    for (const run of this._areaRuns(this._mapSel.area)) {
+      const P = LightShowStudioPanel._runPos(run);
+      if (!P.length) continue;
+      const rgb = this._runRgb(run.id);
+      const ends = P.length > 1 ? [0, P.length - 1] : [0];
+      for (const idx of ends) {
+        hs.push({ id: run.id + ":" + idx, run, idx: idx ? 1 : 0, pos: [...P[idx]], start: [...P[idx]], rgb, label: idx === 0 ? run.name : "", big: sel === run.id, dim: !!sel && sel !== run.id });
+      }
+    }
+    d.viewer.setHandles(hs);
+  }
+
+  _handleEdit(hit, pos) {
+    const h = hit.h, run = h.run;
+    if (!h.snap) h.snap = { pts: run.pts.map((p) => [...p]), positions: run.positions ? [...run.positions] : null };
+    const c = LightShowStudioPanel._clamp01;
+    if (!run.positions && h.snap.pts.length <= 2) {
+      const pts = h.snap.pts.map((p) => [...p]);
+      pts[h.idx] = pos.map((v) => Math.round(c(v) * 10000) / 10000);
+      run.pts = pts;
+    } else {
+      const d = [pos[0] - h.start[0], pos[1] - h.start[1], pos[2] - h.start[2]];
+      run.pts = h.snap.pts.map((p) => p.map((v, k) => Math.round(c(v + d[k]) * 10000) / 10000));
+      if (h.snap.positions) run.positions = h.snap.positions.map((v, k) => Math.max(0, Math.min(1000, Math.round(v + d[k % 3] * 1000))));
+    }
+    this._mapSel.run = run.id;
+    this._refreshScenes();
+  }
+
+  _viewerTap(x, y, v) {
+    // tap near a dot: select that run
+    const sc = this._dv?.scene;
+    if (!sc) return;
+    let best = null, bd = 18;
+    for (const it of sc.items) {
+      const step = Math.max(1, Math.floor(it.len / 300));
+      for (let i = 0; i < it.len; i += step) {
+        const k = it.start + i, d = Math.hypot(v._sx[k] - x, v._sy[k] - y);
+        if (d < bd) {
+          bd = d;
+          best = it.run;
+        }
+      }
+    }
+    this._selectRun(best && this._mapSel.run !== best.id ? best.id : null);
   }
 
   _renderLegend() {
-    const p = this._mp;
-    p.legend.textContent = "";
-    for (const r of this._map.runs) {
+    const lg = this._dv?.legend;
+    if (!lg) return;
+    lg.textContent = "";
+    for (const r of this._areaRuns(this._mapSel.area)) {
       const b = this._btn("", "chip");
       b.dataset.r = r.id;
       b.setAttribute("aria-pressed", String(this._mapSel.run === r.id));
@@ -1724,24 +2339,18 @@ class LightShowStudioPanel extends HTMLElement {
       sw.style.setProperty("--c", this._runColour(r.id));
       b.append(sw, this._el("span", "", r.name || "Run"));
       b.onclick = () => this._selectRun(this._mapSel.run === r.id ? null : r.id);
-      p.legend.append(b);
+      lg.append(b);
     }
   }
 
   _applySel() {
     const sel = this._mapSel;
     const p = this._mp;
-    p.zones.querySelectorAll(".zone").forEach((c) => c.classList.toggle("sel", c.dataset.z === sel.zone));
-    p.runs.querySelectorAll(".runcard").forEach((c) => c.classList.toggle("sel", c.dataset.r === sel.run));
-    p.legend.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.r === sel.run)));
-    const z = this._map.zones.find((x) => x.id === sel.zone);
-    const picking = this._pickCentre && this._pickCentre === sel.zone;
-    p.hint.textContent = picking
-      ? "Tap the layout to set the centre of the effect."
-      : "Drag the round handles to place each run. Lit dots show what the lights are doing right now." +
-        (this._map.runs.some((r) => r.pts.length > 2) ? " A run with imported positions moves as a whole." : "") +
-        (z && z.mode === "spatial" ? " The white guide shows the direction of the selected zone." : "");
-    this._drawMap();
+    p.zones?.querySelectorAll(".zone").forEach((c) => c.classList.toggle("sel", c.dataset.z === sel.zone));
+    p.runs?.querySelectorAll(".runcard").forEach((c) => c.classList.toggle("sel", c.dataset.r === sel.run));
+    this._dv?.legend?.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.r === sel.run)));
+    if (this._dv?.clr) this._dv.clr.hidden = !(sel.run && this._map.runs.find((r) => r.id === sel.run)?.positions);
+    if (this._dv?.viewer) this._refreshScenes();
   }
 
   _selectRun(id) {
@@ -1753,242 +2362,173 @@ class LightShowStudioPanel extends HTMLElement {
     if (this._mapSel.zone === id && !this._mapSel.run) return;
     this._mapSel.zone = id;
     this._mapSel.run = null;
-    if (this._pickCentre && this._pickCentre !== id) this._pickCentre = null;
     this._applySel();
   }
 
-  // --- canvas ------------------------------------------------------------------------
-  _drawMap() {
-    const p = this._mp, m = this._map;
-    if (!p || !m || p.body.hidden || this._tab !== "map") return;
-    const W = p.wrap.clientWidth, H = p.wrap.clientHeight;
-    if (!W || !H) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const cv = p.cv;
-    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
-      cv.width = Math.round(W * dpr);
-      cv.height = Math.round(H * dpr);
-    }
-    const g = cv.getContext("2d");
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.clearRect(0, 0, W, H);
-    g.lineWidth = 1;
-    g.strokeStyle = "rgba(255,255,255,.06)";
-    g.beginPath();
-    for (let i = 1; i < 10; i++) {
-      g.moveTo(Math.round((i * W) / 10) + 0.5, 0);
-      g.lineTo(Math.round((i * W) / 10) + 0.5, H);
-      g.moveTo(0, Math.round((i * H) / 10) + 0.5);
-      g.lineTo(W, Math.round((i * H) / 10) + 0.5);
-    }
-    g.stroke();
-    const sel = this._mapSel;
-    const zone = m.zones.find((z) => z.id === sel.zone);
-    const inZone = new Set(zone?.runs || []);
-    const handles = [];
-    const X = (x) => x * W, Y = (y) => y * H;
-    if (!m.runs.length) {
-      g.fillStyle = "rgba(255,255,255,.5)";
-      g.font = "600 14px system-ui, sans-serif";
-      g.textAlign = "center";
-      g.fillText("No runs yet", W / 2, H / 2);
-    }
-    for (const run of m.runs) {
-      const col = this._runColour(run.id);
-      const focus = !zone || inZone.has(run.id) || sel.run === run.id;
-      const alpha = focus ? 1 : 0.35;
-      const pts = run.pts;
-      g.globalAlpha = 0.5 * alpha;
-      g.strokeStyle = col;
-      g.lineWidth = sel.run === run.id ? 3 : 1.5;
-      g.beginPath();
-      pts.forEach((pt, i) => (i ? g.lineTo(X(pt[0]), Y(pt[1])) : g.moveTo(X(pt[0]), Y(pt[1]))));
-      g.stroke();
-      const pos = LightShowStudioPanel._runPos(run);
-      const ent = this._mEntity(run.entry_id);
-      const fr = ent && this._frames[ent]?.on ? this._frames[ent].frame : null;
-      const rad = pos.length > 500 ? 1.7 : pos.length > 150 ? 2.5 : 3.5;
-      for (let i = 0; i < pos.length; i++) {
-        let c = null;
-        if (fr) {
-          const hex = fr.substr((run.first + i) * 6, 6);
-          if (hex.length === 6 && hex !== "000000") c = "#" + hex;
-        }
-        g.globalAlpha = c ? alpha : alpha * 0.3;
-        g.fillStyle = c || col;
-        g.beginPath();
-        g.arc(X(pos[i][0]), Y(pos[i][1]), c ? rad * 1.25 : rad, 0, 6.2832);
-        g.fill();
-      }
-      g.globalAlpha = alpha;
-      const ends = pts.length > 1 ? [0, pts.length - 1] : [0];
-      for (const idx of ends) handles.push({ kind: "end", run, idx, x: X(pts[idx][0]), y: Y(pts[idx][1]), col, alpha });
-    }
-    g.globalAlpha = 1;
-    // direction / centre guide for the selected zone
-    if (zone && zone.mode === "spatial") {
-      g.strokeStyle = g.fillStyle = "rgba(255,255,255,.85)";
-      g.lineWidth = 2;
-      g.setLineDash([6, 5]);
-      if (zone.axis.centre) {
-        const cx = X(zone.axis.centre[0]), cy = Y(zone.axis.centre[1]);
-        for (const f of [0.12, 0.24, 0.36]) {
-          g.globalAlpha = 0.35;
-          g.beginPath();
-          g.arc(cx, cy, f * Math.min(W, H) * 1.4, 0, 6.2832);
-          g.stroke();
-        }
-        g.globalAlpha = 1;
-        handles.push({ kind: "centre", zone, x: cx, y: cy, col: "#fff", alpha: 1 });
-      } else {
-        const a = ((zone.axis.angle || 0) * Math.PI) / 180;
-        const dx = Math.cos(a), dy = -Math.sin(a), L = Math.min(W, H) * 0.3;
-        const cx = W / 2, cy = H / 2;
-        g.beginPath();
-        g.moveTo(cx - dx * L, cy - dy * L);
-        g.lineTo(cx + dx * L, cy + dy * L);
-        g.stroke();
-        g.setLineDash([]);
-        g.beginPath();
-        const hx = cx + dx * L, hy = cy + dy * L;
-        g.moveTo(hx, hy);
-        g.lineTo(hx - dx * 12 - dy * 7, hy - dy * 12 + dx * 7);
-        g.lineTo(hx - dx * 12 + dy * 7, hy - dy * 12 - dx * 7);
-        g.closePath();
-        g.fill();
-      }
-      g.setLineDash([]);
-    }
-    // handles on top
-    g.font = "600 12px system-ui, sans-serif";
-    g.textAlign = "left";
-    for (const h of handles) {
-      const big = h.kind === "centre" || sel.run === h.run?.id;
-      g.globalAlpha = h.alpha;
-      g.beginPath();
-      g.arc(h.x, h.y, big ? 11 : 9, 0, 6.2832);
-      g.fillStyle = "#0b0d12";
-      g.fill();
-      g.lineWidth = 3;
-      g.strokeStyle = h.col;
-      g.stroke();
-      if (big) {
-        g.beginPath();
-        g.arc(h.x, h.y, 3.5, 0, 6.2832);
-        g.fillStyle = h.col;
-        g.fill();
-      }
-      if (h.kind === "end" && h.idx === 0 && h.run.name) {
-        const lx = Math.min(h.x + 14, W - 8 - g.measureText(h.run.name).width), ly = Math.max(14, h.y - 14);
-        g.fillStyle = "rgba(0,0,0,.55)";
-        g.fillText(h.run.name, lx + 1, ly + 1);
-        g.fillStyle = "#fff";
-        g.fillText(h.run.name, Math.max(6, lx), ly);
-      }
-    }
-    g.globalAlpha = 1;
-    this._mapHandles = handles;
+  _deleteArea(area) {
+    if (this._areaRuns(area.id).length) return;
+    if (!window.confirm(`Delete the area "${area.name}"?`)) return;
+    this._map.areas = this._map.areas.filter((a) => a.id !== area.id);
+    for (const z of this._map.zones) z.areas = z.areas.filter((id) => id !== area.id);
+    this._mapSel.area = null;
+    this._mapChanged();
+    this._renderMap();
   }
 
-  _mapXY(e) {
-    const r = this._mp.cv.getBoundingClientRect();
-    return [e.clientX - r.left, e.clientY - r.top, r.width, r.height];
-  }
-
-  _mapHit(x, y, touch) {
-    let best = null, bd = touch ? 30 : 18;
-    for (const h of this._mapHandles || []) {
-      const d = Math.hypot(h.x - x, h.y - y);
-      if (d <= bd) {
-        bd = d;
-        best = h;
+  // run a pattern on a whole area (an ad-hoc zone that is never saved)
+  async _areaCall(what, id) {
+    const area = this._area(id), ref = this._dref;
+    if (!area) return;
+    const ap = this._areaPat(id);
+    const show = (t) => {
+      const e = this._dref?.err;
+      if (e) {
+        e.textContent = t || "";
+        e.hidden = !t;
       }
-    }
-    return best;
-  }
-
-  _mapDown(e) {
-    if (!this._map) return;
-    const [x, y, w, h] = this._mapXY(e);
-    const hit = this._mapHit(x, y, e.pointerType === "touch");
-    const admin = this._isAdmin();
-    if (hit && admin) {
-      if (hit.kind === "end") this._mapSel.run = hit.run.id;
-      this._drag = { h: hit, sx: x / w, sy: y / h, orig: hit.run ? hit.run.pts.map((pt) => [...pt]) : null };
-      try {
-        this._mp.cv.setPointerCapture(e.pointerId);
-      } catch (err) {
-        /* synthetic pointer */
-      }
-      this._applySel();
-      e.preventDefault();
-      return;
-    }
-    const zone = this._map.zones.find((z) => z.id === this._mapSel.zone);
-    if (admin && this._pickCentre && zone && this._pickCentre === zone.id) {
-      zone.axis = { centre: [LightShowStudioPanel._clamp01(x / w), LightShowStudioPanel._clamp01(y / h)] };
-      this._pickCentre = null;
-      this._mapChanged();
-      this._renderMapZones();
-      this._applySel();
-      return;
-    }
-    // tap near a dot: select that run
-    let near = null, nd = 16;
-    for (const run of this._map.runs) {
-      const pos = LightShowStudioPanel._runPos(run);
-      const step = Math.max(1, Math.floor(pos.length / 400));
-      for (let i = 0; i < pos.length; i += step) {
-        const d = Math.hypot(pos[i][0] * w - x, pos[i][1] * h - y);
-        if (d < nd) {
-          nd = d;
-          near = run;
-        }
-      }
-    }
-    this._selectRun(near ? near.id : null);
-  }
-
-  _mapMove(e) {
-    if (!this._map) return;
-    const [x, y, w, h] = this._mapXY(e);
-    const d = this._drag;
-    if (!d) {
-      this._mp.cv.style.cursor = this._mapHit(x, y, false) && this._isAdmin() ? "grab" : this._pickCentre ? "crosshair" : "default";
-      return;
-    }
-    const c = LightShowStudioPanel._clamp01;
-    const nx = c(x / w), ny = c(y / h);
-    if (d.h.kind === "centre") d.h.zone.axis = { centre: [nx, ny] };
-    else {
-      const run = d.h.run;
-      if (run.pts.length <= 2) run.pts[d.h.idx] = [nx, ny];
-      else {
-        const dx = nx - d.sx, dy = ny - d.sy;
-        run.pts = d.orig.map((pt) => [c(pt[0] + dx), c(pt[1] + dy)]);
-      }
-    }
-    // keep the handle under the finger even before the next full draw
-    d.h.x = nx * w;
-    d.h.y = ny * h;
-    if (!this._mapRaf) {
-      this._mapRaf = requestAnimationFrame(() => {
-        this._mapRaf = 0;
-        this._drawMap();
-      });
-    }
-  }
-
-  _mapUp(e) {
-    if (!this._drag) return;
-    this._drag = null;
+      if (t && !e) this._mapErr = t, this._renderSaveBar();
+    };
+    show("");
+    if (this._dref) this._dref.busy = true;
     try {
-      this._mp.cv.releasePointerCapture(e.pointerId);
+      if (what === "start" && this._mapDirty() && !(await this._mapSave())) {
+        show(this._mapErr || "Save the map first.");
+        return;
+      }
+      const zid = "area:" + id;
+      if (what === "start") {
+        const axis = ap.axis.centre ? { centre: ap.axis.centre } : ap.axis.preset ? { preset: ap.axis.preset } : { dir: ap.axis.dir };
+        await this._hass.callWS({ type: "light_show_studio/map/zone/start", area: id, pattern: ap.pattern, effect: ap.effect, speed: ap.speed, mode: ap.mode, axis });
+        this._mapRunning = new Set([...(this._mapRunning || []), zid]);
+      } else if (what === "speed") await this._hass.callWS({ type: "light_show_studio/map/zone/speed", zone_id: zid, speed: ap.speed });
+      else {
+        await this._hass.callWS({ type: "light_show_studio/map/zone/stop", zone_id: zid });
+        const s = new Set(this._mapRunning || []);
+        s.delete(zid);
+        this._mapRunning = s;
+      }
     } catch (err) {
-      /* already released */
+      show(this._mapErrText(err, "That didn't work."));
+    } finally {
+      if (this._dref) this._dref.busy = false;
+      this._syncAreas();
+    }
+    void ref;
+  }
+
+  // "how the pattern moves": along the string or by position, with a direction
+  _motionControls(o, changed) {
+    const wrap = this._el("div", "fld motion");
+    wrap.append(this._el("span", "lb", "How the pattern moves"));
+    wrap.append(this._seg([["string", "Along the string"], ["spatial", "By position"]], o.mode, "How the pattern moves", (v) => {
+      o.mode = v;
+      this._mapChanged();
+      changed();
+      this._rerenderMotion();
+    }));
+    wrap.append(this._el("div", "muted", o.mode === "string"
+      ? "The runs are joined end to end in the order listed and the pattern travels along them."
+      : "The pattern sweeps through space, so lights that are next to each other in the room light up together. Each area sweeps within its own space."));
+    if (o.mode === "spatial") {
+      const chips = this._el("div", "chips");
+      chips.setAttribute("role", "group");
+      chips.setAttribute("aria-label", "Direction");
+      const cur = o.axis.preset || (o.axis.centre ? "outward" : "");
+      for (const [k, t] of LightShowStudioPanel._DIR_NAMES) {
+        const b = this._btn(t, "chip", () => {
+          o.axis = k === "outward" ? { centre: [0.5, 0.5, 0.5], preset: "outward" } : { dir: [...LightShowStudioPanel._DIRS[k]], preset: k };
+          this._mapChanged();
+          changed();
+          this._rerenderMotion();
+        });
+        b.setAttribute("aria-pressed", String(cur === k));
+        chips.append(b);
+      }
+      wrap.append(chips);
+      const vec = o.axis.centre || o.axis.dir;
+      const det = this._el("details");
+      det.append(this._el("summary", "", o.axis.centre ? "Move the centre point" : "Custom direction"));
+      ["Left to right", "Bottom to top", "Back to front"].forEach((lab, k) => {
+        const row = this._el("div", "vrow");
+        const r = this._el("input");
+        r.type = "range";
+        r.min = o.axis.centre ? 0 : -100;
+        r.max = 100;
+        r.value = Math.round(vec[k] * 100);
+        r.setAttribute("aria-label", o.axis.centre ? `Centre ${lab}` : `Direction ${lab}`);
+        const bv = this._el("span", "bv", `${r.value}`);
+        r.oninput = () => {
+          bv.textContent = r.value;
+          if (o.axis.centre) o.axis.centre[k] = Number(r.value) / 100;
+          else {
+            o.axis.dir[k] = Number(r.value) / 100;
+            delete o.axis.preset;
+            if (!o.axis.dir.some((v) => v)) o.axis.dir = [1, 0, 0];
+            chips.querySelectorAll(".chip").forEach((c) => c.setAttribute("aria-pressed", "false"));
+          }
+          this._mapChanged();
+        };
+        r.onchange = () => changed();
+        row.append(this._el("span", "muted vl", lab), r, bv);
+        det.append(row);
+      });
+      wrap.append(det);
+    }
+    this._motionHost = wrap;
+    return wrap;
+  }
+
+  _rerenderMotion() {
+    // the owner re-renders its card; area detail and zone cards both call their own render in `changed`
+    if (this._mapSel.area) this._renderAreaDetail();
+    else this._renderMapZones();
+  }
+
+  // ---- scanning ---------------------------------------------------------------------------------------------------------
+  async _openScan(areaId) {
+    if (this._wiz || !this._map) return;
+    const m = await this._loadMods();
+    if (!m) {
+      this._mapErr = "The scan screen couldn't load. Reload the page after updating Light Show Studio.";
+      this._renderSaveBar();
+      return;
+    }
+    if (this._mapDirty() && !(await this._mapSave())) return;
+    const area = this._area(areaId);
+    const runs = this._areaRuns(areaId).filter((r) => Number.isInteger(r.count) && r.count > 0);
+    if (!area || !runs.length) return;
+    const sel = this._map.runs.find((r) => r.id === this._mapSel.run && r.area === areaId);
+    const lights = (this._mapLights || []).filter((l) => l.segmented !== false && l.loaded !== false);
+    this._wiz = new m.ScanWizard({
+      hass: this._hass, host: this._root, mods: m, lights,
+      runs: runs.map((r) => ({ id: r.id, entry_id: r.entry_id, name: r.name, first: r.first, count: r.count })),
+      start: sel ? { entry_id: sel.entry_id, run_id: sel.id } : null,
+      colourOf: (id) => this._runRgb(id),
+      onSave: (res) => this._applyScan(res),
+      onClose: () => {
+        this._wiz = null;
+      },
+    });
+  }
+
+  async _applyScan(res) {
+    const c = LightShowStudioPanel._clamp01;
+    for (const r of res.runs) {
+      const run = this._map.runs.find((x) => x.id === r.id);
+      if (!run || r.positions.length !== run.count * 3) continue;
+      run.positions = r.positions;
+      const n = run.count;
+      run.pts = [[r.positions[0], r.positions[1], r.positions[2]], [r.positions[(n - 1) * 3], r.positions[(n - 1) * 3 + 1], r.positions[(n - 1) * 3 + 2]]].map((p) => p.map((v) => c(v / 1000)));
     }
     this._mapChanged();
-    this._renderMapZones(); // the centre readout
+    const ok = await this._mapSave();
+    if (!ok) return this._mapErr || "Couldn't save the map.";
+    return "";
+  }
+
+  _closeScan() {
+    this._wiz?.destroy();
+    this._wiz = null;
   }
 
   // --- change tracking + validation ----------------------------------------------------------
@@ -1996,7 +2536,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._mapErr = "";
     this._renderSaveBar();
     this._refreshProblems();
-    this._drawMap();
+    this._refreshScenes();
   }
 
   _mapProblems() {
@@ -2029,7 +2569,7 @@ class LightShowStudioPanel extends HTMLElement {
       if (!String(z.name).trim()) add("zones", z.id, "Give the zone a name.");
       else if (seen.has(z.name.trim().toLowerCase())) add("zones", z.id, "Another zone already has this name.");
       seen.add(String(z.name).trim().toLowerCase());
-      if (!z.runs.length) add("zones", z.id, "Add at least one run.");
+      if (!z.runs.length && !(z.areas || []).length) add("zones", z.id, "Add at least one run or area.");
     }
     return out;
   }
@@ -2070,6 +2610,7 @@ class LightShowStudioPanel extends HTMLElement {
     }
     const btn = this._mp.save;
     btn.disabled = true;
+    for (const r of this._map.runs) if (r.positions && r.positions.length !== r.count * 3) delete r.positions; // a changed count unmaps the run
     try {
       const r = await this._hass.callWS({ type: "light_show_studio/map/set", map: this._map });
       this._mapErr = "";
@@ -2103,6 +2644,7 @@ class LightShowStudioPanel extends HTMLElement {
       const unsub = await this._hass.connection.subscribeMessage((m) => {
         this._mapRunning = new Set(Array.isArray(m?.running) ? m.running : []);
         this._syncZones();
+        this._syncAreas();
       }, { type: "light_show_studio/map/subscribe" });
       if (this._tab === "map" && this.isConnected) this._mapUnsub = unsub;
       else unsub();
@@ -2186,6 +2728,7 @@ class LightShowStudioPanel extends HTMLElement {
     // runs, in order
     const runsBox = this._el("div", "zruns");
     runsBox.append(this._el("h3", "lb muted", "Runs, in order (the pattern flows from top to bottom)"));
+    if (!zone.runs.length) runsBox.append(this._el("div", "muted", "No single runs picked. Add whole areas below, or pick runs here."));
     zone.runs.forEach((id, i) => {
       const run = this._map.runs.find((r) => r.id === id);
       if (!run) return;
@@ -2231,7 +2774,7 @@ class LightShowStudioPanel extends HTMLElement {
       const add = this._el("div", "zadd");
       const sel = this._el("select");
       sel.setAttribute("aria-label", `Add a run to ${zone.name}`);
-      for (const r of free) sel.append(Object.assign(this._el("option", "", `${r.name} — ${this._mLight(r.entry_id)?.title || "?"}`), { value: r.id }));
+      for (const r of free) sel.append(Object.assign(this._el("option", "", `${r.name} (${this._area(r.area)?.name || "?"})`), { value: r.id }));
       add.append(sel, this._btn("Add run", "btn alt sm", () => {
         zone.runs = [...zone.runs, sel.value];
         this._mapChanged();
@@ -2239,62 +2782,66 @@ class LightShowStudioPanel extends HTMLElement {
       }));
       runsBox.append(add);
     } else if (!this._map.runs.length) {
-      runsBox.append(this._el("div", "muted", "Add a run below first."));
+      runsBox.append(this._el("div", "muted", "Add a run in an area first."));
     }
-    // mode
-    const mode = this._el("div", "fld");
-    mode.append(this._el("span", "lb", "How the pattern moves"));
-    mode.append(this._seg([["string", "Along the string"], ["spatial", "By position"]], zone.mode, "How the pattern moves", (v) => {
-      zone.mode = v;
-      this._mapChanged();
-      this._renderMapZones();
-      this._applySel();
-    }));
-    mode.append(this._el("div", "muted", zone.mode === "string"
-      ? "The runs are joined end to end in the order above and the pattern travels along them."
-      : "The pattern sweeps across the layout, so lights that are next to each other in the room light up together."));
-    body.append(runsBox, mode);
-    if (zone.mode === "spatial") {
-      const ax = this._el("div", "axis fld");
-      const useCentre = !!zone.axis.centre;
-      ax.append(this._seg([["angle", "A direction"], ["centre", "From a point"]], useCentre ? "centre" : "angle", "Spatial axis", (v) => {
-        zone.axis = v === "centre" ? { centre: [0.5, 0.5] } : { angle: 0 };
-        this._pickCentre = null;
+    // areas, in order
+    const areasBox = this._el("div", "zruns");
+    areasBox.append(this._el("h3", "lb muted", "Whole areas, in order (after the runs above)"));
+    zone.areas.forEach((aid, i) => {
+      const ar = this._area(aid);
+      if (!ar) return;
+      const row = this._el("div", "zr");
+      row.setAttribute("role", "listitem");
+      const t = this._el("div", "rt");
+      t.append(this._el("b", "", ar.name), this._el("span", "", `${this._areaRuns(aid).length} run${this._areaRuns(aid).length === 1 ? "" : "s"}`));
+      const key = (sfx) => ({ fk: `za-${zone.id}-${aid}-${sfx}` });
+      const move = (j) => {
+        const ids = [...zone.areas];
+        [ids[i], ids[j]] = [ids[j], ids[i]];
+        zone.areas = ids;
+        this._keepFocus(`za-${zone.id}-${aid}-${j < i ? "up" : "dn"}`);
         this._mapChanged();
         this._renderMapZones();
-        this._applySel();
+      };
+      const up = this._iconBtn(PANEL_ICON.up, `Move ${ar.name} up`, () => move(i - 1), key("up"));
+      const dn = this._iconBtn(PANEL_ICON.down, `Move ${ar.name} down`, () => move(i + 1), key("dn"));
+      up.disabled = i === 0;
+      dn.disabled = i === zone.areas.length - 1;
+      const rm = this._iconBtn(PANEL_ICON.close, `Take ${ar.name} out of ${zone.name}`, () => {
+        zone.areas = zone.areas.filter((x) => x !== aid);
+        this._mapChanged();
+        this._renderMapZones();
+      }, key("rm"));
+      row.append(t, up, dn, rm);
+      areasBox.append(row);
+    });
+    const freeAreas = this._map.areas.filter((a) => !zone.areas.includes(a.id));
+    const addRow = this._el("div", "zadd");
+    if (freeAreas.length) {
+      const sel = this._el("select");
+      sel.setAttribute("aria-label", `Add an area to ${zone.name}`);
+      for (const a of freeAreas) sel.append(Object.assign(this._el("option", "", a.name), { value: a.id }));
+      addRow.append(sel, this._btn("Add area", "btn alt sm", () => {
+        zone.areas = [...zone.areas, sel.value];
+        this._mapChanged();
+        this._renderMapZones();
       }));
-      if (useCentre) {
-        const [cx, cy] = zone.axis.centre;
-        const picking = this._pickCentre === zone.id;
-        const row = this._el("div", "inl");
-        row.append(this._btn(picking ? "Tap the layout…" : "Tap the layout to set the centre", picking ? "btn sm" : "btn alt sm", () => {
-          this._pickCentre = picking ? null : zone.id;
-          this._selectZone(zone.id);
-          this._renderMapZones();
-          this._applySel();
-        }), this._el("span", "muted", `Centre at ${Math.round(cx * 100)}%, ${Math.round(cy * 100)}%. You can also drag the white target.`));
-        ax.append(row);
-      } else {
-        const row = this._el("div", "vrow");
-        const r = this._el("input");
-        r.type = "range";
-        r.min = 0;
-        r.max = 359;
-        r.value = zone.axis.angle || 0;
-        r.setAttribute("aria-label", "Direction in degrees");
-        const bv = this._el("span", "bv", `${Math.round(zone.axis.angle || 0)}°`);
-        r.oninput = () => {
-          zone.axis = { angle: Number(r.value) };
-          bv.textContent = `${r.value}°`;
-          this._selectZone(zone.id);
+      if (this._map.areas.length > 1 && zone.areas.length < this._map.areas.length) {
+        addRow.append(this._btn("Whole house", "btn alt sm", () => {
+          zone.areas = [...zone.areas, ...freeAreas.map((a) => a.id)];
           this._mapChanged();
-        };
-        row.append(r, bv);
-        ax.append(row, this._el("div", "muted", "0° sweeps left to right, 90° bottom to top, 180° right to left."));
+          this._renderMapZones();
+        }));
       }
-      body.append(ax);
+      areasBox.append(addRow);
     }
+    body.append(runsBox, areasBox);
+    body.append(this._motionControls(zone, () => {
+      if (this._zoneRunning(zone)) {
+        clearTimeout(this._zT);
+        this._zT = setTimeout(() => this._zoneCall("start", zone.id), 250);
+      }
+    }));
     // pattern -> effect -> speed (same controls as the Studio tab)
     const pb = this._patternBox({
       title: "Pattern", speedText: "Speed: how fast the zone moves",
@@ -2391,11 +2938,11 @@ class LightShowStudioPanel extends HTMLElement {
     let n = m.zones.length + 1;
     while (m.zones.some((z) => z.name === `Zone ${n}`)) n++;
     const zone = {
-      id: this._newId("z", m.zones), name: `Zone ${n}`, runs: first ? [first.id] : [], mode: "string", axis: { angle: 0 },
+      id: this._newId("z", m.zones), name: `Zone ${n}`, runs: first ? [first.id] : [], areas: [], mode: "string", axis: this._normAxis(null),
       pattern: pats.includes("Classic Multicolor") ? "Classic Multicolor" : pats[0], effect: "Chase", speed: 50,
     };
     m.zones.push(zone);
-    this._mapSel = { zone: zone.id, run: null };
+    this._mapSel = { zone: zone.id, run: null, area: null };
     this._keepFocus(`zn-${zone.id}`);
     this._mapChanged();
     this._renderMapZones();
@@ -2418,15 +2965,16 @@ class LightShowStudioPanel extends HTMLElement {
     box.textContent = "";
     this._runRefs = new Map();
     const admin = this._isAdmin();
-    if (!this._map.runs.length) {
+    const mine = this._areaRuns(this._mapSel.area);
+    if (!mine.length) {
       const e = this._el("div", "box empty");
-      this._emptyState(e, PANEL_ICON.route, "No runs yet",
-        "A run is a stretch of pixels on one light. Add one for each part you want to place on the layout.",
+      this._emptyState(e, PANEL_ICON.route, "No runs in this area yet",
+        "A run is a stretch of pixels on one light. Add one for each part of this area, then scan it.",
         admin ? "Add a run" : "", () => this._addRun());
       box.append(e);
       return;
     }
-    for (const r of this._map.runs) box.append(this._runCard(r, admin));
+    for (const r of mine) box.append(this._runCard(r, admin));
     this._restoreFocus();
     this._refreshProblems();
   }
@@ -2474,6 +3022,15 @@ class LightShowStudioPanel extends HTMLElement {
       this._renderMapRuns();
       this._syncWatch();
     };
+    const areaSel = this._el("select");
+    for (const a of this._map.areas) areaSel.append(Object.assign(this._el("option", "", a.name), { value: a.id }));
+    areaSel.value = run.area;
+    areaSel.onchange = () => {
+      run.area = areaSel.value;
+      this._mapSel.run = null;
+      this._mapChanged();
+      this._renderMap();
+    };
     const num = (key, min) => {
       const i = this._el("input");
       i.type = "number";
@@ -2483,6 +3040,7 @@ class LightShowStudioPanel extends HTMLElement {
       i.value = Number.isFinite(run[key]) ? run[key] : "";
       i.oninput = () => {
         run[key] = i.value === "" ? NaN : Number(i.value);
+        if (key === "count" && run.positions && run.positions.length !== run.count * 3) delete run.positions; // a new count unmaps the run
         this._mapChanged();
       };
       i.onchange = () => {
@@ -2490,7 +3048,7 @@ class LightShowStudioPanel extends HTMLElement {
       };
       return i;
     };
-    grid.append(lab("Light", light, "wide"), lab("First pixel (0 is the first)", num("first", 0)), lab("How many pixels", num("count", 1)));
+    grid.append(lab("Light", light, "wide"), lab("Area", areaSel, "wide"), lab("First pixel (0 is the first)", num("first", 0)), lab("How many pixels", num("count", 1)));
     const info = this._el("div", "muted");
     const rev = this._el("label", "chk");
     const rcb = this._el("input");
@@ -2506,7 +3064,8 @@ class LightShowStudioPanel extends HTMLElement {
     const flags = this._el("div", "inl");
     if (L && L.loaded === false) flags.append(this._el("span", "pill err", "Not loaded"));
     if (L && L.segmented === false) flags.append(this._el("span", "pill warn", "Shows one average colour"));
-    if (run.pts.length > 2) flags.append(this._el("span", "pill acc", `${run.pts.length} imported positions`));
+    if (run.positions) flags.append(this._el("span", "pill ok", "Scanned in 3D"));
+    else if (run.pts.length > 2) flags.append(this._el("span", "pill acc", `${run.pts.length} imported positions`));
     const prob = this._el("div", "rprob");
     prob.setAttribute("role", "alert");
     // import positions
@@ -2520,8 +3079,9 @@ class LightShowStudioPanel extends HTMLElement {
     ierr.hidden = true;
     const row = this._el("div", "inl");
     row.append(this._btn("Use these positions", "btn alt sm", () => this._importPositions(run, ta.value, ierr)));
-    if (run.pts.length > 2) row.append(this._btn("Back to a straight line", "btn alt sm", () => {
+    if (run.pts.length > 2 || run.positions) row.append(this._btn("Back to a straight line", "btn alt sm", () => {
       run.pts = [run.pts[0], run.pts[run.pts.length - 1]];
+      delete run.positions;
       this._mapChanged();
       this._renderMapRuns();
       this._applySel();
@@ -2537,7 +3097,7 @@ class LightShowStudioPanel extends HTMLElement {
   _addRun() {
     const m = this._map;
     if (!m) return;
-    const cur = m.runs.find((r) => r.id === this._mapSel.run);
+    const cur = m.runs.find((r) => r.id === this._mapSel.run) || this._areaRuns(this._mapSel.area || "")[0];
     const L = this._mLight(cur?.entry_id) || (this._mapLights || [])[0];
     if (!L) {
       this._mapErr = "Add a light first, then come back to map it.";
@@ -2547,7 +3107,7 @@ class LightShowStudioPanel extends HTMLElement {
     const used = m.runs.filter((r) => r.entry_id === L.entry_id);
     const first = used.reduce((a, r) => Math.max(a, (r.first || 0) + (r.count || 0)), 0);
     const run = {
-      id: this._newId("r", m.runs), entry_id: L.entry_id, name: `Run ${m.runs.length + 1}`, first,
+      id: this._newId("r", m.runs), entry_id: L.entry_id, area: this._mapSel.area || m.areas[0].id, name: `Run ${m.runs.length + 1}`, first,
       count: Math.max(1, Math.min(30, L.bulbs - first)), reverse: false, pts: this._lanePts(m.runs.length),
     };
     m.runs.push(run);
@@ -2585,28 +3145,31 @@ class LightShowStudioPanel extends HTMLElement {
     m.runs = m.runs.filter((r) => !old.has(r.id));
     for (const z of m.zones) z.runs = z.runs.filter((id) => !old.has(id));
     const spec = [
-      ["Toe-kick", 0, 279, [[0.1, 0.9], [0.9, 0.9]]],
-      ["Island", 279, 145, [[0.3, 0.62], [0.7, 0.62]]],
-      ["Counter", 424, 192, [[0.1, 0.38], [0.9, 0.38]]],
-      ["Above cabinets", 616, 288, [[0.1, 0.12], [0.9, 0.12]]],
+      ["Toe-kick", 0, 279, [[0.1, 0.1, 0.5], [0.9, 0.1, 0.5]]],
+      ["Island", 279, 145, [[0.3, 0.38, 0.7], [0.7, 0.38, 0.7]]],
+      ["Counter", 424, 192, [[0.1, 0.62, 0.5], [0.9, 0.62, 0.5]]],
+      ["Above cabinets", 616, 288, [[0.1, 0.88, 0.5], [0.9, 0.88, 0.5]]],
     ];
+    let ka = m.areas.find((a) => a.name.toLowerCase() === "kitchen");
+    if (!ka) m.areas.push((ka = { id: this._newId("a", m.areas), name: "Kitchen" }));
+    const kitchenArea = ka.id;
     const ids = [];
     for (const [name, first, count, pts] of spec) {
-      const run = { id: this._newId("r", m.runs), entry_id: L.entry_id, name, first, count, reverse: false, pts };
+      const run = { id: this._newId("r", m.runs), entry_id: L.entry_id, area: kitchenArea, name, first, count, reverse: false, pts };
       m.runs.push(run);
       ids.push(run.id);
     }
     if (!m.zones.some((z) => z.name === "Kitchen")) {
       const [pats] = this._patternLists();
       m.zones.push({
-        id: this._newId("z", m.zones), name: "Kitchen", runs: ids, mode: "string", axis: { angle: 0 },
+        id: this._newId("z", m.zones), name: "Kitchen", runs: ids, areas: [], mode: "string", axis: this._normAxis(null),
         pattern: pats.includes("Classic Multicolor") ? "Classic Multicolor" : pats[0], effect: "Chase", speed: 50,
       });
     } else {
       const kz = m.zones.find((z) => z.name === "Kitchen");
       kz.runs = [...kz.runs, ...ids];
     }
-    this._mapSel = { zone: m.zones.find((z) => z.name === "Kitchen").id, run: null };
+    this._mapSel = { zone: m.zones.find((z) => z.name === "Kitchen").id, run: null, area: kitchenArea };
     this._mapChanged();
     this._renderMap();
   }
@@ -2629,12 +3192,13 @@ class LightShowStudioPanel extends HTMLElement {
     if (xy.some((p) => !Number.isFinite(p[0]) || !Number.isFinite(p[1]))) return fail("Every point needs a number for x and for y.");
     const w = Number(data.w) || 0, h = Number(data.h) || 0;
     let norm;
-    if (w > 0 && h > 0) norm = xy.map((p) => [p[0] / w, p[1] / h]);
-    else if (xy.every((p) => p[0] >= 0 && p[0] <= 1 && p[1] >= 0 && p[1] <= 1)) norm = xy;
+    if (w > 0 && h > 0) norm = xy.map((p) => [p[0] / w, 1 - p[1] / h]); // placed from the top, stored with y up
+    else if (xy.every((p) => p[0] >= 0 && p[0] <= 1 && p[1] >= 0 && p[1] <= 1)) norm = xy.map((p) => [p[0], 1 - p[1]]);
     else return fail('Include "w" and "h", the size of the area the points were placed in.');
     if (norm.length !== run.count) return fail(`That has ${norm.length} points but this run has ${run.count} pixels. Change the pixel count, or paste matching positions.`);
     const c = LightShowStudioPanel._clamp01;
-    run.pts = norm.map((p) => [Math.round(c(p[0]) * 10000) / 10000, Math.round(c(p[1]) * 10000) / 10000]);
+    run.pts = norm.map((p) => [Math.round(c(p[0]) * 10000) / 10000, Math.round(c(p[1]) * 10000) / 10000, 0.5]);
+    delete run.positions;
     const bd = this._map.backdrop;
     if (w > 0 && h > 0 && bd.w === 1 && bd.h === 1) this._map.backdrop = { ...bd, w, h };
     this._mapChanged();
