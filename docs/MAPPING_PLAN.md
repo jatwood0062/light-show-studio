@@ -43,7 +43,7 @@ A zone is opt-in; per-light effects stay the default.
   string; string mode = `patterns.render(pattern, effect, t, N)`; spatial mode computes a 0-1
   `u` per pixel (projection on the axis, or distance from centre), precomputed once per map change,
   and renders Chase/Wave/Marquee/Fade along `u` (index effects like Twinkle/Sparkle as usual).
-- `zoneplayer.py`: one asyncio task per active zone, one shared clock scaled by speed, 25 fps
+- `zoneplayer.py`: one asyncio task per active zone (a Steady zone re-sends once a second), one shared clock scaled by speed, 25 fps
   (20 fps if > 1000 pixels); render once, slice per light, `ctl.push_zone_frame(...)`.
 - `mapmanager.py`: Store load/save, model, start/stop runners; `hass.data[MAP_KEY]`.
 - `controller.py`: `zone` owner field; `push_zone_frame(run_first, colours)` collects run slices
@@ -55,11 +55,35 @@ A zone is opt-in; per-light effects stay the default.
 
 | type | payload | returns |
 |---|---|---|
-| `light_show_studio/map/get` | – | `{map, lights: [{entry_id, title, bulbs, kind, segmented, layout?}]}` |
+| `light_show_studio/map/get` | – | `{map, lights: [{entry_id, title, bulbs, kind, segmented, loaded, layout?}], running: [zone_id]}` |
 | `light_show_studio/map/set` | `{map}` (full replace, validated) | `{map}` or error with a readable message |
 | `light_show_studio/map/zone/start` | `{zone_id, pattern?, effect?, speed?}` | `{}` |
 | `light_show_studio/map/zone/stop` | `{zone_id}` | `{}` |
 | `light_show_studio/map/zone/speed` | `{zone_id, speed}` | `{}` (live, no restart) |
+| `light_show_studio/map/subscribe` | – | event `{running: [zone_id]}` now and on every change (a zone ends by itself when all its lights are taken) |
+
+Backend notes (as built, 2.2.0):
+
+- `map/set` errors are `invalid_format` with a readable message. `map/zone/*` errors are `failed` / `not_found`.
+  Limits: 200 runs, 64 zones, 64 runs per zone, 60-char names, ids `[A-Za-z0-9_.-]{1,64}`, 4096 points per run,
+  run `count` 1-2040, runs must fit the light's bulbs and not overlap within a light, zone names are unique
+  (case-insensitive), `pts` coordinates are clamped to 0-1. `reverse` must be a real boolean; zone `speed` an int.
+  Zone fields other than id and name are optional on write and take defaults (mode `string`, axis `{"angle": 0}`, pattern
+  Classic Multicolor, effect Chase, speed 50). `backdrop` is `{kind: str, w, h}`, kind free text up to 32 chars.
+- Until the first `map/set`, `map/get` returns the defaults computed live from the current lights (so lights added
+  later, and Twinkly layouts that arrive after startup, show up). The first `map/set` makes the store authoritative.
+  The frontend should send back the full map it got (with edits). Runs of a removed light disappear from `map/get`.
+- `map/zone/start` with `pattern`/`effect`/`speed` keeps them as the zone's own (saved). `map/zone/speed` also saves.
+  Starting a running zone restarts it; `map/set` restarts running zones that still exist with the new definition.
+- Stopping a zone restores each light (what it showed before; off if the zone turned it on). A light that a person
+  takes (colour/effect/pattern/off) or a show starts on is dropped from the zone; when none are left the zone ends
+  and `running` changes. Brightness changes keep the zone.
+- Several zones may share a light (different runs); their frames are combined. Runs in two zones at once: last push wins.
+- Controller API: `async_claim_zone(zone_id, name)`, `push_zone_frame(zone_id, [(first, colours)]) -> bool`
+  (False = no longer owned), `release_zone(zone_id=None, restore=False)`, attribute `zone` (names, comma separated).
+  This replaces the sketched `push_zone_frame(run_first, colours)`: one push per light per frame carries all its runs.
+- Dangling runs are dropped on load only when their config entry no longer exists (a light that is merely not loaded
+  yet keeps its runs).
 
 Services: `light_show_studio.start_zone` (zone name or id, pattern?, effect?, speed?) and
 `light_show_studio.stop_zone` (zone).

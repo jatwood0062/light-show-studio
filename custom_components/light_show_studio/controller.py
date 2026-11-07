@@ -68,6 +68,10 @@ class C9Controller:
         self._misses = 0
         self._identifying = False
         self._identify_task: asyncio.Task | None = None
+        # zones (see mapmanager): zone id -> (name, [(first pixel, colours)]) for the runs of it on this light
+        self._zones: dict[str, tuple[str, list[tuple[int, list[Colour]]]]] = {}
+        self._zone_prev_show = False  # show mode before the first zone took over
+        self._zone_powered = False  # the first zone turned the light on
 
     # --- hardware hooks (a subclass for another brand overrides these) ----
     def _make_link(self, host: str) -> GoveeLan | None:
@@ -171,8 +175,8 @@ class C9Controller:
 
     def _render(self) -> None:
         self._stop_animation()
-        if not self.is_on or self.show_mode:
-            return  # in show mode the sequencer's frames are the picture
+        if not self.is_on or self.show_mode or self._zones:
+            return  # in show mode the sequencer's frames are the picture; with a zone, the zone's
         if self.effect in ANIMATED or (self.effect == PATTERN and patterns.is_animated(self.pattern_effect)):
             self._task = self.hass.async_create_background_task(self._animate(), "light_show_studio effect")
         else:
@@ -225,6 +229,14 @@ class C9Controller:
             self._whole = None
             self.is_on = True
             await asyncio.sleep(0.3)
+        if self._zones:
+            if colour is None and effect is None:  # brightness, or a plain "on": the zone keeps the picture
+                if brightness is not None:
+                    self.brightness = brightness
+                    self._resend_zone()
+                self._notify()
+                return
+            self.release_zone()  # a colour or effect was picked: the light is the person's again
         # a plain turn_on during a show nobody is feeding would draw nothing: leave show mode
         stale = time.monotonic() - self._ext_seen > 2  # frames still arriving (even while off) = keep the show
         if self.show_mode and colour is None and effect is None and stale:
@@ -258,6 +270,7 @@ class C9Controller:
         await self.async_turn_on(effect=PATTERN)
 
     async def async_turn_off(self) -> None:
+        self.release_zone()
         self._stop_animation()
         if self._whole_handle:
             self._whole_handle.cancel()
@@ -269,6 +282,7 @@ class C9Controller:
         self._notify()
 
     async def async_set_pixels(self, colours: list[Colour], repeat: bool = True) -> None:
+        self.release_zone()
         self._seed_bulbs()
         for i in range(self.bulbs):
             if i < len(colours) or (repeat and colours):
@@ -282,6 +296,7 @@ class C9Controller:
     # --- single bulbs ----------------------------------------------------
     async def async_set_bulb(self, index: int, on: bool, colour: Colour | None = None,
                              level: int | None = None) -> None:
+        self.release_zone()
         self._seed_bulbs()
         if colour is not None:
             self.bulb_colour[index] = colour
@@ -296,9 +311,72 @@ class C9Controller:
             return
         self._schedule_flush()
 
+    # --- zones: a pattern spread over runs of this light and other lights --------------
+    @property
+    def zone(self) -> str | None:
+        """Name of the zone(s) showing on this light, or None."""
+        return ", ".join(name for name, _ in self._zones.values()) or None
+
+    async def async_claim_zone(self, zone_id: str, name: str) -> None:
+        """A zone takes the light: it is turned on if needed, and the zone's frames become the picture."""
+        was_on = self.is_on
+        if not was_on:
+            await self.async_turn_on()
+        if not self._zones:
+            self._zone_prev_show, self._zone_powered = self.show_mode, not was_on
+            self._stop_animation()
+            self.show_mode = False
+        if zone_id in self._zones:
+            self._zones[zone_id] = (name, self._zones[zone_id][1])
+        else:
+            self._zones[zone_id] = (name, [])
+        self._notify()
+
+    def push_zone_frame(self, zone_id: str, slices: list[tuple[int, list[Colour]]]) -> bool:
+        """Show a zone's colours for the runs it has on this light: [(first pixel, colours)]. Pixels no zone
+        covers are black. False when the zone no longer has the light (a person took it, or it was turned off)."""
+        cur = self._zones.get(zone_id)
+        if cur is None or not self.is_on:
+            return False
+        self._zones[zone_id] = (cur[0], slices)
+        if not self._identifying:
+            self._send_frame(self._zone_frame())
+        return True
+
+    def _zone_frame(self) -> list[Colour]:
+        frame: list[Colour] = [(0, 0, 0)] * self.bulbs
+        for _, slices in self._zones.values():
+            for first, colours in slices:
+                end = min(first + len(colours), self.bulbs)
+                if 0 <= first < end:
+                    frame[first:end] = colours[: end - first]
+        return frame
+
+    def _resend_zone(self) -> None:
+        if self._zones and self.is_on and not self._identifying:
+            self._send_frame(self._zone_frame())
+
+    @callback
+    def release_zone(self, zone_id: str | None = None, restore: bool = False) -> None:
+        """Let go of one zone (or all). restore: the zone was stopped, so put back what the light showed before
+        (or turn it off if the zone turned it on); otherwise a person or a show is taking over."""
+        gone = [zone_id] if zone_id is not None else list(self._zones)
+        if not [z for z in gone if self._zones.pop(z, None) is not None]:
+            return
+        if self._zones:
+            self._resend_zone()  # the other zones carry on
+        elif restore:
+            self.show_mode = self._zone_prev_show
+            if self._zone_powered:
+                self.hass.async_create_background_task(self.async_turn_off(), "light_show_studio zone off")
+            else:
+                self._render()
+        self._notify()
+
     # --- frames from a sequencer (xLights / Light-O-Rama) ----------------
     @callback
     def enable_show(self) -> None:
+        self.release_zone()
         self._stop_animation()
         if not self.is_on:
             self._hw_power(True)
@@ -329,6 +407,7 @@ class C9Controller:
         self._send_frame([tuple(rgb[i : i + 3]) for i in range(0, self.bulbs * 3, 3)])
 
     def shutdown(self) -> None:
+        self._zones.clear()
         self._stop_animation()
         if self._identify_task:  # don't let a flash wake a light that's being removed
             self._identify_task.cancel()
@@ -371,6 +450,8 @@ class C9Controller:
                 self._hw_power(False)
                 self._realtime = False
                 self._set_frame([(0, 0, 0)] * self.bulbs)
+            elif self._zones:
+                self._resend_zone()
             elif was_show:
                 if self.segmented:
                     self._hw_frame(before)

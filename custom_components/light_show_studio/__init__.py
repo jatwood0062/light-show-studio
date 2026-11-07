@@ -29,6 +29,7 @@ from .const import (
     CONF_TYPE,
     DEFAULT_BULBS,
     DOMAIN,
+    MAP_KEY,
     SEQUENCER_KEY,
     TYPE_PLAYER,
     TYPE_TWINKLY,
@@ -40,9 +41,10 @@ from .fseq import FseqError, FseqFile, load
 from .health import HealthMonitor
 from .hosts import valid_ipv4
 from .library import FSEQ_EXT, SHOW_PLAYER_KEY
+from .mapmanager import MapManager
 from .outputs import normalize_speakers
 from .playback import SequencePlayer
-from . import upload, websocket, ws_schedule, ws_shows
+from . import patterns, upload, websocket, ws_map, ws_schedule, ws_shows
 from .receiver import PixelReceiver
 from .scheduler import async_setup_scheduler
 from .showplayer import async_setup_player, async_unload_player
@@ -72,6 +74,13 @@ PLAY_SCHEMA = vol.Schema({
     vol.Optional("audio"): vol.All(cv.string, vol.Length(max=2048)),
     vol.Optional("audio_offset", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=-3600, max=3600)),
 })
+START_ZONE_SCHEMA = vol.Schema({
+    vol.Required("zone"): vol.All(cv.string, vol.Strip, vol.Length(min=1, max=64)),  # a zone's name or id
+    vol.Optional("pattern"): vol.In(patterns.PATTERN_LIST),
+    vol.Optional("effect"): vol.In(patterns.PATTERN_EFFECTS),
+    vol.Optional("speed"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+})
+STOP_ZONE_SCHEMA = vol.Schema({vol.Required("zone"): vol.All(cv.string, vol.Strip, vol.Length(min=1, max=64))})
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -92,9 +101,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     websocket.async_register(hass)
     ws_shows.async_register(hass)
     ws_schedule.async_register(hass)
+    ws_map.async_register(hass)
     scheduler = await async_setup_scheduler(hass)  # playlists + schedules, loaded once
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: scheduler.async_stop_timers())
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: receiver.close())
+    zones = hass.data[MAP_KEY] = MapManager(hass)  # zones across lights; the map is read now, zones start on request
+    await zones.async_load()
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: zones.async_stop_all())
     upload.async_register(hass)
     health = hass.data[HEALTH] = HealthMonitor(hass)
     health.start()
@@ -119,6 +132,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         if shows := hass.data.get(SHOW_PLAYER_KEY):
             await shows.async_stop()
 
+    async def start_zone(call: ServiceCall) -> None:
+        await zones.async_start_zone(call.data["zone"], call.data.get("pattern"), call.data.get("effect"),
+                                     call.data.get("speed"))
+
+    async def stop_zone(call: ServiceCall) -> None:
+        await zones.async_stop_zone(call.data["zone"])
+
+    hass.services.async_register(DOMAIN, "start_zone", start_zone, schema=START_ZONE_SCHEMA)
+    hass.services.async_register(DOMAIN, "stop_zone", stop_zone, schema=STOP_ZONE_SCHEMA)
     hass.services.async_register(DOMAIN, "play_sequence", play, schema=PLAY_SCHEMA)
     hass.services.async_register(DOMAIN, "stop_sequence", stop, schema=vol.Schema({}))
     return True

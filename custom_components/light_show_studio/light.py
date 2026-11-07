@@ -148,7 +148,7 @@ class C9StringLight(_Base, RestoreEntity):
 
     @property
     def effect(self) -> str | None:
-        return SHOW if self.ctl.show_mode else self.ctl.effect
+        return None if self.ctl.zone else SHOW if self.ctl.show_mode else self.ctl.effect
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -156,6 +156,7 @@ class C9StringLight(_Base, RestoreEntity):
         return {"per_bulb": self.ctl.custom, "bulbs": n, "ip_address": self.ctl.host, "start_pixel": first,
                 "pixels": f"{first}-{first + n - 1}", "channels": f"{(first - 1) * 3 + 1}-{(first + n - 1) * 3}",
                 "pattern": self.ctl.pattern, "pattern_effect": self.ctl.pattern_effect, "speed": self.ctl.speed,
+                "zone": self.ctl.zone,
                 "pattern_list": patterns.PATTERN_LIST, "pattern_effect_list": patterns.PATTERN_EFFECTS}
 
     async def async_turn_on(self, **kwargs: Any) -> None:

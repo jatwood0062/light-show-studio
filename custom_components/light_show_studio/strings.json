@@ -180,6 +180,38 @@
           "description": "1 (slow) to 100 (fast); 50 is normal."
         }
       }
+    },
+    "start_zone": {
+      "name": "Start zone",
+      "description": "Show a pattern across the runs of a zone (set up in the Light Shows app, Map tab) as one thing, in sync. A zone keeps its lights until you pick a colour or effect on one, turn it off, or a show starts.",
+      "fields": {
+        "zone": {
+          "name": "Zone",
+          "description": "The zone's name or id."
+        },
+        "pattern": {
+          "name": "Pattern",
+          "description": "Which colours to show. Kept as the zone's pattern."
+        },
+        "effect": {
+          "name": "Effect",
+          "description": "How the pattern moves. Kept as the zone's effect."
+        },
+        "speed": {
+          "name": "Speed",
+          "description": "1 (slow) to 100 (fast); 50 is normal. Kept as the zone's speed."
+        }
+      }
+    },
+    "stop_zone": {
+      "name": "Stop zone",
+      "description": "Stop a zone. Its lights go back to what they showed before, or turn off if the zone turned them on.",
+      "fields": {
+        "zone": {
+          "name": "Zone",
+          "description": "The zone's name or id."
+        }
+      }
     }
   }
 }

@@ -89,3 +89,58 @@ play_sequence:
           unit_of_measurement: s
 
 stop_sequence:
+
+start_zone:
+  fields:
+    zone:
+      required: true
+      example: Kitchen
+      selector:
+        text:
+    pattern:
+      example: Classic Multicolor
+      selector:
+        select:
+          options:
+            - "Classic Multicolor"
+            - "Warm White"
+            - "Cool White"
+            - "Red & Green"
+            - "Red, Green & White"
+            - "Candy Cane"
+            - "Blue & White"
+            - "Gold & White"
+            - "Pastel"
+            - "Halloween"
+            - "Red, White & Blue"
+            - "Valentine"
+            - "Rainbow"
+    effect:
+      example: Chase
+      selector:
+        select:
+          options:
+            - "Steady"
+            - "Twinkle"
+            - "Chase"
+            - "Twinkle Swap"
+            - "Marquee"
+            - "Fade"
+            - "Sparkle"
+            - "Alternate"
+            - "Wave"
+    speed:
+      example: 50
+      selector:
+        number:
+          min: 1
+          max: 100
+          mode: slider
+
+stop_zone:
+  fields:
+    zone:
+      required: true
+      example: Kitchen
+      selector:
+        text:

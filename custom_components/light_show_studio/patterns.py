@@ -140,3 +140,7 @@ def render(pattern: str, effect: str, t: float, n: int) -> list[Colour]:
 
 def is_animated(effect: str) -> bool:
     return effect != STEADY
+
+
+# Building blocks for mapped_patterns (effects laid along a position instead of a bulb number).
+colour_at, bulb_colour, scale, mix = _colour_at, _bulb_colour, _scale, _mix

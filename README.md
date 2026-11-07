@@ -133,6 +133,44 @@ data:
   speed: 40
 ```
 
+## Zones and the map
+
+A **run** is a stretch of pixels on one light (all of it, or part: the toe-kick of a kitchen strip),
+placed on a plain 0-1 map. A **zone** is an ordered list of runs that shows one pattern, effect and
+speed as one thing, in sync, across several lights. Set them up in the Light Shows app's **Map** tab.
+Per-light effects stay the default; a zone is opt-in, and xLights shows are unaffected.
+
+- **Along the string**: the runs are joined in the order you list them (each run can be reversed), and the
+  pattern runs through the joins as if they were one long string.
+- **By position**: the pattern follows where the pixels are: a sweep across the house at an angle
+  (0 = left to right, 90 = bottom to top), or out from a centre point.
+- A zone keeps its lights until you pick a colour or effect on one of them, turn it off, or a show
+  starts. Changing the brightness keeps the zone. Stopping a zone puts each light back as it was.
+- Until you save a map, each light is one run. A WLED light with exactly 904 LEDs gets the kitchen
+  runs (toe-kick 0-278, island 279-423, counter 424-615, above cabinets 616-903). Twinkly lights take their
+  positions from the layout the strip reports.
+- Lights without per-segment control (some Govee models) show a zone as one average colour.
+
+Automations can start and stop a zone by name or id. Pattern, effect and speed are optional and are kept
+as the zone's own.
+
+```yaml
+action: light_show_studio.start_zone
+data:
+  zone: Kitchen
+  pattern: Candy Cane
+  effect: Chase
+  speed: 60
+```
+
+```yaml
+action: light_show_studio.stop_zone
+data:
+  zone: Kitchen
+```
+
+The map is stored in `.storage/light_show_studio.map`.
+
 ## Twinkly lights
 
 Twinkly strings are added the same way as Govee lights, and show live in the Studio tab.

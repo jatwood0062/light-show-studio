@@ -4,6 +4,19 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-06
+
+### Added
+- Zones (backend; the Map tab is the panel side): a zone shows one pattern, effect and speed across several runs of pixels
+  (parts of lights, or whole lights) as one thing, in sync. Along the string they run in the order you list them, with a
+  per-run reverse, and a chase carries on through the joins. By position they follow where the pixels are: a sweep across
+  the house, rising up a tree, or bursting from a point. Runs and zones are saved in `.storage/light_show_studio.map`;
+  until you save one, every light is one run (a WLED light with 904 LEDs gets the four kitchen runs).
+- `light_show_studio.start_zone` and `light_show_studio.stop_zone` actions, and `light_show_studio/map/*` websocket
+  commands (changes are admin only). The light gets a `zone` attribute while a zone has it.
+- A zone keeps its lights until you pick a colour or effect on one, turn it off, or a show starts; brightness changes
+  keep it.
+
 ## [2.1.0] - 2026-11-06
 
 ### Added
