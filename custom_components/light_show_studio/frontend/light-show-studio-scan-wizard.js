@@ -4,6 +4,8 @@
 // Two methods: "point" (visible LEDs, binary code) and "glow" (hidden strips: a lit stretch is stepped along each run and the
 // centre of the glow it makes is found; the pixels between are interpolated). Glow is recommended for WLED lights, and offered
 // when a point scan finds few lights.
+// "Scan from several angles" (point method): the same colour scan from 3-6 places; each view's decoded points are kept and light-show-studio-
+// multiview.js solves the cameras and every light's 3D position from them (see docs/MAPPING_V2.md, Multi-angle scan).
 // Whatever happens (cancel, error, leaving the tab) map/scan/stop is sent so the light goes back to what it showed.
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -70,6 +72,7 @@ const CSS = `
 .scw-cam .ov { object-fit: fill; pointer-events: none; }
 .scw-ask { position: relative; width: 100%; border-radius: var(--r3); overflow: hidden; background: #05060a; touch-action: manipulation; }
 .scw-ask canvas { display: block; width: 100%; height: auto; cursor: crosshair; }
+.scw-sketch { display: block; width: 100%; height: auto; border-radius: var(--r3); background: var(--lss-soft); }
 .scw-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .scw-chip { width: 22px; height: 30px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; background: var(--lss-ok); }
 .scw-chip.manual { background: var(--lss-acc); color: var(--lss-onacc); }
@@ -106,6 +109,11 @@ export class ScanWizard {
     this.glowAnchors = null; // null = automatic (about 16-24 per run)
     this.glowWidth = null;
     this.hold = null;
+    this.multiAngles = false; // "Scan from several angles": views are collected in this.mv and solved together
+    this.mv = null; // { views: [{width, height, points: Map, orientation, found}], entry, part, redo, result }
+    this.orient = null; // the latest DeviceOrientation reading, once the phone has allowed it
+    this.scanMode = "colour"; // "colour" (red/green/blue frames, gentler) | "white" (the older white flashes); advanced option
+    this.usedMode = "white"; // what the light actually showed in the scan that is running (the light may be an older version)
     this.camMode = "auto"; // auto | live | video
     this.step = "pick";
     this.scans = {}; // view -> { world, fillStats }
@@ -171,7 +179,7 @@ export class ScanWizard {
     this.body.textContent = "";
     this.foot.textContent = "";
     this.body.scrollTop = 0;
-    const idx = { pick: 0, aim: 1, run: 2, decode: 2, review: 3 }[step] ?? 0;
+    const idx = { pick: 0, aim: 1, run: 2, decode: 2, angles: 2, review: 3 }[step] ?? 0;
     [...this.steps.children].forEach((c, i) => c.classList.toggle("on", i <= idx));
     this["_s_" + step]();
     this.body.querySelector("h3,button,select")?.focus?.({ preventScroll: true });
@@ -209,6 +217,12 @@ export class ScanWizard {
 
   _setMethod(m) {
     this.method = m;
+  }
+
+  // The code the point scan asks the light for. Colour needs the live camera: a recorded video is compressed and smears colour
+  // between neighbouring LEDs, so video uses white flashes.
+  _codeMode() {
+    return this.scanMode === "colour" && this._mode() === "live" ? "colour" : "white";
   }
 
   // the stretches to light, per run being scanned: [{key, first, count, run, plan}]
@@ -309,9 +323,12 @@ export class ScanWizard {
         note.textContent = `About ${secs} seconds. A few pixels at a time light up, ${spots} spots along ${plans.length} run${plans.length === 1 ? "" : "s"}; everything else stays dark. Then the light goes back to what it showed.`;
         return;
       }
-      const frames = this.S.scanFrames(this.part ? this.runs.find((r) => r.id === this.part)?.count || 2 : L?.bulbs || 2);
+      const mode = this._codeMode();
+      const frames = this.S.framesFor(this.part ? this.runs.find((r) => r.id === this.part)?.count || 2 : L?.bulbs || 2, mode);
       const secs = Math.round((frames * ((this.hold ?? 350) + 120)) / 1000 + 3);
-      note.textContent = `About ${secs} seconds and ${frames} flashes. All ${L?.bulbs || 0} pixels light up while it runs, then the light goes back to what it showed.`;
+      note.textContent = mode === "colour"
+        ? `About ${secs} seconds and ${frames} colour frames (red, green and blue; no bright white flashes). All ${L?.bulbs || 0} pixels light up while it runs, then the light goes back to what it showed.`
+        : `About ${secs} seconds and ${frames} white flashes. All ${L?.bulbs || 0} pixels light up while it runs, then the light goes back to what it showed.`;
     };
     const note = this._el("div", "muted");
     sel.onchange = () => {
@@ -329,6 +346,7 @@ export class ScanWizard {
     const cards = this._methodCards(() => {
       info();
       glowBox.hidden = this._m() !== "glow";
+      this._methodHook?.();
     });
     b.append(lab, lab2, cards, note);
     fill();
@@ -352,6 +370,15 @@ export class ScanWizard {
     };
     showHold();
     hl.append(this._el("span", "", "How long to hold each flash. Longer is safer for slow lights."), hv, hr);
+    const wl = this._el("label", "pick");
+    const wc = this._el("input");
+    wc.type = "checkbox";
+    wc.checked = this.scanMode === "white";
+    wc.onchange = () => {
+      this.scanMode = wc.checked ? "white" : "colour";
+      info();
+    };
+    wl.append(wc, this._el("span", "", "Use white flashes (the older way). Colour frames are gentler and quicker; white also works with a video recording or a camera that struggles with colour."));
     const cm = this._el("div", "fld");
     cm.append(this._el("span", "lb", "Camera"));
     const secure = window.isSecureContext && !!navigator.mediaDevices?.getUserMedia;
@@ -409,9 +436,31 @@ export class ScanWizard {
         this._go("pick");
       }),
     );
-    det.append(hl, glowBox, cm);
+    det.append(wl, hl, glowBox, cm);
+    // several angles (point method only)
+    const ml = this._el("label", "pick");
+    const mc = this._el("input");
+    mc.type = "checkbox";
+    mc.checked = this.multiAngles;
+    ml.append(mc, this._el("span", "", "Scan from several angles (3 to 6 spots) for a full 3D map. Best for trees and lights that wrap round a corner; each angle takes about a minute."));
+    const showMulti = () => (ml.hidden = this._m() === "glow" || !this.mods.multiview);
+    showMulti();
+    mc.onchange = () => (this.multiAngles = mc.checked);
+    note.after(ml);
+    this._methodHook = showMulti;
     b.append(det);
-    this.foot.append(this._btn("Cancel", "btn alt", () => this.close()), this._btn("Next", "btn", () => this._go("aim")));
+    this.foot.append(
+      this._btn("Cancel", "btn alt", () => this.close()),
+      this._btn("Next", "btn", async () => {
+        const multi = this.multiAngles && this._m() === "point";
+        this.multiAngles = multi;
+        if (multi) {
+          if (!this.mv || this.mv.entry !== this.entry || this.mv.part !== this.part) this.mv = { views: [], redo: -1, entry: this.entry, part: this.part };
+          await this._askOrientation(); // called inside the tap: iOS only asks for motion access in answer to one
+        }
+        this._go("aim");
+      }),
+    );
   }
 
   // ---- step 2: aim / start ------------------------------------------------------------------------------------------------
@@ -424,19 +473,22 @@ export class ScanWizard {
 
   _s_aim() {
     const L = this._light();
-    const side = this.view === "side";
-    this.title.textContent = side ? "Scan from the side" : `Scan ${L?.title || "the light"}`;
+    const side = this.view === "side" && !this.multiAngles;
+    const k = this.multiAngles ? (this.mv.redo >= 0 ? this.mv.redo : this.mv.views.length) : 0;
+    this.title.textContent = this.multiAngles ? `Angle ${k + 1}` : side ? "Scan from the side" : `Scan ${L?.title || "the light"}`;
     const b = this.body;
     if (!L) return this._go("pick");
     const glow = this._m() === "glow";
-    b.append(this._el("h3", "", side ? "Walk about a quarter of the way round, to the right of the lights" : glow ? "Face the surfaces the lights shine on" : "Stand in front of the lights"));
+    b.append(this._el("h3", "", this.multiAngles ? (k === 0 ? "Stand in front of the lights" : this._angleHint(k)) : side ? "Walk about a quarter of the way round, to the right of the lights" : glow ? "Face the surfaces the lights shine on" : "Stand in front of the lights"));
     // which method, and a one-tap switch
     const mrow = this._el("div", "row");
-    mrow.append(this._el("span", "muted", glow ? "Glow scan: for hidden strips." : "Point scan: for lights you can see."));
-    mrow.append(this._btn(glow ? "Use Point scan" : "Use Glow scan", "btn alt sm", () => {
-      this._setMethod(glow ? "point" : "glow");
-      this._go("aim");
-    }));
+    mrow.append(this._el("span", "muted", glow ? "Glow scan: for hidden strips." : this.multiAngles ? "Point scan from several angles." : "Point scan: for lights you can see."));
+    if (!this.multiAngles) {
+      mrow.append(this._btn(glow ? "Use Point scan" : "Use Glow scan", "btn alt sm", () => {
+        this._setMethod(glow ? "point" : "glow");
+        this._go("aim");
+      }));
+    }
     b.append(mrow);
     const tips = this._el("ul", "scw-tips");
     const tip = (icon, text) => {
@@ -446,15 +498,16 @@ export class ScanWizard {
       li.append(ic, this._el("span", "", text));
       tips.append(li);
     };
-    tip(ICON.moon, "Use a dark room or wait until night. Switch off other bright lights and screens.");
+    if (!glow && this._codeMode() === "colour") tip(ICON.moon, "Dim the room lights; it doesn't have to be pitch dark. Switch off bright screens and turn lamps away from the camera.");
+    else tip(ICON.moon, "Use a dark room or wait until night. Switch off other bright lights and screens.");
     if (glow) {
       tip(ICON.frame, side ? "Keep the same surfaces in view, from about 90 degrees around. Stay at the same distance." : "Fit all the glow in the picture: the counter, floor or ceiling the strips light up. You don't need to see the strips.");
       tip(ICON.hand, "Hold the phone steady, or lean it on something. Don't move until it finishes.");
       tip(ICON.eye, "A few pixels light at a time and the soft patch of light they make is tracked along. If one can't be found it asks you to tap where the glow is.");
     } else {
-      tip(ICON.frame, side ? "Keep the whole light in view again, from about 90 degrees around. Stay at the same distance." : "Fit all of the light in the picture, with a little space around it.");
+      tip(ICON.frame, this.multiAngles && k > 0 ? "Keep the whole light in view again and stay at about the same distance. Parts hidden from this spot can stay hidden: lights seen from two spots get a 3D place." : side ? "Keep the whole light in view again, from about 90 degrees around. Stay at the same distance." : "Fit all of the light in the picture, with a little space around it.");
       tip(ICON.hand, "Hold the phone steady, or lean it on something. Don't move until it finishes.");
-      tip(ICON.eye, "Use the back camera. Every pixel you can see will be found; ones hidden behind things are guessed.");
+      tip(ICON.eye, this._codeMode() === "colour" ? "Use the back camera. The lights show red, green and blue, so keep the phone's colour filters off. Every pixel you can see will be found; ones hidden behind things are guessed." : "Use the back camera. Every pixel you can see will be found; ones hidden behind things are guessed.");
     }
     this._tips = tips;
     const mode = this._mode();
@@ -538,7 +591,7 @@ export class ScanWizard {
       this._go("aim");
     });
     useVideo.hidden = true;
-    this.foot.append(this._btn("Back", "btn alt", () => (this._closeCamera(), this._go(this.view === "side" ? "review" : "pick"))), useVideo, open, go);
+    this.foot.append(this._btn("Back", "btn alt", () => (this._closeCamera(), this._go(this._backStep(false)))), useVideo, open, go);
     this._goBtn = go;
   }
 
@@ -557,12 +610,15 @@ export class ScanWizard {
     const sc = this._scope();
     const msg = { type: "light_show_studio/map/scan/start", entry_id: this.entry };
     if (this.part) Object.assign(msg, sc);
+    if (this._m() !== "glow") msg.mode = this._codeMode();
+    this._orientAtScan = this.orient ? { ...this.orient } : null; // the phone is held still for the whole scan
     const r = await this._ws(msg);
     this._started = true;
     this.base = sc.first;
     this.N = sc.count;
     if (this._m() === "glow") return r;
-    const mine = this.S.scanFrames(this.N);
+    this.usedMode = r?.mode === "colour" ? "colour" : "white"; // an older light has no mode and always flashes white
+    const mine = this.S.framesFor(this.N, this.usedMode);
     this.F = Number(r?.frames) || mine;
     if (this.F !== mine) throw new Error(`The light and the panel disagree about the code (${this.F} vs ${mine} frames). Update Light Show Studio and reload this page.`);
     return r;
@@ -582,7 +638,8 @@ export class ScanWizard {
     this._aborted = text;
   }
 
-  _grab(video, cv) {
+  // one camera picture: {w, h, luma} or, with rgb, {w, h, rgb} (3 bytes per pixel, for colour codes)
+  _grab(video, cv, rgb = false) {
     const vw = video.videoWidth, vh = video.videoHeight;
     if (!vw || !vh) return null;
     const k = Math.min(1, MAX_W / vw);
@@ -591,7 +648,17 @@ export class ScanWizard {
     if (cv.height !== h) cv.height = h;
     const g = cv.getContext("2d", { willReadFrequently: true });
     g.drawImage(video, 0, 0, w, h);
-    return { w, h, luma: this.S.lumaFromRGBA(g.getImageData(0, 0, w, h).data, w, h) };
+    const px = g.getImageData(0, 0, w, h).data;
+    return rgb ? { w, h, rgb: this.S.rgbFromRGBA(px, w, h) } : { w, h, luma: this.S.lumaFromRGBA(px, w, h) };
+  }
+
+  // colour frames are read by chromaticity, so the phone must not re-balance colours between frames: pin the white balance
+  async _pinWhiteBalance() {
+    try {
+      await this.stream?.getVideoTracks()[0].applyConstraints({ advanced: [{ whiteBalanceMode: "manual", colorTemperature: 4500 }] });
+    } catch (e) {
+      /* not supported: the per-light calibration frames still cover a steady balance */
+    }
   }
 
   async _runLive() {
@@ -624,23 +691,25 @@ export class ScanWizard {
     let size = null;
     try {
       await this._scanStart();
+      const colour = this.usedMode === "colour", key = colour ? "rgb" : "luma", settle = colour ? 4 : 2;
+      if (colour) await this._pinWhiteBalance();
       for (let k = 0; k < this.F; k++) {
         if (this._aborted) throw new Error(this._aborted);
-        cap.textContent = `Flash ${k + 1} of ${this.F}`;
-        status.textContent = k < 2 ? "Setting the exposure…" : "Reading the code…";
+        cap.textContent = colour ? `Frame ${k + 1} of ${this.F}` : `Flash ${k + 1} of ${this.F}`;
+        status.textContent = k < settle ? "Setting the exposure…" : "Reading the code…";
         bar.style.width = `${Math.round((k / this.F) * 100)}%`;
         await this._ws({ type: "light_show_studio/map/scan/frame", entry_id: this.entry, frame: k });
-        await sleep(hold + (k < 2 ? 350 : 0));
-        const a = this._grab(video, cv);
+        await sleep(hold + (k < settle ? 350 : 0));
+        const a = this._grab(video, cv, colour);
         if (!a) throw new Error("The camera picture isn't ready. Try again.");
         await sleep(45);
-        const b2 = this._grab(video, cv);
+        const b2 = this._grab(video, cv, colour);
         if (size && (a.w !== size.w || a.h !== size.h)) throw new Error("The camera changed size during the scan. Try again.");
         size = { w: a.w, h: a.h };
         // two grabs averaged: less noise
-        const luma = new Uint8ClampedArray(a.luma.length);
-        for (let i = 0; i < luma.length; i++) luma[i] = (a.luma[i] + (b2 ? b2.luma[i] : a.luma[i]) + 1) >> 1;
-        frames.push(luma);
+        const mix = new Uint8ClampedArray(a[key].length);
+        for (let i = 0; i < mix.length; i++) mix[i] = (a[key][i] + (b2 ? b2[key][i] : a[key][i]) + 1) >> 1;
+        frames.push(mix);
       }
       bar.style.width = "100%";
     } catch (e) {
@@ -658,7 +727,7 @@ export class ScanWizard {
   }
 
   _failScan(text, offerGlow) {
-    if (!text) return this._go(this.scans.front ? "review" : "pick");
+    if (!text) return this._go(this._backStep(true));
     this._go("aim");
     const e = this._el("div", "box mp-banner");
     e.setAttribute("role", "alert");
@@ -971,7 +1040,7 @@ export class ScanWizard {
     row.append(mk("Record a video now", true), mk("Choose a video", false));
     c2.append(row, err);
     b.append(c1, c2);
-    this.foot.append(this._btn("Back", "btn alt", () => this._go(this.view === "side" ? "review" : "pick")));
+    this.foot.append(this._btn("Back", "btn alt", () => this._go(this._backStep(false))));
   }
 
   // the lights run: 10 s dark, three sync blinks, then every code frame on an absolute schedule
@@ -1145,6 +1214,7 @@ export class ScanWizard {
         return this._glowFinish();
       }
       this.F = F;
+      this.usedMode = "white"; // recorded video: white flashes (see _codeMode)
       const frames = [];
       for (let f = 0; f < F; f++) {
         if (this.closed) return cleanup();
@@ -1203,7 +1273,7 @@ export class ScanWizard {
       const S = this.S;
       msg.set("Finding the lights in the pictures…", 0.2);
       await sleep(20);
-      const res = S.decodeScan(frames, this.N, w, h);
+      const res = this.usedMode === "colour" ? S.decodeColourScan(frames, this.N, w, h) : S.decodeScan(frames, this.N, w, h);
       msg.set("Placing them…", 0.8);
       await sleep(20);
       if (this.closed || this._decodeCancel) return;
@@ -1221,15 +1291,273 @@ export class ScanWizard {
       }
       if (cat.found < 3) {
         const why = res.blobs ? `It saw ${res.blobs} bright spots but could read the code of only ${res.found}.` : "It didn't see any lights.";
-        throw new Error(`${why} Try a darker room, hold the phone steadier, and make sure the light is in view.`);
+        throw new Error(`${why} ${this.usedMode === "colour" ? "Dim the room lights more, make sure no coloured lamps shine at the camera," : "Try a darker room,"} hold the phone steadier, and make sure the light is in view.`);
+      }
+      if (this.multiAngles) {
+        this._addAngle(res, w, h);
+        return this._go("angles");
       }
       const world = S.toWorld(cat);
       this._remerge = true;
-      this.scans[this.view] = { world, res, found: cat.found, total, ranges, blobs: res.blobs, rejected: res.rejected };
+      this.scans[this.view] = { world, res, found: cat.found, total, ranges, blobs: res.blobs, rejected: res.rejected, orient: this._orientAtScan };
       this._go("review");
     } catch (e) {
       if (this.closed) return;
       this._failScan(e.message || "Couldn't read the scan.", true);
+    }
+  }
+
+  // ---- several angles -----------------------------------------------------------------------------------------------------------------
+  // Each angle is an ordinary colour scan; its decoded pixel positions are kept (this.mv.views) and light-show-studio-multiview.js solves
+  // them together once there are two or more. The screen between scans shows how much is covered, where it thinks you stood, and where to go next.
+  _backStep(fromFail) {
+    if (this.multiAngles) return this.mv?.views.length ? "angles" : "pick";
+    return fromFail ? (this.scans.front ? "review" : "pick") : this.view === "side" ? "review" : "pick";
+  }
+
+  // motion access for the phone's tilt (levels the model); iOS shows a prompt, and only in answer to a tap. Never needed.
+  async _askOrientation() {
+    if (this._oriOn || typeof window.DeviceOrientationEvent === "undefined") return;
+    try {
+      const D = window.DeviceOrientationEvent;
+      if (typeof D.requestPermission === "function" && (await D.requestPermission()) !== "granted") return;
+      this._onOri = (e) => {
+        if (e.beta != null && e.gamma != null) this.orient = { alpha: e.alpha || 0, beta: e.beta, gamma: e.gamma };
+      };
+      window.addEventListener("deviceorientation", this._onOri);
+      this._oriOn = true;
+    } catch (e) {
+      /* refused or not supported: the scan works without it */
+    }
+  }
+
+  // keep this scan's decoded points as one more view
+  _addAngle(res, w, h) {
+    const points = new Map();
+    res.points.forEach((p, i) => p && points.set(i, [p[0], p[1]]));
+    const view = { width: w, height: h, points, orientation: this._orientAtScan || undefined, found: res.found };
+    const mv = this.mv;
+    if (mv.redo >= 0) {
+      mv.views[mv.redo] = view;
+      mv.redo = -1;
+    } else mv.views.push(view);
+    mv.result = null;
+  }
+
+  // a single front scan becomes the first angle of a several-angle scan
+  async _toMulti() {
+    const f = this.scans.front;
+    await this._askOrientation();
+    const points = new Map();
+    f.res.points.forEach((p, i) => p && points.set(i, [p[0], p[1]]));
+    this.multiAngles = true;
+    this.mv = { views: [{ width: f.res.w, height: f.res.h, points, orientation: f.orient || undefined, found: f.found }], redo: -1, entry: this.entry, part: this.part, result: null };
+    this.scans = {};
+    this.pos = null;
+    this._go("aim");
+  }
+
+  // the angle of each placed camera round the lights, in degrees: 0 = the first camera, negative = to its left
+  _azimuths(res) {
+    return res.views.map((v) => (v.ok ? (Math.atan2(v.center[0] - 0.5, v.center[2] - 0.5) * 180) / Math.PI : null));
+  }
+
+  // where to go for angle number k+1
+  _angleHint(k) {
+    const r = this.mv?.result;
+    if (r && r.ok && r.views.length >= k) {
+      if (r.views.slice(0, k).some((v) => !v.ok)) return "The last angle didn't join up with the others. Stand about 20 degrees closer to your earlier spots, where the same lights are still in view, and scan again.";
+      const az = this._azimuths(r).filter((a) => a !== null);
+      const left = -Math.min(0, ...az), right = Math.max(0, ...az);
+      const goLeft = left <= right, target = Math.min(150, Math.round(((goLeft ? left : right) + 45) / 5) * 5);
+      return `Move to about ${target} degrees to the ${goLeft ? "left" : "right"} of your first spot (about 45 degrees past the furthest one so far), keep the lights in view, and scan again.`;
+    }
+    return k === 1 ? "Move about 45 degrees to the left of where you stood, keep the lights in view, and scan again." : k === 2 ? "Now go back to the front and move about 45 degrees to the right, then scan again." : "Move about 45 degrees further round, on whichever side you've covered less, and scan again.";
+  }
+
+  // pixel indexes (of the scan's code) that belong to the runs being scanned
+  _scanIdx() {
+    const out = [];
+    for (const r of this._ranges()) for (let i = 0; i < r.count; i++) out.push(r.first - this.base + i);
+    return out;
+  }
+
+  // solve the views collected so far (cached until another angle is added); the screen gets a moment to draw first
+  async _solveViews() {
+    const mv = this.mv;
+    if (mv.result) return mv.result;
+    await sleep(40);
+    const res = this.mods.multiview.solveMultiView(mv.views, { n: this.N, fovDeg: 65 });
+    mv.result = res;
+    return res;
+  }
+
+  _s_angles() {
+    const mv = this.mv, M = this.mods.multiview, K = mv.views.length;
+    if (!K) return this._go("pick");
+    this.title.textContent = `${K} angle${K === 1 ? "" : "s"} scanned`;
+    const b = this.body;
+    const cov = M.coverage(mv.views, this.N), idx = this._scanIdx();
+    let two = 0, one = 0;
+    for (const i of idx) {
+      if (cov.seen[i] >= 2) two++;
+      if (cov.seen[i] >= 1) one++;
+    }
+    const stats = this._el("div", "scw-stats");
+    const stat = (n, t, bad) => {
+      const s = this._el("div", "scw-stat" + (bad ? " bad" : ""));
+      s.append(this._el("b", "", String(n)), this._el("span", "", t));
+      stats.append(s);
+    };
+    const total = idx.length;
+    stat(two, `of ${total} bulbs seen in 2+ views`, K > 1 && two < total * 0.5);
+    stat(one, "seen in at least one view");
+    stat(K, "angles so far");
+    b.append(stats);
+    b.append(this._el("p", "lead", K > 1 ? `${two} of ${total} bulbs seen in 2+ views. Bulbs seen from two angles or more get a true 3D place; the others are placed along the string.` : "The first angle is done. Scan again from a different spot so each bulb is seen from at least two."));
+    const box = this._el("div", "box");
+    box.setAttribute("role", "status");
+    const guide = this._el("strong", "", K >= 6 ? "That's plenty of angles. Tap Finish." : this._angleHint(K));
+    box.append(guide);
+    b.append(box);
+    const sk = this._el("canvas", "scw-sketch");
+    sk.width = 640;
+    sk.height = 420;
+    sk.setAttribute("role", "img");
+    sk.setAttribute("aria-label", "Top-down sketch of the lights and where you stood for each angle");
+    sk.hidden = K < 2;
+    const note = this._el("div", "muted", K < 2 ? "A top-down sketch of where you stood appears after the second angle." : "Working out where you stood…");
+    b.append(sk, note);
+    const err = this._el("div", "serr");
+    err.hidden = true;
+    err.setAttribute("role", "alert");
+    b.append(err);
+    const add = this._btn("Add another angle", "btn", () => {
+      mv.redo = -1;
+      this._go("aim");
+    }, ICON.cam);
+    add.disabled = K >= 6;
+    const fin = this._btn("Finish", "btn", () => this._finishMulti());
+    fin.disabled = K < 2;
+    this.foot.append(
+      this._btn("Cancel", "btn alt", () => this.close()),
+      this._btn(K > 1 ? "Redo the last angle" : "Redo this angle", "btn alt", () => {
+        mv.redo = K - 1;
+        this._go("aim");
+      }),
+      fin,
+      add,
+    );
+    if (K >= 2) {
+      this._solveViews().then((res) => {
+        if (this.closed || this.step !== "angles" || this.mv !== mv) return;
+        if (!res.ok) {
+          note.textContent = "";
+          err.textContent = res.error;
+          err.hidden = false;
+          sk.hidden = true;
+          return;
+        }
+        const placed = res.views.filter((v) => v.ok).length;
+        const lost = res.views.map((v, i) => (v.ok ? 0 : i + 1)).filter(Boolean);
+        note.textContent = lost.length
+          ? `Angle ${lost.join(", ")} couldn't be joined to the others (too few of the same lights in view). Redo it from closer to the earlier spots.`
+          : `Where the app thinks you stood (top-down, the first angle at the bottom): ${placed} of ${K} placed, picture error about ${res.rms.toFixed(1)} px.`;
+        if (lost.length) guide.textContent = this._angleHint(K);
+        else if (K < 6) guide.textContent = this._angleHint(K);
+        this._drawSketch(sk, res);
+      });
+    }
+  }
+
+  // top-down map: lights (x across, z down the page, the first camera at the bottom) and a numbered marker for every placed camera
+  _drawSketch(cv, res) {
+    const g = cv.getContext("2d"), W = cv.width, H = cv.height;
+    const css = getComputedStyle(this.root);
+    const acc = css.getPropertyValue("--lss-acc").trim() || "#4aa3ff", mut = css.getPropertyValue("--lss-mut").trim() || "#888", txt = css.getPropertyValue("--lss-text").trim() || "#ddd";
+    g.clearRect(0, 0, W, H);
+    const pts = [];
+    for (const i of this._scanIdx()) if (!res.est[i]) pts.push([res.pos[3 * i], res.pos[3 * i + 2], i]);
+    const cams = res.views.map((v, k) => (v.ok ? { x: v.center[0], z: v.center[2], fx: v.forward[0], fz: v.forward[2], k: k + 1 } : null)).filter(Boolean);
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const [x, z] of pts) (x0 = Math.min(x0, x)), (x1 = Math.max(x1, x)), (z0 = Math.min(z0, z)), (z1 = Math.max(z1, z));
+    for (const c of cams) (x0 = Math.min(x0, c.x)), (x1 = Math.max(x1, c.x)), (z0 = Math.min(z0, c.z)), (z1 = Math.max(z1, c.z));
+    if (!Number.isFinite(x0)) return;
+    const pad = 34, sc = Math.min((W - 2 * pad) / Math.max(x1 - x0, 1e-6), (H - 2 * pad) / Math.max(z1 - z0, 1e-6));
+    const ox = (W - (x1 - x0) * sc) / 2, oy = (H - (z1 - z0) * sc) / 2;
+    const X = (x) => ox + (x - x0) * sc, Y = (z) => oy + (z - z0) * sc;
+    g.globalAlpha = 0.85;
+    for (const [x, z, i] of pts) {
+      const r = this._ranges().find((q) => i >= q.first - this.base && i < q.first - this.base + q.count);
+      const rgb = r ? this.o.colourOf(r.run.id) : [160, 160, 160];
+      g.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+      g.fillRect(X(x) - 1.5, Y(z) - 1.5, 3, 3);
+    }
+    g.globalAlpha = 1;
+    g.font = "bold 15px system-ui, sans-serif";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    for (const c of cams) {
+      const px = X(c.x), py = Y(c.z), a = Math.atan2(c.fz, c.fx);
+      g.strokeStyle = mut;
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(px, py);
+      g.lineTo(px + Math.cos(a) * 26, py + Math.sin(a) * 26);
+      g.stroke();
+      g.fillStyle = acc;
+      g.beginPath();
+      g.arc(px, py, 13, 0, 6.2832);
+      g.fill();
+      g.fillStyle = "#fff";
+      g.fillText(String(c.k), px, py + 1);
+    }
+    g.fillStyle = txt;
+    g.font = "12px system-ui, sans-serif";
+    g.textAlign = "left";
+    g.fillText("Top-down: lights as dots, you as numbered circles", 10, H - 10);
+  }
+
+  // solve everything and show the 3D result in the usual review screen
+  async _finishMulti() {
+    const mv = this.mv;
+    this._go("decode");
+    const msg = this._decodeUi("Working out where every light is in 3D…");
+    msg.set("Working out where every light is in 3D…", 0.4);
+    try {
+      const res = await this._solveViews();
+      if (this.closed || this._decodeCancel) return;
+      if (!res.ok) throw new Error(res.error);
+      const ranges = this._ranges();
+      const total = ranges.reduce((a, r) => a + r.count, 0);
+      const pos = new Float32Array(total * 3), est = new Uint8Array(total);
+      let o = 0, found = 0;
+      for (const r of ranges) {
+        for (let i = 0; i < r.count; i++) {
+          const src = r.first - this.base + i;
+          pos[(o + i) * 3] = res.pos[src * 3];
+          pos[(o + i) * 3 + 1] = res.pos[src * 3 + 1];
+          pos[(o + i) * 3 + 2] = res.pos[src * 3 + 2];
+          est[o + i] = res.est[src];
+          if (!res.est[src]) found++;
+        }
+        o += r.count;
+      }
+      if (found < 3) throw new Error("Too few lights were seen from two angles. Scan again with more of the light in view each time.");
+      this.pos = pos;
+      this.est = est;
+      this.fitInfo = null;
+      this._remerge = false;
+      this.edited = false;
+      this.scans = { front: { multi: true, found, total, ranges, solve: res, angles: mv.views.length } };
+      this._go("review");
+    } catch (e) {
+      if (this.closed) return;
+      this._go("angles");
+      const box = this._el("div", "box mp-banner");
+      box.setAttribute("role", "alert");
+      box.append(this._el("strong", "", "Couldn't work out the 3D positions"), this._el("div", "", e.message || "Something went wrong."));
+      this.body.prepend(box);
     }
   }
 
@@ -1250,11 +1578,11 @@ export class ScanWizard {
   _s_review() {
     const f = this.scans.front;
     if (!f) return this._go("pick");
-    if (!this.pos || this._remerge) {
+    if (!f.multi && (!this.pos || this._remerge)) {
       this._merge();
       this._remerge = false;
     }
-    const hasSide = !!this.scans.side;
+    const hasSide = !!this.scans.side || !!f.multi; // (a several-angle scan has depth from the start)
     this.title.textContent = "Check the result";
     const b = this.body;
     const found = f.found, total = f.total;
@@ -1269,9 +1597,10 @@ export class ScanWizard {
       stat(f.guessed, "pixels guessed (between skipped spots)", f.guessed > f.px * 0.3);
     } else {
       stat(found, `found of ${total}`, found < total * 0.6);
-      stat(total - found, "guessed (no camera view)", total - found > total * 0.4);
+      stat(total - found, f.multi ? "placed along the string (seen from fewer than 2 angles)" : "guessed (no camera view)", total - found > total * 0.4);
     }
-    stat(hasSide ? "3D" : "Flat", hasSide ? "front and side joined" : "front only: no depth yet");
+    if (f.multi) stat("3D", `${f.angles} angles joined, picture error about ${f.solve.rms.toFixed(1)} px`);
+    else stat(hasSide ? "3D" : "Flat", hasSide ? "front and side joined" : "front only: no depth yet");
     b.append(stats);
     if (found < total * 0.6) {
       const w = this._el("div", "box mp-banner");
@@ -1353,7 +1682,9 @@ export class ScanWizard {
     v.setMode("front", false);
     draw("front");
     // actions
-    if (!hasSide) {
+    if (f.multi) {
+      b.append(this._el("div", "muted", "Orange-ringed dots were seen from fewer than two angles, so they sit along the string between the ones that were. Switch to 3D and look round to check the shape."));
+    } else if (!hasSide) {
       b.append(this._el("div", "muted", "Want depth too? Do a second scan from the side, about 90 degrees round to the right of the lights."));
     } else {
       const fl = this._btn("Flip the depth (front/back)", "btn alt sm", () => {
@@ -1369,6 +1700,7 @@ export class ScanWizard {
     b.append(err);
     this.foot.append(
       this._btn("Scan again", "btn alt", () => {
+        if (f.multi) return this._go("angles"); // add or redo angles, then finish again
         delete this.scans[this.view === "side" ? "side" : "front"];
         this.pos = null;
         this._go("aim");
@@ -1379,6 +1711,7 @@ export class ScanWizard {
         this.view = "side";
         this._go("aim");
       }));
+      if (!f.glow && f.res?.points && this.mods.multiview) this.foot.append(this._btn("Scan from several angles", "btn alt", () => this._toMulti()));
     }
     const save = this._btn("Save positions", "btn", async () => {
       save.disabled = true;
@@ -1443,7 +1776,7 @@ export class ScanWizard {
       out.push({ id: r.run.id, positions: arr });
       o += r.count;
     }
-    const msg = await this.o.onSave({ entry_id: this.entry, runs: out, depth: !!this.scans.side });
+    const msg = await this.o.onSave({ entry_id: this.entry, runs: out, depth: !!this.scans.side || !!f.multi });
     if (msg) return msg;
     this.close();
     return "";
@@ -1461,6 +1794,7 @@ export class ScanWizard {
     this._aborted = "Cancelled.";
     document.removeEventListener("visibilitychange", this._onVis);
     window.removeEventListener("pagehide", this._onHide);
+    if (this._onOri) window.removeEventListener("deviceorientation", this._onOri);
     this._dropViewer();
     this._closeCamera();
     this.root.remove();

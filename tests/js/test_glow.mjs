@@ -245,5 +245,155 @@ for (const [n, seed] of [[279, 1], [145, 2], [192, 3], [288, 4]]) {
   ok(prev.length === lit.w * lit.h * 4 && prev[(Math.round(350 / lit.f) * lit.w + Math.round(300 / lit.f)) * 4] > 150, "the preview shows the glow bright");
 }
 
+
+// ======================================================================================================================
+// Colour glow scan: up to three stretches glow at once (red, green, blue) and are told apart by colour.
+// ======================================================================================================================
+const RESP = [[1, 0.12, 0.06], [0.14, 1, 0.12], [0.05, 0.2, 1]]; // how the surfaces + camera show red / green / blue light
+
+// one RGB camera frame (Uint8, 3 per pixel). puddles: [[x, y, amp, sx, sy, colour index]]. wb = camera white balance.
+function frameRGB(puddles, rand, o = {}) {
+  const img = new Float32Array(W * H * 3);
+  const add = (cx, cy, amp, sx, sy, vec) => {
+    const Rx = Math.ceil(sx * 3.2), Ry = Math.ceil(sy * 3.2);
+    for (let y = Math.max(0, Math.floor(cy) - Ry); y <= Math.min(H - 1, Math.floor(cy) + Ry); y++) {
+      for (let x = Math.max(0, Math.floor(cx) - Rx); x <= Math.min(W - 1, Math.floor(cx) + Rx); x++) {
+        const g = amp * Math.exp(-((x - cx) ** 2 / (2 * sx * sx) + (y - cy) ** 2 / (2 * sy * sy))), q = (y * W + x) * 3;
+        // the surface is a little different colour from place to place
+        const tint = 1 + 0.12 * Math.sin(x / 140 + y / 90);
+        img[q] += g * vec[0] * tint;
+        img[q + 1] += g * vec[1];
+        img[q + 2] += g * vec[2] / tint;
+      }
+    }
+  };
+  add(W * 0.93, H * 0.5, 80, 2, 2, [1, 1, 1]);
+  add(W * 0.06, H * 0.9, 60, 3, 3, [1, 0.8, 0.5]);
+  for (const [x, y, amp, sx, sy, ci] of puddles) add(x, y, amp, sx, sy, RESP[ci]);
+  const wb = o.wb ?? [1.3, 1, 0.65], gain = 1 + (o.drift ?? 0.1) * (rand() - 0.5);
+  const out = new Uint8ClampedArray(W * H * 3);
+  for (let p = 0, q = 0; p < W * H; p++, q += 3) for (let c = 0; c < 3; c++) out[q + c] = Math.round(10 + gain * wb[c] * img[q + c] + gauss(rand) * (o.noise ?? 4));
+  return S.downscaleRGB(out, W, H);
+}
+
+// the whole colour glow scan of a run of n pixels. Returns the truth next to the solution and the numbers of pictures.
+function scanColour(n, seed, o = {}) {
+  const rand = rng(seed);
+  const plan = S.glowPlan(n, o.plan);
+  const truth = Array.from({ length: n }, (_, i) => path(i / (n - 1)));
+  const items = S.glowScheduleColour([{ key: "a", first: 0, plan }]);
+  const centre = (a) => {
+    let mx = 0, my = 0;
+    for (let k = 0; k < a.width; k++) {
+      mx += truth[a.start + k][0];
+      my += truth[a.start + k][1];
+    }
+    return [mx / a.width, my / a.width];
+  };
+  const puddleOf = (a, ci) => {
+    const [mx, my] = centre(a);
+    const size = 14 + 22 * rand(), amp = (o.dim ? 6 : 22) + (o.dim ? 5 : 50) * rand();
+    return [mx, my, amp, size * 1.3, size, ci];
+  };
+  const bad = new Set(o.occluded || []);
+  const darkAt = new Map(), pics = [];
+  let model = null;
+  const cal = [];
+  const found = plan.anchors.map((a) => ({ c: a.c, x: null, y: null, conf: 0, a }));
+  items.forEach((it, idx) => {
+    if (it.kind === "dark") {
+      darkAt.set(idx, frameRGB([], rand, o));
+      pics.push(darkAt.get(idx));
+    } else if (it.kind === "calib") {
+      // the whole range lit: a puddle every ~60 pixels of the picture along the path
+      const ps = Array.from({ length: 14 }, (_, k) => {
+        const [x, y] = path(k / 13);
+        return [x, y, 30, 40, 32, it.ci];
+      });
+      cal.push(frameRGB(ps, rand, o));
+      pics.push(cal.at(-1));
+      if (cal.length === 3) model = S.glowColourModel(darkAt.get(0), cal);
+    } else {
+      const ps = it.segs.map((sg) => (bad.has(sg.a) ? [...centre(plan.anchors[sg.a]), 1.0, 20, 20, sg.ci] : puddleOf(plan.anchors[sg.a], sg.ci)));
+      if (o.speck) ps.push([40 + 800 * rand(), 40 + 400 * rand(), 255, 1.2, 1.2, 0]);
+      const lit = frameRGB(ps, rand, o);
+      pics.push(lit);
+      const r = S.findGlowsColour(darkAt.get(it.dark), lit, model, { f: lit.f, want: it.segs.map((q) => q.ci) });
+      for (const sg of it.segs) {
+        const g = r.glows[sg.ci];
+        found[sg.a] = { c: plan.anchors[sg.a].c, x: g.x, y: g.y, conf: g.conf, reason: g.reason, a: plan.anchors[sg.a] };
+      }
+    }
+  });
+  const sol = S.solveGlow(n, found);
+  return { n, plan, truth, found, sol, items, model };
+}
+
+// ---- the colour schedule ----
+{
+  const p = S.glowPlan(279), q = S.glowPlan(145);
+  const sch = S.glowScheduleColour([{ key: "a", first: 0, plan: p }, { key: "b", first: 279, plan: q }]);
+  ok(sch[0].kind === "dark" && sch.slice(1, 4).map((x) => `${x.kind}${x.ci}`).join() === "calib0,calib1,calib2", "colour schedule: dark, then the whole range lit red, green, blue");
+  ok(sch.slice(1, 4).every((x) => x.start === 0 && x.count === 424), "colour schedule: calibration lights the whole scanned range");
+  const segs = sch.filter((x) => x.kind === "segs");
+  const seen = new Map();
+  for (const it of segs) for (const sg of it.segs) seen.set(`${sg.key}:${sg.a}`, (seen.get(`${sg.key}:${sg.a}`) || 0) + 1);
+  ok(seen.size === p.anchors.length + q.anchors.length && [...seen.values()].every((v) => v === 1), "colour schedule: every anchor is lit exactly once");
+  ok(segs.every((it) => it.segs.length >= 1 && it.segs.length <= 3 && new Set(it.segs.map((x) => x.ci)).size === it.segs.length), "colour schedule: at most 3 stretches per picture, each its own colour");
+  ok(segs.every((it) => it.segs.every((x, k) => x.key === it.segs[0].key && (k === 0 || x.a - it.segs[k - 1].a >= 3))), "colour schedule: the three stretches of a picture are well apart in the run");
+  const white = S.glowSchedule([{ key: "a", first: 0, plan: p }, { key: "b", first: 279, plan: q }]);
+  const colourPics = sch.length, whitePics = white.length;
+  ok(colourPics < whitePics * 0.5, `colour schedule: ${colourPics} pictures against ${whitePics} one-at-a-time`);
+  ok(segs.every((it) => sch[it.dark].kind === "dark" && it.dark < sch.indexOf(it)), "colour schedule: each picture points at an earlier dark reference");
+  ok(segs.every((it) => it.segs.every((x) => x.start >= (x.key === "a" ? 0 : 279) && x.start + x.count <= (x.key === "a" ? 279 : 424))), "colour schedule: stretches are pixels of the light");
+  const one = S.glowScheduleColour([{ key: "a", first: 0, plan: S.glowPlan(3) }]);
+  ok(one.filter((x) => x.kind === "segs").length >= 1, "colour schedule: a tiny run still works");
+}
+
+// ---- the model and the split of one picture ----
+{
+  const rand = rng(71);
+  const dark = frameRGB([], rand), cal = [0, 1, 2].map((ci) => frameRGB([[300, 250, 40, 60, 40, ci], [650, 300, 40, 50, 40, ci]], rand));
+  const m = S.glowColourModel(dark, cal);
+  ok(m.ok && m.sep > 0.4, `model: red, green and blue look clearly different (separation ${m.sep.toFixed(2)})`);
+  const same = S.glowColourModel(dark, [cal[0], cal[0], cal[0]]);
+  ok(!same.ok, "model: three identical colours are not usable");
+  const lit = frameRGB([[200, 150, 30, 25, 20, 0], [480, 300, 30, 25, 20, 1], [760, 400, 30, 25, 20, 2]], rand);
+  const r = S.findGlowsColour(dark, lit, m, { f: lit.f });
+  const want = [[200, 150], [480, 300], [760, 400]];
+  const errs = r.glows.map((g, c) => (g.x == null ? 1e9 : Math.hypot(g.x - want[c][0], g.y - want[c][1])));
+  ok(errs.every((e) => e < 4), `three colours at once are each found in their own place (errors ${errs.map((e) => e.toFixed(1)).join(", ")} px)`);
+  // two glows of different colours overlapping a little are still told apart
+  const lit2 = frameRGB([[400, 250, 30, 30, 22, 0], [470, 270, 30, 30, 22, 1]], rand);
+  const r2 = S.findGlowsColour(dark, lit2, m, { f: lit2.f, want: [0, 1] });
+  ok(r2.glows[0].x < r2.glows[1].x - 25 && Math.abs(r2.glows[0].x - 400) < 14 && Math.abs(r2.glows[1].x - 470) < 14, `overlapping red and green glows are separated (${r2.glows[0].x?.toFixed(0)}, ${r2.glows[1].x?.toFixed(0)})`);
+  // asking for a colour that is not lit finds nothing
+  const r3 = S.findGlowsColour(dark, frameRGB([[300, 250, 30, 25, 20, 0]], rand), m, { f: 1, want: [1, 2] });
+  ok(r3.glows[1].x === null && r3.glows[2].x === null, "a colour that is not lit finds no glow");
+}
+
+// ---- whole runs, three anchors per picture ----
+for (const [n, seed, wb] of [[279, 1, [1.3, 1, 0.65]], [145, 2, [1.7, 1, 0.4]], [192, 3, [0.8, 1, 1.4]], [288, 4, [1.3, 1, 0.65]]]) {
+  const r = scanColour(n, seed, { wb });
+  const e = errors(r);
+  const okAnchors = r.sol.anchors.filter((a) => a.status === "ok").length;
+  ok(r.model.ok, `colour run ${n}: the camera tells red, green and blue apart (separation ${r.model.sep.toFixed(2)})`);
+  ok(okAnchors >= r.plan.anchors.length - 1, `colour run ${n}: anchors found ${okAnchors}/${r.plan.anchors.length} from ${r.items.length} pictures`);
+  ok(e.max < 8 && e.mean < 3.5, `colour run ${n}: pixel places within ${e.max.toFixed(1)} px of the truth (mean ${e.mean.toFixed(2)})`);
+}
+
+// ---- colour: dim, noisy, glints, occluded ----
+{
+  const r = scanColour(192, 21, { noise: 5, dim: true, speck: true, drift: 0.2 });
+  const e = errors(r);
+  const okA = r.sol.anchors.filter((a) => a.status === "ok").length;
+  ok(okA >= r.plan.anchors.length - 2 && e.max < 16, `colour dim, noisy, with glints: ${okA}/${r.plan.anchors.length} anchors, worst pixel ${e.max.toFixed(1)} px off, mean ${e.mean.toFixed(1)}`);
+  const occ = [4, 5, 11];
+  const q = scanColour(279, 31, { occluded: occ });
+  const st = q.sol.anchors.map((a) => a.status);
+  ok(occ.every((k) => st[k] !== "ok") && st.filter((x) => x === "ok").length >= q.plan.anchors.length - occ.length - 1, `colour: occluded anchors ${occ} are flagged (${occ.map((k) => st[k]).join(", ")}) and the rest are used`);
+  ok(errors(q).max < 14, `colour: pixels near found anchors stay accurate (${errors(q).max.toFixed(1)} px)`);
+}
+
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");
 process.exit(fails ? 1 : 0);

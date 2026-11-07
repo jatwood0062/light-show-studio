@@ -1,6 +1,9 @@
 // Light Show Studio: camera-scan maths. Pure functions, no DOM, so they run in the browser and in node (tests/js/test_scan.mjs).
-// Spec: docs/MAPPING_V2.md section 3. Frame k of a scan: 0 = all off (dark reference), 1 = all on (dim white), then for each
-// bit b of the pixel index two frames: 2+2b lights the pixels whose bit b is set, 3+2b lights the others (the inverse).
+// Spec: docs/MAPPING_V2.md section 3. Two code modes (the panel asks the light for one in map/scan/start):
+//  - COLOUR (default): frame 0 = dark, frames 1-3 = every pixel red, green, blue (calibration), then one frame per base-3 digit of
+//    the pixel's code (index + 1) with each pixel red/green/blue for its digit, then a check-digit frame. See colour* below.
+//  - WHITE (fallback): frame k of a scan: 0 = all off (dark reference), 1 = all on (dim white), then for each
+//    bit b of the pixel index two frames: 2+2b lights the pixels whose bit b is set, 3+2b lights the others (the inverse).
 
 export const SYNC = { blinks: 3, onMs: 400, offMs: 400, gapMs: 1200 }; // video fallback: sync blinks, then the code frames
 
@@ -64,6 +67,11 @@ function smooth121(src, w, h) {
 export function findBlobs(dark, allOn, w, h, opts = {}) {
   const diff = new Uint8ClampedArray(w * h);
   for (let i = 0; i < diff.length; i++) diff[i] = Math.max(0, allOn[i] - dark[i]);
+  return findBlobsInDiff(diff, w, h, opts);
+}
+
+// the same from a ready-made difference picture (Uint8)
+export function findBlobsInDiff(diff, w, h, opts = {}) {
   const sm = opts.smooth ? smooth121(diff, w, h) : diff;
   const ref = percentile(diff, 0.9995);
   const thr = Math.max(opts.minDiff ?? 14, (opts.fraction ?? 0.25) * ref);
@@ -167,6 +175,165 @@ export function decodeScan(frames, n, w, h, opts = {}) {
     points[idx] = [bl.x, bl.y, conf];
   });
   return { points, found: points.filter(Boolean).length, blobs: blobs.length, rejected: rej, w, h };
+}
+
+// ======================================================================================================================
+// Colour scan. Mirrors scan_codes.py. Frames are RGB, 3 bytes per pixel (rgbFromRGBA). Frame 0 dark; 1, 2, 3 = all red, green,
+// blue; 4..4+D-1 = base-3 digit j of (index + 1), a pixel showing primary (digit + j) % 3; 4+D = check digit (sum of digits) % 3,
+// shown the same way with j = D. The decoder learns each LED's own red, green and blue from frames 1-3 (as the camera sees them:
+// white balance, LED tint, diffusers all included) and reads every later frame as "nearest of those three by chromaticity".
+// ======================================================================================================================
+export const COLOUR_LEVEL = 140;
+export const COLOUR_CAL = 4; // dark + red + green + blue
+export const MODES = ["colour", "white"];
+
+// digits that hold the codes 1..n
+export function digitCount(n) {
+  let d = 1;
+  while (3 ** d <= n) d++;
+  return d;
+}
+export const colourFrames = (n) => COLOUR_CAL + digitCount(n) + 1;
+
+// primary shown by pixel i in colour frame k: null = dark, 0 red, 1 green, 2 blue
+export function colourClass(i, k, n) {
+  if (k === 0) return null;
+  if (k < COLOUR_CAL) return k - 1;
+  const j = k - COLOUR_CAL, D = digitCount(n);
+  let code = i + 1, sum = 0, d = 0;
+  for (let q = 0; q < D; q++) {
+    const dq = code % 3;
+    code = (code - dq) / 3;
+    sum += dq;
+    if (q === j) d = dq;
+  }
+  if (j === D) d = sum % 3;
+  return (d + j) % 3;
+}
+
+export const primaryColour = (c, level = COLOUR_LEVEL) => [c === 0 ? level : 0, c === 1 ? level : 0, c === 2 ? level : 0];
+
+// frame count of a mode ("colour" | "white")
+export const framesFor = (n, mode = "colour") => (mode === "white" ? scanFrames(n) : colourFrames(n));
+
+// RGBA bytes -> RGB bytes (3 per pixel)
+export function rgbFromRGBA(rgba, w, h) {
+  const out = new Uint8ClampedArray(w * h * 3);
+  for (let i = 0, j = 0, k = 0; i < w * h; i++, j += 4, k += 3) {
+    out[k] = rgba[j];
+    out[k + 1] = rgba[j + 1];
+    out[k + 2] = rgba[j + 2];
+  }
+  return out;
+}
+
+// RGB bytes -> luma bytes (for the sync blinks of the video fallback)
+export function lumaFromRGB(rgb, w, h) {
+  const out = new Uint8ClampedArray(w * h);
+  for (let i = 0, j = 0; i < out.length; i++, j += 3) out[i] = (rgb[j] * 77 + rgb[j + 1] * 150 + rgb[j + 2] * 29) >> 8;
+  return out;
+}
+
+// the reading at a blob's brightest pixel (the sub-pixel centre is not needed here), minus the same in dark: [r, g, b], not below 0.
+// One pixel, not a 3x3 mean: strips with LEDs 3 px apart would otherwise mix their neighbours' colours into the reading.
+function sampleRGB(frame, dark, w, px, py) {
+  const o = (py * w + px) * 3;
+  return [Math.max(0, frame[o] - dark[o]), Math.max(0, frame[o + 1] - dark[o + 1]), Math.max(0, frame[o + 2] - dark[o + 2])];
+}
+
+const l1 = (v) => v[0] + v[1] + v[2];
+const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+// Which of the three calibrated colours a reading is: {cls, margin (0-1, how clearly), level (reading / calibrated brightness)}.
+// cal = [{c: chromaticity (sums to 1), m: brightness}] for red, green, blue. margin is (d2 - d1) / (d2 + d1) over the two nearest.
+export function classifyColour(u, cal) {
+  const m = l1(u);
+  if (m <= 0) return { cls: -1, margin: 0, level: 0 };
+  const cu = [u[0] / m, u[1] / m, u[2] / m];
+  const d = cal.map((k) => dist3(cu, k.c));
+  let best = 0;
+  for (let k = 1; k < 3; k++) if (d[k] < d[best]) best = k;
+  const others = d.filter((_, k) => k !== best);
+  const d2 = Math.min(...others);
+  return { cls: best, margin: (d2 - d[best]) / (d2 + d[best] + 1e-9), level: m / cal[best].m };
+}
+
+// Decode a colour scan. frames: RGB arrays (3 bytes per pixel), colourFrames(n) of them, all w x h. Returns what decodeScan does:
+// {points, found, blobs, rejected, w, h}, points[i] = [x, y, confidence] or null. A bright spot is a pixel only if
+//  - its red, green and blue calibration responses are bright and clearly different colours (a lamp or reflection that is white
+//    in all three is not an LED: badCal),
+//  - in every digit frame it reads clearly as one of those three colours and not dimmer than 30% of it (badDigit),
+//  - the check digit agrees (badCheck), and the code is a real pixel (outOfRange), and nobody else read it better (duplicate).
+export function decodeColourScan(frames, n, w, h, opts = {}) {
+  const D = digitCount(n), F = COLOUR_CAL + D + 1;
+  if (frames.length < F) throw new Error(`Expected ${F} frames, got ${frames.length}.`);
+  const dark = frames[0];
+  // where the lights are: the three calibration frames' brightening, added up
+  const diff = new Uint8ClampedArray(w * h);
+  for (let p = 0, o = 0; p < diff.length; p++, o += 3) {
+    let sum = 0;
+    for (let k = 1; k <= 3; k++) {
+      const f = frames[k];
+      for (let c = 0; c < 3; c++) sum += Math.max(0, f[o + c] - dark[o + c]);
+    }
+    diff[p] = sum / 6; // about the level a white LED would have in luma
+  }
+  const blobs = findBlobsInDiff(diff, w, h, opts);
+  const minSep = opts.minSeparation ?? 0.2, minMargin = opts.minMargin ?? 0.35, minLevel = opts.minLevel ?? 0.3;
+  const minCal = opts.minCal ?? 12;
+  const rej = { badCal: 0, badDigit: 0, badCheck: 0, outOfRange: 0, duplicate: 0 };
+  const points = new Array(n).fill(null);
+  for (const bl of blobs) {
+    const cal = [];
+    let bad = false;
+    for (let k = 0; k < 3; k++) {
+      const v = sampleRGB(frames[1 + k], dark, w, bl.px, bl.py), m = l1(v);
+      if (m < minCal) {
+        bad = true;
+        break;
+      }
+      cal.push({ c: [v[0] / m, v[1] / m, v[2] / m], m });
+    }
+    if (bad || dist3(cal[0].c, cal[1].c) < minSep || dist3(cal[0].c, cal[2].c) < minSep || dist3(cal[1].c, cal[2].c) < minSep) {
+      rej.badCal++;
+      continue;
+    }
+    const digits = [];
+    let conf = 1;
+    for (let j = 0; j <= D && !bad; j++) {
+      const r = classifyColour(sampleRGB(frames[COLOUR_CAL + j], dark, w, bl.px, bl.py), cal);
+      if (r.cls < 0 || r.margin < minMargin || r.level < minLevel) {
+        bad = true;
+        break;
+      }
+      conf = Math.min(conf, r.margin);
+      digits.push((((r.cls - j) % 3) + 3) % 3);
+    }
+    if (bad) {
+      rej.badDigit++;
+      continue;
+    }
+    const check = digits.pop();
+    if (digits.reduce((a, d) => a + d, 0) % 3 !== check) {
+      rej.badCheck++;
+      continue;
+    }
+    let code = 0;
+    for (let q = D - 1; q >= 0; q--) code = code * 3 + digits[q];
+    const idx = code - 1;
+    if (idx < 0 || idx >= n) {
+      rej.outOfRange++;
+      continue;
+    }
+    const old = points[idx];
+    if (old && old[2] >= conf) {
+      rej.duplicate++;
+      continue;
+    }
+    if (old) rej.duplicate++;
+    points[idx] = [bl.x, bl.y, conf];
+  }
+  return { points, found: points.filter(Boolean).length, blobs: blobs.length, rejected: rej, w, h, mode: "colour" };
 }
 
 // ---- filling gaps, normalising -------------------------------------------------------------------------------------------
@@ -628,4 +795,131 @@ export function solveGlow(count, anchors, opts = {}) {
     if (Math.abs(xs[j] - i) > 0.6 * step) est[i] = 1;
   }
   return { x, y, est, found: ids.length, anchors: out, step, ok: true };
+}
+
+// ======================================================================================================================
+// Glow scan in colour: up to three stretches glow at once, one red, one green, one blue, and are told apart by colour, so
+// finding all anchors takes a third of the pictures. Needs a short calibration (the whole scanned range lit red, then green,
+// then blue) to learn how the camera sees each colour on these surfaces; after that every anchor picture is split into a red,
+// a green and a blue glow map (unmixing), and each map goes through findGlow as before. Pictures are RGB, shrunk by downscaleRGB.
+// ======================================================================================================================
+
+// block-average RGB down by f: {data: Float32Array (3 per pixel), w, h, f}
+export function downscaleRGB(rgb, w, h, f = glowFactor(w)) {
+  const sw = Math.max(1, Math.floor(w / f)), sh = Math.max(1, Math.floor(h / f));
+  const data = new Float32Array(sw * sh * 3), inv = 1 / (f * f);
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      let r = 0, g = 0, b = 0;
+      for (let j = 0; j < f; j++) {
+        let o = ((y * f + j) * w + x * f) * 3;
+        for (let i = 0; i < f; i++, o += 3) {
+          r += rgb[o];
+          g += rgb[o + 1];
+          b += rgb[o + 2];
+        }
+      }
+      const q = (y * sw + x) * 3;
+      data[q] = r * inv;
+      data[q + 1] = g * inv;
+      data[q + 2] = b * inv;
+    }
+  }
+  return { data, w: sw, h: sh, f };
+}
+
+function inv3(m) {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  if (Math.abs(det) < 1e-9) return null;
+  return { inv: [A / det, -(b * i - c * h) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, -(a * f - c * d) / det, C / det, -(a * h - b * g) / det, (a * e - b * d) / det], det };
+}
+
+// How the camera sees the three glow colours. lits = [red, green, blue] pictures (downscaleRGB) of the same scene as dark.
+// Returns {ok, cols: [[r,g,b] x3 each summing to 1], inv (3x3, row-major), sep, det}: ok only when the three colours look clearly
+// different (sep = the smallest distance between two of them).
+export function glowColourModel(dark, lits, opts = {}) {
+  const cols = [];
+  const np = dark.w * dark.h;
+  for (let k = 0; k < 3; k++) {
+    const lit = lits[k].data, d = new Float32Array(np * 3);
+    for (let i = 0; i < d.length; i++) d[i] = lit[i] - dark.data[i];
+    const off = [0, 1, 2].map((c) => medianOf(Float32Array.from({ length: Math.ceil(np / 16) }, (_, q) => d[Math.min(np - 1, q * 16) * 3 + c])));
+    const s = new Float32Array(np);
+    for (let i = 0; i < np; i++) s[i] = Math.max(0, d[i * 3] - off[0]) + Math.max(0, d[i * 3 + 1] - off[1]) + Math.max(0, d[i * 3 + 2] - off[2]);
+    const sorted = Float32Array.from(s).sort();
+    const top = sorted[Math.floor(sorted.length * 0.995)];
+    const thr = Math.max(opts.minDiff ?? 3, 0.4 * top);
+    const v = [0, 0, 0];
+    for (let i = 0; i < np; i++) {
+      if (s[i] < thr) continue;
+      for (let c = 0; c < 3; c++) v[c] += Math.max(0, d[i * 3 + c] - off[c]);
+    }
+    const m = v[0] + v[1] + v[2];
+    cols.push(m > 0 ? [v[0] / m, v[1] / m, v[2] / m] : [1 / 3, 1 / 3, 1 / 3]);
+  }
+  const sep = Math.min(dist3(cols[0], cols[1]), dist3(cols[0], cols[2]), dist3(cols[1], cols[2]));
+  // columns are the colours: lit pixel = M * (amount of red, green, blue)
+  const M = [cols[0][0], cols[1][0], cols[2][0], cols[0][1], cols[1][1], cols[2][1], cols[0][2], cols[1][2], cols[2][2]];
+  const iv = inv3(M);
+  const ok = !!iv && sep >= (opts.minSeparation ?? 0.25) && Math.abs(iv.det) > 0.05;
+  return { ok, cols, inv: iv ? iv.inv : [1, 0, 0, 0, 1, 0, 0, 0, 1], sep, det: iv ? iv.det : 0 };
+}
+
+// The picture split into the amount of red, green and blue glow in each pixel: [Float32Array x3], w x h each (signed: noise stays
+// symmetric). The frame-wide shift of auto exposure is taken out per channel first.
+export function unmixGlow(dark, lit, model) {
+  const np = dark.w * dark.h, d = new Float32Array(np * 3);
+  for (let i = 0; i < d.length; i++) d[i] = lit.data[i] - dark.data[i];
+  const off = [0, 1, 2].map((c) => medianOf(Float32Array.from({ length: Math.ceil(np / 16) }, (_, q) => d[Math.min(np - 1, q * 16) * 3 + c])));
+  const out = [new Float32Array(np), new Float32Array(np), new Float32Array(np)], m = model.inv;
+  for (let i = 0; i < np; i++) {
+    const r = d[i * 3] - off[0], g = d[i * 3 + 1] - off[1], b = d[i * 3 + 2] - off[2];
+    out[0][i] = m[0] * r + m[1] * g + m[2] * b;
+    out[1][i] = m[3] * r + m[4] * g + m[5] * b;
+    out[2][i] = m[6] * r + m[7] * g + m[8] * b;
+  }
+  return out;
+}
+
+// Find the glow of each colour in `want` (e.g. [0, 1, 2]) in one RGB picture. Returns {glows: [findGlow result | null x3], maps}.
+// maps[c] is the unmixed picture of colour c (a luma-like number picture, w x h): pass zeros as `dark` to findGlow / refineTap /
+// glowPreview with it.
+export function findGlowsColour(dark, lit, model, opts = {}) {
+  const maps = unmixGlow(dark, lit, model), zeros = new Float32Array(dark.w * dark.h);
+  const glows = [null, null, null];
+  for (const c of opts.want ?? [0, 1, 2]) glows[c] = findGlow(zeros, maps[c], dark.w, dark.h, { ...opts, f: opts.f ?? dark.f ?? 1 });
+  return { glows, maps };
+}
+
+// The sequence for colour glow scanning. plans: [{key, first, plan}] as for glowSchedule. Items:
+//   {kind: "dark"}
+//   {kind: "calib", ci (0 red, 1 green, 2 blue), start, count, dark}   the whole scanned range in one colour
+//   {kind: "segs", segs: [{key, a, start, count, ci}] (1-3, one colour each), dark}
+// A run's anchors are lit three at a time, `ceil(A / 3)` pictures apart in the run so the three glows are far from each other.
+export function glowScheduleColour(plans, darkEvery = GLOW.darkEvery) {
+  const items = [{ kind: "dark" }];
+  if (!plans.length) return items;
+  const start = Math.min(...plans.map((p) => p.first)), end = Math.max(...plans.map((p) => p.first + p.plan.count));
+  for (let ci = 0; ci < 3; ci++) items.push({ kind: "calib", ci, start, count: end - start, dark: 0 });
+  let dark = 0, since = 3;
+  for (const p of plans) {
+    const A = p.plan.anchors.length, T = Math.ceil(A / 3);
+    for (let g = 0; g < T; g++) {
+      if (since >= darkEvery) {
+        items.push({ kind: "dark" });
+        dark = items.length - 1;
+        since = 0;
+      }
+      const segs = [];
+      for (let q = 0; q < 3; q++) {
+        const a = g + q * T;
+        if (a < A) segs.push({ key: p.key, a, start: p.first + p.plan.anchors[a].start, count: p.plan.anchors[a].width, ci: q });
+      }
+      items.push({ kind: "segs", segs, dark });
+      since++;
+    }
+  }
+  return items;
 }

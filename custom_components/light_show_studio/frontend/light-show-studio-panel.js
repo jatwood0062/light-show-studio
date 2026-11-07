@@ -1725,8 +1725,8 @@ class LightShowStudioPanel extends HTMLElement {
           u.search = base.search;
           return import(u.href);
         };
-        const [v, s, w] = await Promise.all([get("light-show-studio-map3d.js"), get("light-show-studio-scan.js"), get("light-show-studio-scan-wizard.js")]);
-        return (this._m = { Viewer3D: v.Viewer3D, runRgb: v.runRgb, scan: s, ScanWizard: w.ScanWizard });
+        const [v, s, w, mvw] = await Promise.all([get("light-show-studio-map3d.js"), get("light-show-studio-scan.js"), get("light-show-studio-scan-wizard.js"), get("light-show-studio-multiview.js").catch(() => null)]);
+        return (this._m = { Viewer3D: v.Viewer3D, runRgb: v.runRgb, scan: s, ScanWizard: w.ScanWizard, multiview: mvw }); // multiview is optional: the wizard hides "several angles" without it
       })().catch((e) => {
         this._modsP = null;
         this._modsErr = String(e?.message || e);
