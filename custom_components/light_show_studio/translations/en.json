@@ -59,7 +59,8 @@
           "bulbs": "Number of bulbs / segments",
           "segmented": "Per-bulb control (turn off if the light only takes one colour)",
           "bulb_entities": "Create a light for every bulb",
-          "start_pixel": "First pixel in xLights / Light-O-Rama output"
+          "start_pixel": "First pixel in xLights / Light-O-Rama output",
+          "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)"
         }
       },
       "twinkly_details": {
@@ -68,7 +69,8 @@
           "name": "Name",
           "bulbs": "Number of LEDs",
           "bulb_entities": "Create a light for every LED",
-          "start_pixel": "First pixel in xLights / Light-O-Rama output"
+          "start_pixel": "First pixel in xLights / Light-O-Rama output",
+          "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)"
         }
       },
       "wled_details": {
@@ -77,8 +79,11 @@
           "name": "Name",
           "bulbs": "Number of LEDs",
           "bulb_entities": "Create a light for every LED",
-          "start_pixel": "First pixel in xLights / Light-O-Rama output"
-        }
+          "start_pixel": "First pixel in xLights / Light-O-Rama output",
+          "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)",
+          "device_offset": "First LED on the controller (0 = the start; use when other LEDs come first)"
+        },
+        "description": "The controller reports {leds} LEDs. This light's on/off and brightness still apply to the whole controller."
       },
       "player": {
         "title": "Light Show Player",
@@ -97,7 +102,8 @@
     "error": {
       "invalid_host": "Enter the light's home-network IPv4 address, like 192.168.1.50 (public, loopback and multicast addresses aren't allowed).",
       "cannot_connect": "Can't reach a Twinkly or WLED light at that address.",
-      "invalid_sources": "Enter private IPv4 addresses or networks separated by commas, like 192.168.1.20, 10.0.0.0/24."
+      "invalid_sources": "Enter private IPv4 addresses or networks separated by commas, like 192.168.1.20, 10.0.0.0/24.",
+      "exceeds_leds": "Number of LEDs plus the first LED is more than the LEDs the controller reports."
     }
   },
   "options": {
@@ -111,12 +117,15 @@
           "default_transition": "Fade in / out and between looks, in seconds (0 = instant)",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
           "gap": "Pause between shows (seconds)",
-          "allowed_sources": "Only accept xLights / sequencer data from these IPs (optional, comma separated; empty = any device on your home network)"
+          "allowed_sources": "Only accept xLights / sequencer data from these IPs (optional, comma separated; empty = any device on your home network)",
+          "device_offset": "WLED: first LED on the controller (0 = the start; use when other LEDs come first)",
+          "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)"
         }
       }
     },
     "error": {
-      "invalid_sources": "Enter private IPv4 addresses or networks separated by commas, like 192.168.1.20, 10.0.0.0/24."
+      "invalid_sources": "Enter private IPv4 addresses or networks separated by commas, like 192.168.1.20, 10.0.0.0/24.",
+      "exceeds_leds": "Number of LEDs plus the first LED is more than the LEDs the controller reports."
     }
   },
   "services": {

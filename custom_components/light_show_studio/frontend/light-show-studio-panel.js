@@ -3453,6 +3453,14 @@ class LightShowStudioPanel extends HTMLElement {
           return { ok: true };
         },
         light: (run, i, n) => this._probeLight(run, i, n),
+        // paint: pixels before i green, i white, the rest dim red, so the strip shows how far along the run you are
+        paint: (run, i) => {
+          const segs = [];
+          if (i > 0) segs.push({ start: run.first, count: i, colour: [0, 110, 0] });
+          segs.push({ start: run.first + i, count: 1, colour: [255, 255, 255] });
+          if (run.count - i - 1 > 0) segs.push({ start: run.first + i + 1, count: run.count - i - 1, colour: [50, 0, 0] });
+          return this._probeLight(run, i, 1, segs);
+        },
         stop: () => this._probeStop(),
       },
       onClose: () => {
@@ -3486,11 +3494,13 @@ class LightShowStudioPanel extends HTMLElement {
 
   // light one pixel (or a stretch) of a run so you can see where it really is: scan/start takes the light, scan/segment lights the
   // stretch. The light goes back to what it showed on scan/stop (also after 120 s without a call).
-  _probeLight(run, i, n) {
+  _probeLight(run, i, n, segments) {
     const go = async () => {
       const entry = run.entry_id;
       if (this._probe && this._probe.entry !== entry) await this._probeStop(true);
-      const seg = () => this._hass.callWS({ type: "light_show_studio/map/scan/segment", entry_id: entry, start: run.first + i, count: Math.max(1, n || 1), colour: [255, 255, 255] });
+      const seg = () => this._hass.callWS(segments
+        ? { type: "light_show_studio/map/scan/segment", entry_id: entry, segments }
+        : { type: "light_show_studio/map/scan/segment", entry_id: entry, start: run.first + i, count: Math.max(1, n || 1), colour: [255, 255, 255] });
       if (this._probe) {
         try {
           return await seg();

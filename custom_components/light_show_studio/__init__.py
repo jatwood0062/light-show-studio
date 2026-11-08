@@ -24,8 +24,10 @@ from .const import (
     CONF_BULBS,
     CONF_DEFAULT_TRANSITION,
     CONF_DEVICE_ID,
+    CONF_DEVICE_OFFSET,
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
+    CONF_SHOW_LEAD_MS,
     CONF_SPEAKERS,
     CONF_START_PIXEL,
     CONF_TRANSITION,
@@ -60,7 +62,7 @@ from .receiver import PixelReceiver
 from .scheduler import async_setup_scheduler
 from .showplayer import async_setup_player, async_unload_player
 from .twinkly import TwinklyController, async_gestalt
-from .wled import WledController, async_info
+from .wled import WledController, async_info, fits
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.LIGHT]
@@ -131,7 +133,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver(hass))  # before any entry, so the show player can use it
     # the one SequencePlayer: play_sequence, stop_sequence and the show player all drive this one
     sequencer = hass.data[SEQUENCER_KEY] = SequencePlayer(
-        receiver.show, lambda coro: hass.async_create_background_task(coro, "light_show_studio sequence"))
+        receiver.show_sequence, lambda coro: hass.async_create_background_task(coro, "light_show_studio sequence"),
+        lead_output=receiver.show_lead, leads=receiver.leads)
     websocket.async_register(hass)
     ws_shows.async_register(hass)
     ws_schedule.async_register(hass)
@@ -286,15 +289,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
             info = await async_info(async_get_clientsession(hass), entry.data[CONF_HOST])
         except Exception as err:  # unreachable now; Home Assistant retries
             raise ConfigEntryNotReady(f"WLED at {entry.data[CONF_HOST]} is not reachable: {err}") from err
+        offset = int(_opt(entry, CONF_DEVICE_OFFSET, 0))
+        leds = info.get("leds", {}).get("count")
+        if not fits(bulbs, offset, leds):
+            _LOGGER.warning("WLED %s: %d LEDs from LED %d run past the %s LEDs the controller reports",
+                            entry.data[CONF_HOST], bulbs, offset, leds)
         ctl = entry.runtime_data = WledController(hass, entry.data[CONF_HOST], bulbs,
-                                                  bool(info.get("leds", {}).get("rgbw")))
+                                                  bool(info.get("leds", {}).get("rgbw")), offset)
         ctl.mark_seen()
     else:
         ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], bulbs, _opt(entry, CONF_SEGMENTED, True))
     ctl.entry_id = entry.entry_id  # painted patterns find their pixels by it
     ctl.default_transition = fade.clean_seconds(_opt(entry, CONF_DEFAULT_TRANSITION, fade.DEFAULT_TRANSITION))
+    ctl.show_lead_ms = max(-500, min(500, int(_opt(entry, CONF_SHOW_LEAD_MS, 0))))
     receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver(hass))
-    await receiver.subscribe(entry.entry_id, _opt(entry, CONF_START_PIXEL, 1), ctl.bulbs, ctl.show_external)
+    await receiver.subscribe(entry.entry_id, _opt(entry, CONF_START_PIXEL, 1), ctl.bulbs, ctl.show_external,
+                             ctl.show_lead_ms)
     entry.async_on_unload(lambda: receiver.unsubscribe(entry.entry_id))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_reload_on_change(entry)))

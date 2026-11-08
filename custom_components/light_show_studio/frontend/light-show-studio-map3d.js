@@ -766,20 +766,61 @@ export const Geo = {
     const out = new Float64Array(Math.max(0, n) * 3), m = corners.length;
     if (!n || !m) return out;
     const cum = [0];
-    for (let i = 1; i < m; i++) cum.push(cum[i - 1] + Math.hypot(corners[i][0] - corners[i - 1][0], corners[i][1] - corners[i - 1][1], corners[i][2] - corners[i - 1][2]));
+    // a corner with c[3] set starts after a break: the stretch before it has no LEDs, so it takes no length
+    for (let i = 1; i < m; i++) cum.push(cum[i - 1] + (corners[i][3] ? 0 : Math.hypot(corners[i][0] - corners[i - 1][0], corners[i][1] - corners[i - 1][1], corners[i][2] - corners[i - 1][2])));
     const total = cum[m - 1];
     let k = 1;
     for (let i = 0; i < n; i++) {
       if (m === 1 || total < 1e-9) {
-        out.set(corners[0], i * 3);
+        out.set(corners[0].slice(0, 3), i * 3);
         continue;
       }
       const d = n > 1 ? (i / (n - 1)) * total : total / 2;
-      while (k < m - 1 && cum[k] < d) k++;
+      // the first stretch that ends at or after d, skipping breaks (a break leading the run is skipped too)
+      while (k < m - 1 && (corners[k][3] || cum[k] < d)) k++;
       const span = cum[k] - cum[k - 1] || 1e-9, t = clamp((d - cum[k - 1]) / span, 0, 1), a = corners[k - 1], b = corners[k];
       for (let c = 0; c < 3; c++) out[i * 3 + c] = a[c] + (b[c] - a[c]) * t;
     }
     return out;
+  },
+
+  // breaks <-> saved pts. A corner flagged c[3] = 1 (stretch before it has no LEDs) is saved as the repeated pair
+  // [.., A, A, B, B, ..] so the backend format is unchanged. decodeBreaks takes saved points ([x, y, z] arrays) and
+  // returns corners; encodeBreaks takes corners and returns the saved points (coordinates passed through `q`).
+  decodeBreaks(pts0) {
+    const same = (a, b) => a && b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+    const pts = [];
+    for (let i = 0; i < pts0.length; i++) {
+      if (pts.length && same(pts0[i], pts[pts.length - 1]) && same(pts0[i + 1], pts0[i + 2])) {
+        const b = pts0[i + 1].slice(0, 3);
+        b[3] = 1;
+        pts.push(b);
+        i += 2;
+        continue;
+      }
+      pts.push(pts0[i]);
+    }
+    return pts;
+  },
+
+  encodeBreaks(corners, q = (c) => [c[0], c[1], c[2]]) {
+    const out = [];
+    corners.forEach((c, i) => {
+      const p = q(c);
+      if (c[3] && i > 0) out.push(out[out.length - 1].slice(), p.slice());
+      out.push(p);
+    });
+    return out;
+  },
+
+  // corners listed the other way round: a break stays between the same two corners
+  reverseCorners(corners) {
+    const m = corners.length;
+    return corners.map((_, j) => {
+      const c = corners[m - 1 - j].slice(0, 3);
+      if (j > 0 && corners[m - j][3]) c[3] = 1;
+      return c;
+    });
   },
 
   length(corners) {
@@ -988,7 +1029,8 @@ export class RunEditor {
     const n = Math.max(0, Math.min(2040, Math.floor(raw.count) || 0));
     if (!n) return null;
     const p3 = (p) => [Number(p[0]) || 0, Number(p[1]) || 0, p.length > 2 ? Number(p[2]) || 0 : 0.5];
-    const pts = Array.isArray(raw.pts) ? raw.pts.map(p3) : [];
+    const pts0 = Array.isArray(raw.pts) ? raw.pts.map(p3) : [];
+    const pts = Geo.decodeBreaks(pts0); // [.. A, A, B, B ..] = a break between A and B
     const r = { id: raw.id, name: raw.name || "Run", entry_id: raw.entry_id, first: raw.first || 0, count: n, rgb, raw, P: new Float64Array(n * 3), corners: null, kind: "line", fresh: true };
     if (Array.isArray(raw.positions) && raw.positions.length === n * 3) {
       for (let i = 0; i < n * 3; i++) r.P[i] = raw.positions[i] / 1000;
@@ -1004,7 +1046,7 @@ export class RunEditor {
         }
       }
     } else if (pts.length === n && n > 2) {
-      r.P.set(pts.flat());
+      r.P.set(pts.flatMap((c) => c.slice(0, 3)));
       r.kind = "imported";
       r.fresh = false;
     } else {
@@ -1025,7 +1067,9 @@ export class RunEditor {
 
   _outPts(r) {
     const R = (v) => Math.round(clamp(v, 0, 1) * 10000) / 10000;
-    if (r.corners && r.corners.length >= 2) return r.corners.map((c) => c.map(R));
+    if (r.corners && r.corners.length >= 2) {
+      return Geo.encodeBreaks(r.corners, (c) => [R(c[0]), R(c[1]), R(c[2])]);
+    }
     const n = r.count;
     return [0, n - 1].map((i) => [R(r.P[i * 3]), R(r.P[i * 3 + 1]), R(r.P[i * 3 + 2])]);
   }
@@ -1525,6 +1569,7 @@ Object.assign(RunEditor.prototype, {
     const r = this.cur;
     if (!r.corners || this.cornerSel < 0) return;
     r.corners.splice(this.cornerSel, 1);
+    if (r.corners[0]) r.corners[0].length = 3; // the first corner never starts after a break
     this.cornerSel = -1;
     if (r.corners.length) this._respread(r);
     this._commit();
@@ -1543,6 +1588,7 @@ Object.assign(RunEditor.prototype, {
     this._st = { k: "dot", i: hit.i, base: new Float64Array(rr.P), s0: this.viewer.unproject(x, y, 0), x, y, moved: false, run: rr };
     this.focusPx = hit.i;
     this.viewer.invalidate();
+    this._probe();
     return true;
   },
 
@@ -1607,6 +1653,7 @@ Object.assign(RunEditor.prototype, {
       const c = r.corners[s.i];
       let pos = this.viewer.unproject(x, y, c[ax.w]);
       pos = this._snapPos(pos, x, y, r, s.i);
+      if (c[3]) pos[3] = 1; // keep the break flag
       r.corners[s.i] = pos;
       this._respread(r);
       s.dirty = true;
@@ -1643,9 +1690,13 @@ Object.assign(RunEditor.prototype, {
       Geo.rotate(r.P, s.a, s.b, ax, s.pivot, th);
       Geo.clampAll(r.P, s.a, s.b);
       if (s.cb && s.a === 0 && s.b === r.count - 1) {
-        const flat = new Float64Array(s.cb.flat());
+        const flat = new Float64Array(s.cb.flatMap((c) => c.slice(0, 3))); // not the break flags
         Geo.rotate(flat, 0, s.cb.length - 1, ax, s.pivot, th);
-        r.corners = s.cb.map((_, i) => [clamp(flat[i * 3], 0, 1), clamp(flat[i * 3 + 1], 0, 1), clamp(flat[i * 3 + 2], 0, 1)]);
+        r.corners = s.cb.map((o, i) => {
+          const c = [clamp(flat[i * 3], 0, 1), clamp(flat[i * 3 + 1], 0, 1), clamp(flat[i * 3 + 2], 0, 1)];
+          if (o[3]) c[3] = 1;
+          return c;
+        });
       }
       s.dirty = true;
       this._syncDots();
@@ -1659,7 +1710,11 @@ Object.assign(RunEditor.prototype, {
     const [lo, hi] = Geo.bounds(s.base, s.a, s.b);
     const dd = [0, 1, 2].map((k) => clamp(d[k], -lo[k], 1 - hi[k]));
     for (let i = s.a; i <= s.b; i++) for (let k = 0; k < 3; k++) r.P[i * 3 + k] = s.base[i * 3 + k] + dd[k];
-    if (s.cb && s.a === 0 && s.b === r.count - 1) r.corners = s.cb.map((c) => c.map((v, k) => clamp(v + dd[k], 0, 1)));
+    if (s.cb && s.a === 0 && s.b === r.count - 1) r.corners = s.cb.map((c) => {
+      const q = [0, 1, 2].map((k) => clamp(c[k] + dd[k], 0, 1));
+      if (c[3]) q[3] = 1;
+      return q;
+    });
     this._syncDots();
   },
 
@@ -1858,6 +1913,22 @@ Object.assign(RunEditor.prototype, {
       }
     }
     if (this.view === "3d") return;
+    // breaks: a dashed line where the strip has no LEDs
+    if (r.corners) {
+      for (let i = 1; i < r.corners.length; i++) {
+        if (!r.corners[i][3]) continue;
+        const a = v.project(...r.corners[i - 1].slice(0, 3)), b = v.project(...r.corners[i].slice(0, 3));
+        g.save();
+        g.setLineDash([6, 6]);
+        g.lineWidth = 2;
+        g.strokeStyle = "rgba(255,255,255,.6)";
+        g.beginPath();
+        g.moveTo(a[0], a[1]);
+        g.lineTo(b[0], b[1]);
+        g.stroke();
+        g.restore();
+      }
+    }
     // trace corners
     if (this.tool === "trace" && r.corners) {
       r.corners.forEach((c, i) => {
@@ -2050,6 +2121,15 @@ Object.assign(RunEditor.prototype, {
     p.append(this._sect("Height", who, chips, sl));
     const acts = this._row(
       this.cornerSel >= 0 && cs?.[this.cornerSel] ? this._b("Delete corner", "rte-b warn", () => this._deleteCorner()) : null,
+      this.cornerSel > 0 && cs?.[this.cornerSel] ? this._b(cs[this.cornerSel][3] ? "Remove break (LEDs here)" : "Break before this corner (no LEDs)", "rte-b", () => {
+        const c = this.cur.corners[this.cornerSel];
+        if (c[3]) c.length = 3;
+        else c[3] = 1;
+        this._respread(this.cur);
+        this._commit();
+        this._renderPanel();
+        this.viewer.invalidate();
+      }) : null,
       Object.assign(this._b("Start at the other end", "rte-b", () => this.flipDirection()), { disabled: !this.canEdit }),
       Object.assign(this._b("Start over", "rte-b warn", () => this.startOver()), { disabled: !this.canEdit }),
     );
@@ -2074,7 +2154,7 @@ Object.assign(RunEditor.prototype, {
   flipDirection() {
     const r = this.cur;
     Geo.reverse(r.P);
-    if (r.corners) r.corners.reverse();
+    if (r.corners) r.corners = Geo.reverseCorners(r.corners);
     this.sel = null;
     this.cornerSel = -1;
     this.focusPx = 0;
@@ -2266,9 +2346,15 @@ Object.assign(RunEditor.prototype, {
     fn(r.P, a, b);
     Geo.clampAll(r.P, a, b);
     if (r.corners && whole) {
-      const flat = new Float64Array(r.corners.flat());
-      fn(flat, 0, r.corners.length - 1);
-      r.corners = r.corners.map((_, i) => [clamp(flat[i * 3], 0, 1), clamp(flat[i * 3 + 1], 0, 1), clamp(flat[i * 3 + 2], 0, 1)]);
+      const gaps = r.corners.map((c) => c[3] || 0);
+      const flat2 = new Float64Array(r.corners.length * 3);
+      r.corners.forEach((c, i) => flat2.set(c.slice(0, 3), i * 3));
+      fn(flat2, 0, r.corners.length - 1);
+      r.corners = r.corners.map((_, i) => {
+        const c = [clamp(flat2[i * 3], 0, 1), clamp(flat2[i * 3 + 1], 0, 1), clamp(flat2[i * 3 + 2], 0, 1)];
+        if (gaps[i]) c[3] = 1;
+        return c;
+      });
     } else r.corners = null;
     if (!r.corners && r.kind === "traced") r.kind = "edited";
     r.fresh = false;
@@ -2319,7 +2405,7 @@ Object.assign(RunEditor.prototype, {
     tg.disabled = !can.ok || !this.canEdit;
     const kids = [tg];
     if (on) {
-      const seg = this._row(...[["The pixel", "pixel"], ["The picked range", "sel"]].map(([t, m]) => {
+      const seg = this._row(...[["The pixel", "pixel"], ["The picked range", "sel"], ...(pr.paint ? [["Paint", "paint"]] : [])].map(([t, m]) => {
         const b = this._b(t, "rte-b", () => {
           this.probeMode = m;
           this._probe();
@@ -2334,7 +2420,9 @@ Object.assign(RunEditor.prototype, {
         b.setAttribute("aria-label", `Light pixel ${d > 0 ? "+" : ""}${d} from this one`);
         return b;
       }));
-      kids.push(seg, this._el("div", "hint", `Pixel ${this.focusPx} of ${r.count}. Step to the next pixel to see where the strip actually goes.`), step);
+      kids.push(seg, this._el("div", "hint", this.probeMode === "paint"
+        ? `Pixel ${this.focusPx} of ${r.count} is white on the strip; everything before it is green, after it dim red. Tap or drag a dot, or step, and the strip follows.`
+        : `Pixel ${this.focusPx} of ${r.count}. Step to the next pixel to see where the strip actually goes.`), step);
     }
     if (!can.ok) kids.push(this._el("div", "hint", can.why || "This light can't light single pixels."));
     else kids.push(this._el("div", "hint", "Lighting a pixel borrows that light until you stop (it goes back to what it showed)."));
@@ -2363,8 +2451,13 @@ Object.assign(RunEditor.prototype, {
         n = this.sel.b - this.sel.a + 1;
       }
       try {
-        await pr.light(r.raw, i0, n);
-        this.say(`Lighting pixel ${i0}${n > 1 ? " to " + (i0 + n - 1) : ""} of ${r.name}.`);
+        if (this.probeMode === "paint" && pr.paint) {
+          await pr.paint(r.raw, this.focusPx);
+          this.say(`Pixel ${this.focusPx} of ${r.name} is white; before it green, after it red.`);
+        } else {
+          await pr.light(r.raw, i0, n);
+          this.say(`Lighting pixel ${i0}${n > 1 ? " to " + (i0 + n - 1) : ""} of ${r.name}.`);
+        }
       } catch (err) {
         this.probeOn = false;
         this.say(String(err?.message || err || "Couldn't light that pixel."), true);

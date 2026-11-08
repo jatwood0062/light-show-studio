@@ -40,6 +40,7 @@ class C9Controller:
         self.host = valid_ipv4(host)  # only LAN addresses; ValueError otherwise
         self.lan = self._make_link(host)
         self.bulbs = bulbs
+        self.show_lead_ms = 0  # -500..500: this light gets .fseq frames for t + lead (set by the integration from the option)
         self.segmented = segmented  # False: the light takes one colour, the frame's average
         self._whole: tuple[Colour, int] | None = None
         self._whole_sent = 0.0

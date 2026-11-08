@@ -17,9 +17,11 @@ from .const import (
     CONF_BULBS,
     CONF_DEFAULT_TRANSITION,
     CONF_DEVICE_ID,
+    CONF_DEVICE_OFFSET,
     CONF_GAP,
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
+    CONF_SHOW_LEAD_MS,
     CONF_SKU,
     CONF_START_PIXEL,
     CONF_TYPE,
@@ -32,9 +34,11 @@ from .const import (
 from .hosts import is_lan_ipv4, parse_sources, valid_ipv4
 from .protocol import async_scan
 from .twinkly import async_discover, async_gestalt
-from .wled import async_info, format_mac
+from .wled import async_info, fits, format_mac
 
 PIXEL = vol.All(int, vol.Range(min=1, max=2040))
+LEAD = vol.All(int, vol.Range(min=-500, max=500))
+OFFSET = vol.All(int, vol.Range(min=0, max=2039))
 MANUAL = "manual"
 
 
@@ -46,7 +50,8 @@ def _model(sku: str):
     return lookup(sku) if sku else None
 
 
-def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, name: str = "Light") -> vol.Schema:
+def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, name: str = "Light",
+                  wled: bool = False) -> vol.Schema:
     fields: dict = {}
     if with_name:
         fields[vol.Required(CONF_NAME, default=cur.get(CONF_NAME, name))] = vol.All(str, vol.Length(min=1, max=100))
@@ -56,7 +61,17 @@ def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, n
         fields[vol.Required(CONF_SEGMENTED, default=cur.get(CONF_SEGMENTED, True))] = bool
     fields[vol.Required(CONF_BULB_ENTITIES, default=cur.get(CONF_BULB_ENTITIES, not twinkly))] = bool
     fields[vol.Required(CONF_START_PIXEL, default=cur.get(CONF_START_PIXEL, 1))] = PIXEL
+    if wled:  # first LED on the controller this light writes (a dummy output or another strip before it)
+        fields[vol.Required(CONF_DEVICE_OFFSET, default=cur.get(CONF_DEVICE_OFFSET, 0))] = OFFSET
+    fields[vol.Required(CONF_SHOW_LEAD_MS, default=cur.get(CONF_SHOW_LEAD_MS, 0))] = LEAD
     return vol.Schema(fields)
+
+
+def _too_long(user_input: dict[str, Any], leds: int | None) -> dict[str, str]:
+    """Error for a WLED whose bulbs + offset run past the LEDs the device reports (nothing when unknown)."""
+    if fits(user_input.get(CONF_BULBS, 0), user_input.get(CONF_DEVICE_OFFSET, 0), leds):
+        return {}
+    return {CONF_DEVICE_OFFSET: "exceeds_leds"}
 
 
 def _sources(value: Any) -> str:
@@ -87,6 +102,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         self._tw_found: dict[str, str] = {}
         self._wled_found: dict[str, str] = {}
         self._light: dict[str, Any] = {}
+        self._wled_leds: int | None = None
         self._defaults: dict[str, Any] = {}
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -282,6 +298,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
             count = int(info["leds"]["count"])
         except Exception:  # unreachable, or not a WLED
             return None
+        self._wled_leds = count
         await self.async_set_unique_id(mac)
         await self._abort_or_follow(host, lambda old: async_info(async_get_clientsession(self.hass), old))
         self._light = {CONF_HOST: host, CONF_TYPE: TYPE_WLED, CONF_SKU: str(info.get("arch") or "WLED")[:64],
@@ -295,13 +312,17 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         return await self.async_step_wled_details()
 
     async def async_step_wled_details(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            name = user_input.pop(CONF_NAME)
-            return self.async_create_entry(title=name, data={**self._light, **user_input})
-        return self.async_show_form(step_id="wled_details",
-                                    data_schema=_light_schema(self._defaults, True, True, "WLED"),
+            if not (errors := _too_long(user_input, self._wled_leds)):
+                name = user_input.pop(CONF_NAME)
+                return self.async_create_entry(title=name, data={**self._light, **user_input})
+            self._defaults = {**self._defaults, **user_input}
+        return self.async_show_form(step_id="wled_details", errors=errors,
+                                    data_schema=_light_schema(self._defaults, True, True, "WLED", True),
                                     description_placeholders={"host": self._light[CONF_HOST],
-                                                              "sku": self._light[CONF_SKU]})
+                                                              "sku": self._light[CONF_SKU],
+                                                              "leds": str(self._wled_leds or "?")})
 
     async def _abort_or_follow(self, host: str, probe) -> None:
         """Abort when this device (unique id) is already set up. Its stored host is only replaced when the
@@ -351,12 +372,22 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
 class C9OptionsFlow(OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         player = self.config_entry.data.get(CONF_TYPE) == TYPE_PLAYER
-        if user_input is not None:
+        wled = self.config_entry.data.get(CONF_TYPE) == TYPE_WLED
+        errors: dict[str, str] = {}
+        if user_input is not None and wled:
+            leds = None
+            try:  # the device's own LED count, when it answers
+                leds = int((await async_info(async_get_clientsession(self.hass), self.config_entry.data[CONF_HOST]))
+                           ["leds"]["count"])
+            except Exception:  # noqa: BLE001  unreachable now: can't check
+                pass
+            errors = _too_long(user_input, leds)
+        if user_input is not None and not errors:
             # the app manages the speakers and transition: keep them
             return self.async_create_entry(data={**self.config_entry.options, **user_input} if player else user_input)
-        cur = {**self.config_entry.data, **self.config_entry.options}
+        cur = {**self.config_entry.data, **self.config_entry.options, **(user_input or {})}
         twinkly = self.config_entry.data.get(CONF_TYPE) in (TYPE_TWINKLY, TYPE_WLED)
-        schema = _player_schema(cur) if player else _light_schema(cur, False, twinkly).extend({
+        schema = _player_schema(cur) if player else _light_schema(cur, False, twinkly, wled=wled).extend({
             vol.Optional(CONF_DEFAULT_TRANSITION, default=cur.get(CONF_DEFAULT_TRANSITION, 0.7)):
                 vol.All(vol.Coerce(float), vol.Range(min=0, max=30))})
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

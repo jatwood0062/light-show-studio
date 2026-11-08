@@ -30,20 +30,28 @@ NET_ERRORS = (aiohttp.ClientError, TimeoutError, ValueError)
 
 
 # --- pure helpers (no Home Assistant needed) -----------------------------------
-def ddp_packets(colours: list[Colour], rgbw: bool = False) -> list[bytes]:
-    """Colours -> DDP packets (RGB 8-bit). WLED converts to RGBW itself, so `rgbw` changes nothing.
+def ddp_packets(colours: list[Colour], rgbw: bool = False, offset: int = 0) -> list[bytes]:
+    """Colours -> DDP packets (RGB 8-bit). WLED converts to RGBW itself, so `rgbw` changes nothing: DDP data
+    type 0x01 is always 3 bytes per LED, and `offset` (the first device LED to write) is counted in LEDs, so the
+    byte offset is offset * 3 for RGB and RGBW strips alike. Device LEDs before `offset` are never touched.
 
     Header: flags (0x40 = version 1, +0x01 PUSH on the last packet only), sequence 0, data type 0x01,
     destination 0x01, byte offset (uint32 BE), data length (uint16 BE).
     """
     data = b"".join(bytes(c) for c in colours)
+    base = max(0, int(offset)) * 3
     offsets = list(range(0, max(len(data), 1), MAX_DATA))
     packets = []
     for n, off in enumerate(offsets):
         chunk = data[off : off + MAX_DATA]
         flags = 0x41 if n == len(offsets) - 1 else 0x40
-        packets.append(struct.pack(">BBBBIH", flags, 0, 0x01, 0x01, off, len(chunk)) + chunk)
+        packets.append(struct.pack(">BBBBIH", flags, 0, 0x01, 0x01, base + off, len(chunk)) + chunk)
     return packets
+
+
+def fits(bulbs: int, offset: int, leds: int | None) -> bool:
+    """Do `bulbs` LEDs starting at device LED `offset` fit on a device with `leds` LEDs? True when unknown."""
+    return not leds or bulbs + offset <= leds
 
 
 def format_mac(raw: str) -> str:
@@ -66,9 +74,10 @@ async def async_info(session: aiohttp.ClientSession, ip: str) -> dict[str, Any]:
 
 
 class WledController(C9Controller):
-    def __init__(self, hass: HomeAssistant, host: str, bulbs: int, rgbw: bool = False) -> None:
+    def __init__(self, hass: HomeAssistant, host: str, bulbs: int, rgbw: bool = False, offset: int = 0) -> None:
         super().__init__(hass, host, bulbs, True)  # always takes a frame per LED
         self.rgbw = rgbw
+        self.offset = max(0, int(offset))  # first device LED this light writes (every DDP frame goes through _send)
         self.session = async_get_clientsession(hass)
         self._closed = False
         self._on = False
@@ -88,6 +97,8 @@ class WledController(C9Controller):
         if self._closed:
             return
         self._on = on
+        # NOTE: the JSON state is the whole controller's (master on/off and brightness), not just the LEDs from
+        # `offset` on; a segment-scoped call would need the device's segment layout, so it isn't attempted.
         if on:
             body: dict[str, Any] = {"on": True, "bri": 255}  # WLED's own dimmer would dim every frame
         else:
@@ -126,7 +137,7 @@ class WledController(C9Controller):
     # --- streaming ---------------------------------------------------------------
     def _send(self, frame: list[Colour]) -> None:
         self._last_sent = time.monotonic()
-        for pkt in ddp_packets(frame, self.rgbw):
+        for pkt in ddp_packets(frame, self.rgbw, self.offset):
             try:
                 self._sock.sendto(pkt, (self.host, DDP_PORT))
             except OSError:

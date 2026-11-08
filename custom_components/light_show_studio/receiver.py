@@ -79,6 +79,7 @@ class PixelReceiver:
         self._last_push = 0.0
         self._push_timer: asyncio.TimerHandle | None = None
         self._subs: dict[object, tuple[int, int, Callable[[bytes], None]]] = {}
+        self._lead: dict[object, int] = {}  # key -> show timing lead in ms (only those not 0)
         self._transports: list[asyncio.DatagramTransport] = []
         self._listening = False  # set before binding: strings set up concurrently must not bind twice
 
@@ -140,17 +141,37 @@ class PixelReceiver:
         """Each string's (start byte, byte size, callback)."""
         return list(self._subs.values())
 
-    def show(self, data: bytes | bytearray) -> None:
-        """Give every string its slice of a full channel buffer (channel 1 = byte 0)."""
-        for start, size, cb in list(self._subs.values()):
+    def leads(self) -> list[int]:
+        """The distinct non-zero show timing leads (ms) of the strings now subscribed."""
+        return sorted(set(self._lead.values()))
+
+    def show_sequence(self, data: bytes | bytearray) -> None:
+        """A frame from the .fseq player: the strings with no lead (all of them for an empty, blanking frame)."""
+        self.show(data, 0 if data else None)
+
+    def show_lead(self, lead_ms: int, data: bytes | bytearray) -> None:
+        """A .fseq frame, already picked for t + lead, for the strings with exactly that lead."""
+        self.show(data, lead_ms)
+
+    def show(self, data: bytes | bytearray, lead: int | None = None) -> None:
+        """Give every string its slice of a full channel buffer (channel 1 = byte 0); `lead` limits it to the
+        strings with that show timing lead."""
+        for key, (start, size, cb) in list(self._subs.items()):
+            if lead is not None and self._lead.get(key, 0) != lead:
+                continue
             chunk = bytes(data[start : start + size])
             try:
                 cb(chunk if len(chunk) == size else chunk.ljust(size, b"\0"))
             except Exception:  # noqa: BLE001  one broken string must not starve the others
                 _LOGGER.debug("A light show subscriber failed", exc_info=True)
 
-    async def subscribe(self, key: object, start_pixel: int, bulbs: int, cb: Callable[[bytes], None]) -> None:
+    async def subscribe(self, key: object, start_pixel: int, bulbs: int, cb: Callable[[bytes], None],
+                        lead_ms: int = 0) -> None:
         self._subs[key] = ((start_pixel - 1) * 3, bulbs * 3, cb)
+        if lead_ms:
+            self._lead[key] = lead_ms
+        else:
+            self._lead.pop(key, None)
         if not self._listening:
             self._listening = True
             await self._start()
@@ -159,12 +180,14 @@ class PixelReceiver:
 
     def unsubscribe(self, key: object) -> None:
         self._subs.pop(key, None)
+        self._lead.pop(key, None)
         if not self._subs:
             self._close()
 
     def close(self) -> None:
         """Close the sockets now (Home Assistant is stopping)."""
         self._subs.clear()
+        self._lead.clear()
         self._close()
 
     def _close(self) -> None:

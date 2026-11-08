@@ -8,6 +8,20 @@ frame (`BB .. B0 <mode> <count> <rgb...> <xor>`, see `protocol.py`). `unknown` m
 Tested on a Twinkly TWS400STV (400 RGB LEDs, firmware 2.9.1, Gen II). RGBW models are supported
 but untested. Twinkly lights use their own local API, not the Govee LAN API.
 
+## WLED: first LED on the controller
+
+Option `device_offset` (Configure, or the WLED setup step) is the first device LED this light writes. Example: a
+controller with a 279-LED dummy output followed by a 145-LED strip is one light with 145 bulbs and `device_offset` 279.
+Frames are sent over DDP at byte offset `device_offset * 3` (DDP is 3 bytes per LED even on RGBW strips), so LEDs before
+it are never written. Bulbs + offset must not exceed the LED count in the device's `/json/info`. Limitation: turning the
+light on or off, and its brightness, use WLED's JSON master state and apply to the whole controller, not just these LEDs.
+
+## Show timing lead
+
+Option `show_lead_ms` (-500 to 500, on every light type) sends a light the .fseq frame for time + lead: use a positive
+value for a light whose network delivers late. It is clamped to the first and last frame and affects only that light
+(play_sequence and the show player); frames received from xLights / E1.31 are not shifted.
+
 ## Key findings
 
 - **Real SKU of the Govee C9 string lights: H6860** (50 bulbs, 49 ft) and H6861 (100 bulbs, 98 ft),

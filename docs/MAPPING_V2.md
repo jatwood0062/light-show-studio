@@ -226,3 +226,16 @@ Zones and area zones accept seven more effects that are drawn from the 3D positi
 Rainbow Wash, Fireworks, Breathe Outward (`map/get` lists them as `spatial_effects`). They use the zone's axis (a direction, or a
 `centre` point) and are always spatial, whatever `mode` says. See `MUSIC_PAINT_FX.md` section 4. Zones also take your own
 patterns (including painted ones: per-light paint, and paint by 3D position per area) and fade in / out (`transition`).
+
+### Trace and edit: breaks and paint probe (2.6.2)
+
+A traced run can have **breaks**: a corner flagged as starting after a break (`corner[3] = 1`, the "Break before this corner (no
+LEDs)" button, shown when any corner but the first is selected). The stretch before that corner has no LEDs, so `Geo.spread`
+gives it no length and the pixels keep an even spacing along the stretches that do. Breaks draw as a dashed line. In `pts` a break
+is saved as repeated corners, `[.., A, A, B, B, ..]` (A the last corner before the break, B the first after), so the saved format
+and backend are unchanged (`Geo.encodeBreaks` / `Geo.decodeBreaks`). A saved run whose `pts` repeat a corner any other way
+(`[A, A, B, C]`) is not a break. Moving, turning, mirroring and reversing a whole run keep its breaks.
+
+The light probe has a **Paint** mode: with "Light the pixel I pick" on, the real strip shows the pixels before the focus pixel
+green, the focus pixel white and the rest dim red, using `map/scan/segment` with up to 3 `segments` (`start`, `count`, `colour`).
+Tap or drag a dot to move the focus. Tests: `tests/js/test_trace.mjs`.

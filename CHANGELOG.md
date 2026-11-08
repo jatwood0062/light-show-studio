@@ -4,6 +4,32 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.6.2] - 2026-11-08
+
+### Added (Trace and edit)
+- Breaks in a traced run: flag a corner as starting after a break ("Break before this corner (no LEDs)" in the Trace panel; "Remove
+  break" undoes it). The stretch before it has no LEDs and takes no length when the pixels are spread, so a strip that skips
+  a doorway or a wall keeps even spacing on both sides. Breaks draw as a dashed line. They are saved in the same `pts` as
+  repeated corners (`[.. A, A, B, B ..]`), so there is no backend change, and they load back as breaks.
+- Light probe "Paint" mode: with "Light the pixel I pick" on, choose "Paint" and the real strip shows the pixels before the focus
+  pixel green, the focus pixel white and the rest dim red (`scan/segment` with up to 3 `segments`). Tapping or dragging a dot
+  moves the focus.
+
+### Fixed (Trace and edit)
+- Moving, turning or dragging a corner of a whole traced run, and "Start at the other end", now keep the breaks; turning a run
+  no longer shifts its corners when it has a break. The first corner never carries a break flag.
+- Tests: `tests/js/test_trace.mjs`.
+
+
+### Added
+- WLED option `device_offset` (0-2039, default 0): the first LED on the controller this light writes, for controllers with a
+  dummy output or another strip before it. Every frame (shows, effects, zones, scan, identify, keepalive) goes out over DDP
+  at byte offset `device_offset * 3`, so earlier LEDs are untouched. Setup and Configure refuse bulbs + offset beyond the LEDs
+  the device reports. The light's on/off and brightness are still the whole controller's.
+- Option `show_lead_ms` (-500 to 500, default 0) on every light: during .fseq show playback the light gets the frame for
+  time + lead (positive = early, for a light whose network delivers late), clamped to the show. Other lights and the audio
+  sync are unaffected; frames from xLights / E1.31 are not shifted.
+
 ## [2.6.1]
 
 ### Added
