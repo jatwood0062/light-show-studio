@@ -1,6 +1,8 @@
 """Light Show Studio: per-pixel light shows on Govee, Twinkly and WLED lights, locally."""
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
 
 import voluptuous as vol
@@ -14,6 +16,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 
@@ -59,6 +62,7 @@ from .showplayer import async_setup_player, async_unload_player
 from .twinkly import TwinklyController, async_gestalt
 from .wled import WledController, async_info
 
+_LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.LIGHT]
 PLAYER_PLATFORMS = [Platform.MEDIA_PLAYER, Platform.SWITCH, Platform.SENSOR]
 FRONTEND_URL = "/light_show_studio"
@@ -96,16 +100,33 @@ STOP_ZONE_SCHEMA = vol.All(vol.Schema({vol.Exclusive("zone", "target"): _NAME, v
                            cv.has_at_least_one_key("zone", "area"))
 
 
+def _frontend_version(frontend: str, manifest_version: str) -> str:
+    """The manifest version plus a short hash of the frontend/*.js files (blocking: run in an executor)."""
+    digest = hashlib.sha1()
+    try:
+        for name in sorted(os.listdir(frontend)):
+            if name.endswith(".js"):
+                with open(os.path.join(frontend, name), "rb") as f:
+                    digest.update(name.encode())
+                    digest.update(f.read())
+    except OSError:
+        pass
+    return f"{manifest_version}-{digest.hexdigest()[:8]}"
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     # the dashboard cards ship with the integration: served from here and loaded on every dashboard
     frontend = os.path.join(os.path.dirname(__file__), "frontend")
     await hass.http.async_register_static_paths([StaticPathConfig(FRONTEND_URL, frontend, False)])
     integration = await async_get_integration(hass, DOMAIN)
-    for card in CARDS:  # the version in the URL makes browsers fetch new copies after an update
-        add_extra_js_url(hass, f"{FRONTEND_URL}/{card}?v={integration.version}")
+    # the version in the URLs makes browsers fetch new copies after an update: the manifest version plus a short hash of the
+    # files, so a changed file without a version bump still busts the cache (hashed once, off the event loop)
+    version = await hass.async_add_executor_job(_frontend_version, frontend, str(integration.version))
+    for card in CARDS:
+        add_extra_js_url(hass, f"{FRONTEND_URL}/{card}?v={version}")
     await panel_custom.async_register_panel(
         hass, frontend_url_path="light-shows", webcomponent_name=PANEL, sidebar_title="Light Shows",
-        sidebar_icon="mdi:string-lights", module_url=f"{FRONTEND_URL}/{PANEL}.js?v={integration.version}",
+        sidebar_icon="mdi:string-lights", module_url=f"{FRONTEND_URL}/{PANEL}.js?v={version}",
         require_admin=False)
     receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver(hass))  # before any entry, so the show player can use it
     # the one SequencePlayer: play_sequence, stop_sequence and the show player all drive this one
@@ -153,13 +174,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     async def play(call: ServiceCall) -> None:
         path = await hass.async_add_executor_job(_resolve, hass, call.data["file"])
+        speaker, audio = call.data.get("media_player"), call.data.get("audio")
+        if speaker and (not speaker.startswith("media_player.") or hass.states.get(speaker) is None):
+            raise ServiceValidationError(f"{speaker} is not a media player that exists")
         try:
             seq: FseqFile = await hass.async_add_executor_job(load, path)
         except (FseqError, OSError) as err:
-            raise HomeAssistantError(f"Can't play {path}: {err}") from err
+            _LOGGER.error("Can't play %s: %s", path, err)
+            raise HomeAssistantError(f"Can't play {call.data['file']}: the file could not be read") from err
 
         enable_shows(hass)
-        speaker, audio = call.data.get("media_player"), call.data.get("audio")
         if speaker and audio:
             await play_with_speaker(hass, sequencer, seq, speaker, audio, call.data["audio_offset"])
         else:
@@ -185,10 +209,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             return
         await zones.async_stop_zone(call.data["zone"], call.data.get("transition"))
 
-    hass.services.async_register(DOMAIN, "start_zone", start_zone, schema=START_ZONE_SCHEMA)
-    hass.services.async_register(DOMAIN, "stop_zone", stop_zone, schema=STOP_ZONE_SCHEMA)
-    hass.services.async_register(DOMAIN, "play_sequence", play, schema=PLAY_SCHEMA)
-    hass.services.async_register(DOMAIN, "stop_sequence", stop, schema=vol.Schema({}))
+    # all four drive lights or the player without a per-light check, so they are admin-only
+    async_register_admin_service(hass, DOMAIN, "start_zone", start_zone, schema=START_ZONE_SCHEMA)
+    async_register_admin_service(hass, DOMAIN, "stop_zone", stop_zone, schema=STOP_ZONE_SCHEMA)
+    async_register_admin_service(hass, DOMAIN, "play_sequence", play, schema=PLAY_SCHEMA)
+    async_register_admin_service(hass, DOMAIN, "stop_sequence", stop, schema=vol.Schema({}))
     return True
 
 
@@ -212,7 +237,8 @@ def _resolve(hass: HomeAssistant, name: str) -> str:
         path = os.path.realpath(os.path.join(root, name))
         if path.startswith(root + os.sep) and os.path.isfile(path):
             return path
-    raise ServiceValidationError(f"{name} not found in {', '.join(dirs)}")
+    _LOGGER.warning("%s not found in %s", name, ", ".join(dirs))
+    raise ServiceValidationError(f"{name} was not found in the show folders")
 
 
 _LEGACY_SPEAKER = "speaker"  # before version 1.2 the player had one speaker

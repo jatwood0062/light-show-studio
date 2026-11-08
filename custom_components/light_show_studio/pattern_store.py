@@ -97,6 +97,9 @@ class PatternStore:
             pid = user_patterns.new_id()
             while pid in self.items:
                 pid = user_patterns.new_id()
+        others = sum(p.painted_count() for i, p in self.items.items() if i != pid)
+        if others + user_patterns.painted_count(clean) > user_patterns.MAX_TOTAL_PAINTED:
+            raise ValueError(f"At most {user_patterns.MAX_TOTAL_PAINTED} painted pixels and points across all your patterns")
         up = user_patterns.UserPattern(clean, pid)
         self.items[pid] = up
         patterns.register_user_pattern(up)

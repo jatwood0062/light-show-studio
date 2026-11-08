@@ -97,7 +97,8 @@ class RateLimiter:
                     self.dropped += 1
                     return False
             b = self._buckets[src] = [self.per_source, now]
-        if not self._take(self._all, self.overall, now) or not self._take(b, self.per_source, now):
+        # the per-source bucket first: a flooding source must not drain the global one
+        if not self._take(b, self.per_source, now) or not self._take(self._all, self.overall, now):
             self.dropped += 1
             return False
         return True

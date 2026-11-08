@@ -1,6 +1,7 @@
 """Websocket API for the light card and the app: watch a string's bulbs live, paint single bulbs, manage strands."""
 from __future__ import annotations
 
+from itertools import chain
 from typing import Any
 
 import voluptuous as vol
@@ -48,6 +49,14 @@ def _controller(hass: HomeAssistant, entity_id: str) -> C9Controller | None:
     return ctl if isinstance(ctl, C9Controller) else None
 
 
+def _frame_hex(frame: list[tuple[int, int, int]]) -> str:
+    """The frame as rrggbb for every bulb, in one go."""
+    try:
+        return bytes(chain.from_iterable(frame)).hex()
+    except (ValueError, TypeError):  # a value outside 0-255: format each as before
+        return "".join(_hex(c) for c in frame)
+
+
 def _hex(c: tuple[int, int, int]) -> str:
     return "%02x%02x%02x" % c
 
@@ -65,13 +74,18 @@ def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection
         return
     pending = None
     first = True
+    last: tuple | None = None  # what this card was last sent, so an unchanged picture isn't sent again
 
     @callback
     def send() -> None:
-        nonlocal pending, first
+        nonlocal pending, first, last
         pending = None
-        event = {"on": ctl.is_on, "show": ctl.show_mode, "bulbs": ctl.bulbs,
-                 "frame": "".join(_hex(c) for c in ctl.frame)}
+        frame = ctl.frame
+        mark = (ctl.is_on, ctl.show_mode, ctl.bulbs, frame)
+        if not first and mark == last:
+            return
+        last = mark
+        event = {"on": ctl.is_on, "show": ctl.show_mode, "bulbs": ctl.bulbs, "frame": _frame_hex(frame)}
         if first and (layout := getattr(ctl, "layout", None)):  # LED positions: only needed once
             event["layout"] = layout
         first = False

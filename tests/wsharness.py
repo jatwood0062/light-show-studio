@@ -67,6 +67,9 @@ def _install():
     ws.async_register_command = lambda hass, f: hass.commands.append(f)
     ws.ActiveConnection = object
     ws.event_message = lambda i, data: {"id": i, "event": data}
+    _stub("homeassistant.auth")
+    _stub("homeassistant.auth.permissions")
+    _stub("homeassistant.auth.permissions.const", POLICY_CONTROL="control", POLICY_READ="read")
     helpers = _stub("homeassistant.helpers")
     storage = _stub("homeassistant.helpers.storage", Store=FakeStore)
     helpers.storage = storage
@@ -144,8 +147,26 @@ class FakeMgr:
         return [{"entry_id": e} for e in self.ctls]
 
 
+class FakePermissions:
+    def __init__(self, allowed):
+        self.allowed = allowed
+
+    def check_entity(self, entity_id, key):
+        return key == "control" and entity_id in self.allowed
+
+
+class FakeUser:
+    _n = iter(range(1, 10**9))
+
+    def __init__(self, admin=True, allowed=()):
+        self.id = f"user{next(self._n)}"
+        self.is_admin = admin
+        self.permissions = FakePermissions(set(allowed))
+
+
 class FakeConn:
-    def __init__(self):
+    def __init__(self, user=None):
+        self.user = user or FakeUser()
         self.results: list[tuple] = []
         self.errors: list[tuple] = []
         self.subscriptions: dict = {}

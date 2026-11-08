@@ -97,6 +97,7 @@ async def test_push_builds_a_full_frame_with_black_elsewhere(hass):
     await ctl.async_claim_zone("z", "Kitchen")
     assert ctl.zone == "Kitchen"
     assert ctl.push_zone_frame("z", [(2, [R, R]), (7, [G])])
+    await asyncio.sleep(0)  # the send is coalesced into the next loop turn
     assert ctl.sent[-1] == [BLACK, BLACK, R, R, BLACK, BLACK, BLACK, G, BLACK, BLACK]
     assert ctl.frame == ctl.sent[-1]  # the card sees it
 
@@ -107,6 +108,7 @@ async def test_push_keeps_brightness_and_clips_to_the_light(hass):
     ctl.brightness = 128
     await ctl.async_claim_zone("z", "Z")
     ctl.push_zone_frame("z", [(2, [(200, 100, 50)] * 5)])  # runs past the end: clipped
+    await asyncio.sleep(0)  # the send is coalesced into the next loop turn
     assert ctl.sent[-1] == [BLACK, BLACK, (100, 50, 25), (100, 50, 25)]
 
 
@@ -188,6 +190,7 @@ async def test_two_zones_share_a_light_and_release_separately(hass):
     await ctl.async_claim_zone("b", "B")
     ctl.push_zone_frame("a", [(0, [R, R])])
     ctl.push_zone_frame("b", [(4, [B, B])])
+    await asyncio.sleep(0)  # the send is coalesced into the next loop turn
     assert ctl.sent[-1] == [R, R, BLACK, BLACK, B, B]
     assert ctl.zone == "A, B"
     ctl.release_zone("a")
@@ -397,3 +400,157 @@ async def test_still_colour_show_and_off_are_not_touched_after_restart(hass):
     await asyncio.sleep(0.1)
     for c in (still, steady, show, off):
         assert c._task is None and not c.sent and not c.powered
+
+
+@aio
+async def test_restarted_zone_carries_on_its_clock(hass):
+    """A map edit / pattern edit / new look restarts the runner with the same zone: a chase must not start over."""
+    lights = {"e1": FakeLight(hass, 10), "e2": FakeLight(hass, 12)}
+    plan = make_plan(effect="Chase")
+    old = make_runner(hass, lights, plan)
+    await old.async_start()
+    await asyncio.sleep(0.15)
+    t_old = old._t
+    assert t_old > 0.05
+    old.stop(keep={"e1", "e2"})
+    new = make_runner(hass, lights, plan)
+    assert new._t >= t_old
+    # a plain stop (nothing taking over) leaves nothing behind: a later start begins at 0
+    new.stop(restore=False)
+    fresh = make_runner(hass, lights, plan)
+    assert fresh._t == 0.0
+
+
+@aio
+async def test_speed_change_keeps_the_clock_continuous(hass):
+    lights = {"e1": FakeLight(hass, 10), "e2": FakeLight(hass, 12)}
+    runner = make_runner(hass, lights, make_plan(effect="Chase"))
+    await runner.async_start()
+    await asyncio.sleep(0.1)
+    before = runner._t
+    runner.set_speed(100)
+    await asyncio.sleep(0.02)
+    assert runner._t >= before  # the clock never jumps back or restarts when the speed changes
+    assert runner._t - before < 0.5
+    runner.stop()
+
+
+# --- smoother timing: send divisor, unchanged frames, coalescing ------------------------------------------
+def test_send_divisor_follows_the_lights_own_rate():
+    class Slow:
+        max_fps = 12.0
+
+    class Whole:
+        segmented = False
+
+    assert zoneplayer.send_divisor(Slow(), 25) == 2  # 25 fps to a 12 fps strip: every second frame
+    assert zoneplayer.send_divisor(Slow(), 20) == 2
+    assert zoneplayer.send_divisor(Whole(), 25) == 4
+    assert zoneplayer.send_divisor(object(), 25) == 1
+
+
+class CountingLight:
+    def __init__(self, max_fps=None):
+        if max_fps:
+            self.max_fps = max_fps
+        self.pushed = 0
+
+    async def async_claim_zone(self, zone_id, name):
+        pass
+
+    def push_zone_frame(self, zone_id, slices):
+        self.pushed += 1
+        return True
+
+    def release_zone(self, zone_id=None, restore=False):
+        pass
+
+
+@aio
+async def test_runner_sends_a_slow_light_every_kth_frame_evenly(hass):
+    fast, slow = CountingLight(), CountingLight(12.5)
+    runner = make_runner(hass, {"e1": fast, "e2": slow}, make_plan(effect="Chase"))
+    runner.interval = 0.04  # 25 fps
+    await runner.async_start()
+    runner._task.cancel()
+    for k in range(10):
+        runner._tick(k * 0.04)
+    assert fast.pushed == 10 and slow.pushed == 5
+    runner._tick(0.0, force=True)  # a light joining late shows the current frame at once
+    assert fast.pushed == 11 and slow.pushed == 6
+
+
+@aio
+async def test_unchanged_frames_are_not_sent_again_within_a_second(hass):
+    ctl = FakeLight(hass, 3)
+    ctl._send_frame([R, G, B])
+    ctl._send_frame([R, G, B])
+    assert len(ctl.sent) == 1
+    ctl._send_frame([R, G, R])
+    assert len(ctl.sent) == 2
+    ctl._wire = (ctl._wire[0], ctl._wire[1] - 2.0)  # that send was long ago: sent again
+    ctl._send_frame([R, G, R])
+    assert len(ctl.sent) == 3
+    ctl._set_frame([R, G, R])  # something else drew: the next frame always goes out
+    ctl._send_frame([R, G, R])
+    assert len(ctl.sent) == 4
+
+
+@aio
+async def test_full_brightness_frames_are_sent_as_they_are(hass):
+    ctl = FakeLight(hass, 2)
+    frame = [(10, 20, 30), (40, 50, 60)]
+    ctl._send_frame(frame)
+    assert ctl.sent[-1] is frame
+    ctl.brightness = 128
+    ctl._send_frame(frame)
+    assert ctl.sent[-1] == [(5, 10, 15), (20, 25, 30)]
+
+
+@aio
+async def test_show_external_skips_identical_bytes(hass):
+    ctl = FakeLight(hass, 2)
+    ctl.enable_show()
+    ctl.show_external(bytes([1, 2, 3, 4, 5, 6]))
+    ctl._ext_sent -= 0.1
+    ctl.show_external(bytes([1, 2, 3, 4, 5, 6]))
+    assert ctl.sent == [[(1, 2, 3), (4, 5, 6)]]
+    ctl._ext_sent -= 0.1
+    ctl.show_external(bytes([1, 2, 3, 4, 5, 7]))
+    assert ctl.sent[-1] == [(1, 2, 3), (4, 5, 7)]
+
+
+@aio
+async def test_zones_on_one_light_make_one_send_per_loop_turn(hass):
+    ctl = FakeLight(hass, 6)
+    await ctl.async_claim_zone("a", "A")
+    await ctl.async_claim_zone("b", "B")
+    before = len(ctl.sent)
+    ctl.push_zone_frame("a", [(0, [R, R])])
+    ctl.push_zone_frame("b", [(4, [B, B])])
+    assert len(ctl.sent) == before
+    await asyncio.sleep(0)
+    assert len(ctl.sent) == before + 1 and ctl.sent[-1] == [R, R, BLACK, BLACK, B, B]
+
+
+def test_plan_base_is_computed_once_and_refreshes_with_user_patterns():
+    plan = make_plan(mode="string", effect="Twinkle", pattern="Candy Cane")
+    plan.render(1.0)
+    first = plan._flat
+    plan.render(2.0)
+    assert plan._flat is first
+    patterns.touch_user_patterns()
+    plan.render(3.0)
+    assert plan._flat is not first and plan._flat == first
+    assert plan.render(1.5) == patterns.render("Candy Cane", "Twinkle", 1.5, plan.n)
+    chase = make_plan(mode="string", effect="Chase", pattern="Candy Cane")
+    assert chase.render(1.5) == patterns.render("Candy Cane", "Chase", 1.5, chase.n) and chase._flat is None
+
+
+@aio
+async def test_a_lone_zone_is_sent_at_once(hass):
+    ctl = FakeLight(hass, 3)
+    await ctl.async_claim_zone("a", "A")
+    before = len(ctl.sent)
+    ctl.push_zone_frame("a", [(0, [R])])
+    assert len(ctl.sent) == before + 1

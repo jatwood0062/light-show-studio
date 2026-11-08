@@ -25,6 +25,7 @@ MAX_LIGHT_PIXELS = 2040  # a light never has more
 MAX_AREA_POINTS = 2040
 MAX_TARGETS = 64  # lights (and, separately, areas) in one pixels pattern
 MAX_PAINTED = 12000  # colours + points in one pattern, all told
+MAX_TOTAL_PAINTED = 100_000  # painted pixels + points across all saved patterns
 MAX_PAINT_BATCH = 500  # pixels in one patterns/paint call
 POS_MAX = 1000
 KINDS = ("palette", "pixels")
@@ -127,6 +128,8 @@ def validate(data: Any, *, builtin_names: Collection[str], effects: Collection[s
         if not isinstance(cols, (list, tuple)) or not 1 <= len(cols) <= MAX_LIGHT_PIXELS - first:
             raise ValueError(f"A painted light needs 1 to {MAX_LIGHT_PIXELS - first} colours")
         total += len(cols)
+        if total > MAX_PAINTED:  # fail before copying any more
+            raise ValueError(f"At most {MAX_PAINTED} painted pixels and points in one pattern")
         out_lights[entry_id] = {"first": first, "colours": [list(clean_colour(c)) for c in cols]}
     out_areas: dict[str, Any] = {}
     for area_id, pts in areas.items():
@@ -135,20 +138,26 @@ def validate(data: Any, *, builtin_names: Collection[str], effects: Collection[s
             raise ValueError(f"A painted area needs 1 to {MAX_AREA_POINTS} points")
         rows = []
         for p in pts:
+            total += 1
+            if total > MAX_PAINTED:
+                raise ValueError(f"At most {MAX_PAINTED} painted pixels and points in one pattern")
             if not isinstance(p, Mapping) or set(p) - {"pos", "colour"}:
                 raise ValueError("A painted point is {pos: [x, y, z], colour: [r, g, b]}")
             pos = p.get("pos")
             if not isinstance(pos, (list, tuple)) or len(pos) != 3:
                 raise ValueError("A position is [x, y, z]")
             rows.append({"pos": [_int(c, "A position", 0, POS_MAX) for c in pos], "colour": list(clean_colour(p.get("colour")))})
-        total += len(rows)
         out_areas[area_id] = rows
     if not out_lights and not out_areas:
         raise ValueError("Paint at least one light or area")
-    if total > MAX_PAINTED:
-        raise ValueError(f"At most {MAX_PAINTED} painted pixels and points in one pattern")
     out["lights"], out["areas"] = out_lights, out_areas
     return out
+
+
+def painted_count(data: Mapping[str, Any]) -> int:
+    """Painted pixels and points in a clean pixels pattern (0 for a palette)."""
+    return (sum(len(r["colours"]) for r in data.get("lights", {}).values())
+            + sum(len(p) for p in data.get("areas", {}).values()))
 
 
 # --- the compiled pattern ----------------------------------------------------------------
@@ -184,6 +193,9 @@ class UserPattern:
         for area_id, pts in data["areas"].items():
             self.areas[area_id] = ([tuple(p["pos"]) for p in pts], [tuple(p["colour"]) for p in pts])  # type: ignore[misc]
         self._refresh_palette()
+
+    def painted_count(self) -> int:
+        return sum(len(c) for _, c in self.lights.values()) + sum(len(c) for _, c in self.areas.values())
 
     def _refresh_palette(self) -> None:
         def every():

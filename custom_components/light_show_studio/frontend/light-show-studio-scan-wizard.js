@@ -72,6 +72,24 @@ const CSS = `
 .scw-cam .ov { object-fit: fill; pointer-events: none; }
 .scw-ask { position: relative; width: 100%; border-radius: var(--r3); overflow: hidden; background: #05060a; touch-action: manipulation; }
 .scw-ask canvas { display: block; width: 100%; height: auto; cursor: crosshair; }
+.scw-runs { display: grid; gap: 8px; }
+.scw-run { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--r2); background: var(--lss-soft); border: 2px solid transparent; }
+.scw-run.on { border-color: var(--lss-acc); background: var(--lss-tint); }
+.scw-runl { display: flex; align-items: center; gap: 10px; flex: 1 1 160px; min-height: 44px; cursor: pointer; min-width: 0; }
+.scw-runl input { width: 22px; height: 22px; accent-color: var(--lss-acc); flex: none; }
+.scw-runl .nm { display: flex; flex-direction: column; min-width: 0; }
+.scw-runl .nm span { font-size: 12px; color: var(--lss-mut); }
+.scw-rm { flex: none; width: 150px; }
+.scw-only { flex: none; }
+.scw-sum > * + * { margin-top: 10px; }
+.scw-eta { font-variant-numeric: tabular-nums; }
+.scw-spotrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.scw-spot { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; color: #fff; background: var(--lss-ok); }
+.scw-spot.no { background: var(--lss-warn); }
+.scw-ask2 { margin-top: 12px; display: grid; gap: 8px; }
+.scw-fix { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--lss-line); font-size: 14px; }
+.scw-fix:first-child { border-top: 0; }
+.scw-fixb { display: flex; gap: 6px; flex-wrap: wrap; }
 .scw-sketch { display: block; width: 100%; height: auto; border-radius: var(--r3); background: var(--lss-soft); }
 .scw-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .scw-chip { width: 22px; height: 30px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; background: var(--lss-ok); }
@@ -94,6 +112,22 @@ const ICON = {
 };
 const svg = (d, s = 22) => `<svg viewBox="0 0 24 24" width="${s}" height="${s}" aria-hidden="true"><path fill="currentColor" d="${d}"/></svg>`;
 
+// How much two pictures differ: the 99.5th percentile of the absolute difference (robust to a few bright specks, and it still sees
+// the small patch a lit stretch makes). a, b: equal-length arrays of brightness.
+export function changeScore(a, b) {
+  const n = Math.min(a.length, b.length);
+  if (!n) return 0;
+  const hist = new Uint32Array(1024);
+  for (let i = 0; i < n; i++) hist[Math.min(1023, (Math.abs(a[i] - b[i]) * 4) | 0)]++;
+  const want = Math.max(1, Math.floor(n * 0.005));
+  let c = 0;
+  for (let k = 1023; k >= 0; k--) {
+    c += hist[k];
+    if (c >= want) return k / 4;
+  }
+  return 0;
+}
+
 export class ScanWizard {
   constructor(o) {
     this.o = o;
@@ -103,9 +137,15 @@ export class ScanWizard {
     this.lights = o.lights;
     this.runs = o.runs;
     this.entry = o.start?.entry_id || o.lights[0]?.entry_id || "";
-    this.part = o.start?.run_id || ""; // "" = the whole light
+    this.sel = o.start?.run_id ? [o.start.run_id] : null; // the ticked runs of this light (null = all of them)
+    this.rm = {}; // run id -> "point" | "glow": the method chosen for that run (default: Glow for WLED lights)
+    this._saved = new Set(); // runs saved during this visit
     this.view = "front";
-    this.method = null; // null = follow the recommendation; "point" | "glow"
+    this.method = null; // the method of the round being scanned; null on the first screen ("point" | "glow")
+    this._rounds = null; // rounds still to scan after this one: [{method, ids}]
+    this._roundNo = this._roundTotal = 0;
+    this._holdMs = 0; // the light's own advice on how long to wait after a frame (map/scan/start may return hold_ms)
+    this._paused = false;
     this.glowAnchors = null; // null = automatic (about 16-24 per run)
     this.glowWidth = null;
     this.hold = null;
@@ -126,7 +166,7 @@ export class ScanWizard {
     document.addEventListener("visibilitychange", this._onVis);
     window.addEventListener("pagehide", this._onHide);
     this._mount();
-    this._go(o.start?.entry_id ? "aim" : "pick");
+    this._go("pick");
   }
 
   // ---- plumbing ---------------------------------------------------------------------------------------------------
@@ -191,14 +231,26 @@ export class ScanWizard {
 
   // the pixel ranges being scanned: [{run, first, count}] sorted by first
   _ranges() {
-    const mine = this.runs.filter((r) => r.entry_id === this.entry);
-    const pick = this.part ? mine.filter((r) => r.id === this.part) : mine;
-    return pick.map((r) => ({ run: r, first: r.first, count: r.count })).sort((a, b) => a.first - b.first);
+    return this._selected().map((r) => ({ run: r, first: r.first, count: r.count })).sort((a, b) => a.first - b.first);
   }
 
+  // Plain words for what went wrong, saying what to do next. err is whatever hass.callWS (or the wizard) threw.
   _friendly(err, fallback) {
-    const m = String(err?.message || err || "");
-    if (err?.code === "unknown_command" || /unknown command/i.test(m)) return this._m() === "glow" ? "The glow scan needs the latest Light Show Studio (2.4.0 or newer). Update it and restart Home Assistant, then try again." : "Scanning isn't available yet. Update Light Show Studio and restart Home Assistant, then try again.";
+    const m = String(err?.message || err || ""), c = err?.code;
+    if (c === "unknown_command" || /unknown command/i.test(m)) return this._m() === "glow" ? "The glow scan needs the latest Light Show Studio (2.4.0 or newer). Update it and restart Home Assistant, then try again." : "Scanning isn't available yet. Update Light Show Studio and restart Home Assistant, then try again.";
+    if (c === "unauthorized" || /unauthori[sz]ed|admin/i.test(m)) return "Only a Home Assistant administrator can scan. Sign in with an admin account and try again.";
+    if (c === 3 || /connection lost|not connected|failed to fetch|network|socket/i.test(m)) return "The connection to Home Assistant dropped, probably the Wi-Fi. Move closer to the router and start again. The light goes back to what it showed by itself within two minutes.";
+    if (/timed? ?out/i.test(m)) return "Home Assistant or the light took too long to answer. Check the light is on and online (try its own app or page), then try again. For a slow light, raise \"How long to wait\" under More options.";
+    if (/started by another connection/i.test(m)) return "This light is being scanned from another browser tab or device. Close that one (or wait two minutes), then try again.";
+    if (/stopped before it began/i.test(m)) return "The scan was stopped while the light was still being taken over. Tap Start scan again.";
+    if (/too many scan commands/i.test(m)) return "The light was sent changes too fast. Wait a few seconds and try again.";
+    if (c === "not_found") return "That light or run isn't there any more. Close this screen, reload the Map tab and try again.";
+    if (c === "failed" || c === "home_assistant_error") {
+      if (/within|range|outside/i.test(m)) return "The lit stretch fell outside the pixels being scanned. Go back, tick the runs again and start again.";
+      if (/offline|unavailable|unreachable|not reach|refused|no route|connect/i.test(m)) return "Home Assistant can't reach the light. Check it has power and Wi-Fi (try its own app or page), then try again.";
+      if (/already|busy|in use|being scanned|zone|show/i.test(m)) return "Something else is using this light, such as a running show or another scan. Stop it, then try again.";
+      return `${m.replace(/\.?$/, ".")} Try again; if it keeps happening, check that the light is on and reachable.`;
+    }
     return m || fallback;
   }
 
@@ -206,17 +258,72 @@ export class ScanWizard {
     return this.hass.callWS(msg);
   }
 
-  // ---- method: point scan (visible LEDs) or glow scan (hidden strips) -------------------------------------------------
+  // scan commands go again, a couple of times, when the connection blips (not when Home Assistant itself said no)
+  async _wsRetry(msg, tries = 4) {
+    const m = { ...msg, seq: (this._seq = (this._seq || 0) + 1) };
+    for (let a = 1; ; a++) {
+      try {
+        const r = await this.hass.callWS(m);
+        if (r && r.seq != null && r.seq !== m.seq && a < tries) {
+          await sleep(100); // an answer to some other command: ask again
+          continue;
+        }
+        return r;
+      } catch (e) {
+        const text = String(e?.message || "");
+        const busy = e?.code === "failed" && /too many/i.test(text);
+        const transient = busy || typeof e?.code === "number" || e?.code == null || /timed? ?out|connection|network|fetch/i.test(text);
+        if (a >= tries + (busy ? 2 : 0) || !transient || this.closed || this._aborted) throw e;
+        await sleep(busy ? 400 : 500 * a);
+      }
+    }
+  }
+
+  // ---- method: point scan (visible LEDs) or glow scan (hidden strips), chosen per run -------------------------------------------------
+  // A strip hidden under a cabinet or behind crown molding is only seen as the glow it throws on a surface: Glow is the default for
+  // WLED lights (and the Point scan flashes the WHOLE strip). Every ticked run has its own method; runs that share one are scanned
+  // together, one round per method, and each round is saved before the next starts.
   _recommend() {
     return this._light()?.kind === "wled" ? "glow" : "point";
   }
 
-  _m() {
-    return this.method ?? this._recommend();
+  _entryRuns() {
+    return this.runs.filter((r) => r.entry_id === this.entry);
   }
 
+  // the runs ticked on the first screen (null = all of this light's runs); during a round, the runs of that round
+  _selected() {
+    const mine = this._entryRuns();
+    return this.sel ? mine.filter((r) => this.sel.includes(r.id)) : mine;
+  }
+
+  _selKey() {
+    return this._selected().map((r) => r.id).join();
+  }
+
+  _runMethod(r) {
+    return this.rm[r.id] ?? this._recommend();
+  }
+
+  // the method of the round being scanned, or (on the first screen) of the first round
+  _m() {
+    return this.method ?? (this._groups()[0]?.method || this._recommend());
+  }
+
+  // ticked runs by method, glow first: [{method, runs}]
+  _groups() {
+    const sel = this._selected(), out = [];
+    for (const m of ["glow", "point"]) {
+      const runs = sel.filter((r) => this._runMethod(r) === m);
+      if (runs.length) out.push({ method: m, runs });
+    }
+    return out;
+  }
+
+  // sets the method of the runs being scanned (the current round)
   _setMethod(m) {
     this.method = m;
+    for (const r of this._selected()) this.rm[r.id] = m;
   }
 
   // The code the point scan asks the light for. Colour needs the live camera: a recorded video is compressed and smears colour
@@ -233,36 +340,40 @@ export class ScanWizard {
     return this._ranges().map((r) => ({ key: r.run.id, first: r.first, count: r.count, run: r.run, plan: this.S.glowPlan(r.count, o) }));
   }
 
-  _methodCards(onChange) {
-    const wrap = this._el("div", "scw-meth");
-    wrap.setAttribute("role", "radiogroup");
-    wrap.setAttribute("aria-label", "How to find the lights");
-    const rec = this._recommend();
-    const defs = [
-      ["point", "Point scan", "For lights you can see as dots: strips, strings, trees. Finds every LED exactly."],
-      ["glow", "Glow scan (hidden strips)", "For strips hidden under cabinets or behind covers, where the camera only sees a soft glow on the counter, floor or ceiling."],
-    ];
-    const draw = () => {
-      wrap.textContent = "";
-      for (const [id, name, desc] of defs) {
-        const b = this._el("button");
-        b.type = "button";
-        b.setAttribute("role", "radio");
-        b.setAttribute("aria-checked", String(this._m() === id));
-        const t = this._el("b", "", name);
-        if (id === rec) t.append(this._el("span", "rec", "Recommended"));
-        b.append(t, this._el("span", "", desc));
-        b.onclick = () => {
-          this._setMethod(id);
-          draw();
-          onChange?.();
-        };
-        wrap.append(b);
-      }
-    };
-    draw();
-    wrap.redraw = draw;
-    return wrap;
+  // slowest wait per picture we will plan with: the person's setting, or what the light said it needs, whichever is longer
+  _planHold() {
+    return Math.max(this.hold ?? 350, this._holdMs || 0);
+  }
+
+  // "about 40 seconds" / "about 2 minutes"
+  _fmtSecs(secs) {
+    const s = Math.max(5, Math.round(secs / 5) * 5);
+    if (s < 90) return `${s} seconds`;
+    const m = Math.round(s / 30) / 2;
+    return `${m} minute${m === 1 ? "" : "s"}`;
+  }
+
+  // time for one group of runs (one angle): glow = one picture per spot, point = one picture per code frame
+  _estimate(g) {
+    const hold = this._planHold() + 170, o = {};
+    if (this.glowAnchors) o.anchors = this.glowAnchors;
+    if (this.glowWidth) o.width = this.glowWidth;
+    if (g.method === "glow") {
+      const spots = g.runs.reduce((a, r) => a + this.S.glowPlan(r.count, o).anchors.length, 0);
+      const darks = Math.ceil(spots / this.S.GLOW.darkEvery) + 1;
+      return { spots, secs: ((spots + darks) * hold) / 1000 + 6 + g.runs.length * 4 };
+    }
+    const mode = this._codeMode();
+    const frames = this.S.framesFor(this._groupScope(g).count, mode);
+    return { frames, mode, secs: (frames * hold) / 1000 + 3 };
+  }
+
+  // the pixel range a group is scanned over (the whole light if the group is every run)
+  _groupScope(g) {
+    const L = this._light();
+    if (g.runs.length === this._entryRuns().length) return { first: 0, count: L?.bulbs || 2 };
+    const first = Math.min(...g.runs.map((r) => r.first)), end = Math.max(...g.runs.map((r) => r.first + r.count));
+    return { first, count: end - first };
   }
 
   // a poor point scan: one tap to the glow scan for the same lights
@@ -289,9 +400,16 @@ export class ScanWizard {
 
   // ---- step 1: pick -------------------------------------------------------------------------------------------------
   _s_pick() {
+    if (this._rounds) {
+      // back from a round: the whole selection again
+      this._rounds = null;
+      this.method = null;
+      this._roundNo = this._roundTotal = 0;
+      if (this._pick) this.sel = this._pick.sel;
+    }
     this.title.textContent = "Scan a light";
     const b = this.body;
-    b.append(this._el("p", "lead", "The lights flash a short code while your phone's camera watches. Each light shows up as a dot, and Light Show Studio learns where it is."));
+    b.append(this._el("p", "lead", "The lights flash while your phone's camera watches, and Light Show Studio learns where each run of lights is. Tick the runs to scan; each can use the method that suits it."));
     const lights = this.lights.filter((l) => this.runs.some((r) => r.entry_id === l.entry_id));
     if (!lights.length) {
       b.append(this._el("div", "box empty", "Add a run for a light first, then come back to scan it."));
@@ -304,52 +422,109 @@ export class ScanWizard {
     for (const l of lights) sel.append(Object.assign(this._el("option", "", `${l.title} (${l.bulbs} pixels)`), { value: l.entry_id }));
     sel.value = this.entry;
     lab.append(sel);
-    const lab2 = this._el("label", "pick", "Which part?");
-    const part = this._el("select");
-    const fill = () => {
-      part.textContent = "";
-      part.append(Object.assign(this._el("option", "", "The whole light"), { value: "" }));
-      for (const r of this.runs.filter((x) => x.entry_id === this.entry)) part.append(Object.assign(this._el("option", "", `${r.name} (${r.count} pixels)`), { value: r.id }));
-      if (![...part.options].some((o) => o.value === this.part)) this.part = "";
-      part.value = this.part;
-      info();
+    const runsBox = this._el("div", "scw-runs");
+    const sum = this._el("div", "scw-sum");
+    const nudge = this._el("div");
+    nudge.setAttribute("role", "status");
+    let next;
+
+    const redraw = () => {
+      drawRuns();
+      drawSum();
     };
-    const info = () => {
-      const L = this._light();
-      if (this._m() === "glow") {
-        const plans = this._glowPlans();
-        const spots = plans.reduce((a, p) => a + p.plan.anchors.length, 0);
-        const secs = Math.round((spots * ((this.hold ?? 350) + 120)) / 1000 + 6);
-        note.textContent = `About ${secs} seconds. A few pixels at a time light up, ${spots} spots along ${plans.length} run${plans.length === 1 ? "" : "s"}; everything else stays dark. Then the light goes back to what it showed.`;
+    const setSel = (ids) => {
+      this.sel = ids;
+      redraw();
+    };
+    const drawRuns = () => {
+      runsBox.textContent = "";
+      const mine = this._entryRuns(), on = this._selected();
+      const head = this._el("div", "row");
+      head.append(this._el("strong", "", `Runs to scan (${on.length} of ${mine.length})`));
+      const sp = this._el("span");
+      sp.style.flex = "1";
+      head.append(sp);
+      if (mine.length > 1) {
+        head.append(this._btn("All", "btn alt sm", () => setSel(null)), this._btn("None", "btn alt sm", () => setSel([])));
+        const glowAll = this._btn("All Glow", "btn alt sm", () => {
+          for (const r of mine) this.rm[r.id] = "glow";
+          redraw();
+        });
+        head.append(glowAll);
+      }
+      runsBox.append(head);
+      for (const r of mine) {
+        const isOn = on.includes(r), m = this._runMethod(r);
+        const row = this._el("div", "scw-run" + (isOn ? " on" : ""));
+        const l = this._el("label", "scw-runl");
+        const cb = this._el("input");
+        cb.type = "checkbox";
+        cb.checked = isOn;
+        cb.setAttribute("aria-label", `Scan ${r.name}`);
+        cb.onchange = () => setSel(cb.checked ? [...on.map((x) => x.id), r.id] : on.filter((x) => x !== r).map((x) => x.id));
+        const nm = this._el("span", "nm");
+        const saved = this._saved.has(r.id) || r.mapped;
+        nm.append(this._el("b", "", r.name), this._el("span", "", `${r.count} pixels${saved ? ", already mapped" : ""}`));
+        l.append(cb, nm);
+        const seg = this._el("div", "seg scw-rm");
+        seg.setAttribute("role", "radiogroup");
+        seg.setAttribute("aria-label", `How to find ${r.name}`);
+        for (const [id, t] of [["glow", "Glow"], ["point", "Point"]]) {
+          const bt = this._btn(t, "segb", () => {
+            this.rm[r.id] = id;
+            redraw();
+          });
+          bt.setAttribute("role", "radio");
+          bt.setAttribute("aria-checked", String(m === id));
+          bt.title = id === "glow" ? "Hidden or indirect: follow the glow on the surface" : "Visible dots: every pixel is lit and read";
+          seg.append(bt);
+        }
+        row.append(l, seg);
+        if (mine.length > 1) row.append(this._btn("Only this", "btn alt sm scw-only", () => setSel([r.id])));
+        runsBox.append(row);
+      }
+      if (on.length < mine.length) runsBox.append(this._el("div", "muted", "Only the ticked runs are scanned and changed; the others keep the places they have. A run scanned on its own is laid out on its own, so line it up with the others in the Map tab afterwards if it needs it."));
+    };
+
+    const drawSum = () => {
+      sum.textContent = "";
+      const groups = this._groups();
+      if (next) next.disabled = !groups.length;
+      if (!groups.length) {
+        sum.append(this._el("div", "box empty", "Tick at least one run to scan."));
         return;
       }
-      const mode = this._codeMode();
-      const frames = this.S.framesFor(this.part ? this.runs.find((r) => r.id === this.part)?.count || 2 : L?.bulbs || 2, mode);
-      const secs = Math.round((frames * ((this.hold ?? 350) + 120)) / 1000 + 3);
-      note.textContent = mode === "colour"
-        ? `About ${secs} seconds and ${frames} colour frames (red, green and blue; no bright white flashes). All ${L?.bulbs || 0} pixels light up while it runs, then the light goes back to what it showed.`
-        : `About ${secs} seconds and ${frames} white flashes. All ${L?.bulbs || 0} pixels light up while it runs, then the light goes back to what it showed.`;
+      const L = this._light();
+      groups.forEach((g, i) => {
+        const e = this._estimate(g);
+        const card = this._el("div", "scw-card");
+        const names = g.runs.map((r) => r.name).join(", ");
+        card.append(this._el("h3", "", `${groups.length > 1 ? `Round ${i + 1}: ` : ""}${g.method === "glow" ? "Glow scan" : "Point scan"}: ${names}`));
+        const each = this.multiAngles ? " per angle" : "";
+        if (g.method === "glow") {
+          card.append(this._el("div", "muted", `About ${this._fmtSecs(e.secs)}${each}. A few pixels at a time light up (${e.spots} spots along ${g.runs.length} run${g.runs.length === 1 ? "" : "s"}) and the soft patch of light they make on the counter, floor or ceiling is followed. Everything else stays dark. You don't need to see the strip itself. Then the light goes back to what it showed.`));
+        } else {
+          const px = this._groupScope(g).count;
+          card.append(this._el("div", "muted", `About ${this._fmtSecs(e.secs)}${each} and ${e.frames} ${e.mode === "colour" ? "colour" : "white"} frames, each shown on all ${px} pixels.`));
+          const w = this._el("div", "box mp-banner");
+          w.append(this._el("strong", "", "Point scan flashes the whole strip"));
+          w.append(this._el("div", "muted", `${px} pixels light up at once, over and over, and every frame has to reach the light in time. That is bright, and on a long or Wi-Fi strip (WLED) slow frames cause errors. If this strip is hidden under cabinets, behind covers or crown molding, choose Glow for it instead.`));
+          card.append(w);
+        }
+        sum.append(card);
+      });
+      if (groups.length > 1) sum.append(this._el("div", "muted", `The methods differ, so the scan runs in ${groups.length} rounds. Each round ends with its own check and Save before the next begins; you can stay where you are.`));
     };
-    const note = this._el("div", "muted");
+
     sel.onchange = () => {
       this.entry = sel.value;
-      this.part = "";
-      fill();
-      cards.redraw();
-      glowBox.hidden = this._m() !== "glow";
+      this.sel = null;
+      nudge.textContent = "";
+      redraw();
+      showMulti();
     };
-    part.onchange = () => {
-      this.part = part.value;
-      info();
-    };
-    lab2.append(part);
-    const cards = this._methodCards(() => {
-      info();
-      glowBox.hidden = this._m() !== "glow";
-      this._methodHook?.();
-    });
-    b.append(lab, lab2, cards, note);
-    fill();
+    b.append(lab, runsBox, sum, nudge);
+
     // advanced
     const det = this._el("details");
     det.append(this._el("summary", "", "More options"));
@@ -358,27 +533,27 @@ export class ScanWizard {
     const hr = this._el("input");
     hr.type = "range";
     hr.min = 200;
-    hr.max = 900;
+    hr.max = 1200;
     hr.step = 50;
     hr.value = this.hold ?? 350;
     hr.setAttribute("aria-label", "How long each flash is held, in milliseconds");
-    const showHold = () => (hv.textContent = `${hr.value} ms`);
+    const showHold = () => (hv.textContent = this._holdMs > (this.hold ?? 350) ? `${hr.value} ms (the light asks for ${this._holdMs} ms, which is used)` : `${hr.value} ms`);
     hr.oninput = () => {
       this.hold = Number(hr.value);
       showHold();
-      info();
+      drawSum();
     };
     showHold();
-    hl.append(this._el("span", "", "How long to hold each flash. Longer is safer for slow lights."), hv, hr);
+    hl.append(this._el("span", "", "How long to wait after each change before the picture is taken. Longer is safer for slow Wi-Fi lights; the scan also checks every glow picture really changed, and waits if it didn't."), hv, hr);
     const wl = this._el("label", "pick");
     const wc = this._el("input");
     wc.type = "checkbox";
     wc.checked = this.scanMode === "white";
     wc.onchange = () => {
       this.scanMode = wc.checked ? "white" : "colour";
-      info();
+      drawSum();
     };
-    wl.append(wc, this._el("span", "", "Use white flashes (the older way). Colour frames are gentler and quicker; white also works with a video recording or a camera that struggles with colour."));
+    wl.append(wc, this._el("span", "", "Point scan: use white flashes (the older way). Colour frames are gentler and quicker; white also works with a video recording or a camera that struggles with colour."));
     const cm = this._el("div", "fld");
     cm.append(this._el("span", "lb", "Camera"));
     const secure = window.isSecureContext && !!navigator.mediaDevices?.getUserMedia;
@@ -392,6 +567,7 @@ export class ScanWizard {
         const bt = this._btn(t, "segb", () => {
           this.camMode = v;
           draw();
+          drawSum();
         });
         bt.setAttribute("role", "radio");
         bt.setAttribute("aria-checked", String(this.camMode === v));
@@ -403,7 +579,6 @@ export class ScanWizard {
     cm.append(seg);
     if (!secure) cm.append(this._el("div", "muted", "The live camera needs a secure (https) address. Open Home Assistant over https, or record a video instead."));
     const glowBox = this._el("div", "fld");
-    glowBox.hidden = this._m() !== "glow";
     const slider = (label, key, min, max, auto) => {
       const l = this._el("label", "pick");
       const v = this._el("b", "", "");
@@ -421,46 +596,80 @@ export class ScanWizard {
       r.oninput = () => {
         this[key] = Number(r.value);
         show();
-        info();
+        drawSum();
       };
       show();
       l.append(this._el("span", "", label), v, r);
       return l;
     };
-    const biggest = () => Math.max(1, ...this._ranges().map((r) => r.count));
+    const biggest = () => Math.max(1, ...this._selected().map((r) => r.count));
     glowBox.append(
-      slider("Spots to light along each run (more is slower and finer)", "glowAnchors", 6, 40, () => this.S.glowPlan(biggest()).anchors.length),
-      slider("Pixels lit at each spot", "glowWidth", 3, 16, () => this.S.glowPlan(biggest(), this.glowAnchors ? { anchors: this.glowAnchors } : {}).width),
+      slider("Glow scan: spots to light along each run (more is slower and finer)", "glowAnchors", 6, 40, () => this.S.glowPlan(biggest()).anchors.length),
+      slider("Glow scan: pixels lit at each spot", "glowWidth", 3, 16, () => this.S.glowPlan(biggest(), this.glowAnchors ? { anchors: this.glowAnchors } : {}).width),
       this._btn("Back to automatic", "btn alt sm", () => {
         this.glowAnchors = this.glowWidth = null;
         this._go("pick");
       }),
     );
-    det.append(wl, hl, glowBox, cm);
-    // several angles (point method only)
+    det.append(hl, wl, glowBox, cm);
+    // several angles
     const ml = this._el("label", "pick");
     const mc = this._el("input");
     mc.type = "checkbox";
     mc.checked = this.multiAngles;
-    ml.append(mc, this._el("span", "", "Scan from several angles (3 to 6 spots) for a full 3D map. Best for trees and lights that wrap round a corner; each angle takes about a minute."));
-    const showMulti = () => (ml.hidden = this._m() === "glow" || !this.mods.multiview);
+    ml.append(mc, this._el("span", "", "Scan from several angles (3 to 6 spots) for a full 3D map. Best for runs at different heights or that wrap round something (toe-kick round an island, counter, above the cabinets); each angle takes about a minute."));
+    const showMulti = () => (ml.hidden = !this.mods.multiview);
     showMulti();
-    mc.onchange = () => (this.multiAngles = mc.checked);
-    note.after(ml);
-    this._methodHook = showMulti;
+    mc.onchange = () => {
+      this.multiAngles = mc.checked;
+      nudge.textContent = "";
+      const pts = this._selected().filter((r) => this._runMethod(r) === "point");
+      if (mc.checked && this._light()?.kind === "wled" && pts.length) {
+        // several angles repeat the whole thing from each spot: for a WLED strip that is the worst case for the point scan
+        for (const r of pts) this.rm[r.id] = "glow";
+        redraw();
+        const box = this._el("div", "box mp-banner");
+        box.append(this._el("strong", "", "Switched to Glow scan"), this._el("div", "muted", `Scanning ${pts.map((r) => r.name).join(", ")} from several angles with the Point scan would flash the whole strip once per angle. Glow lights a few pixels at a time instead, and it works from several angles too.`));
+        box.append(this._btn("Keep Point scan", "btn alt sm", () => {
+          for (const r of pts) this.rm[r.id] = "point";
+          nudge.textContent = "";
+          redraw();
+        }));
+        nudge.append(box);
+      }
+      drawSum();
+    };
+    sum.after(ml);
     b.append(det);
-    this.foot.append(
-      this._btn("Cancel", "btn alt", () => this.close()),
-      this._btn("Next", "btn", async () => {
-        const multi = this.multiAngles && this._m() === "point";
-        this.multiAngles = multi;
-        if (multi) {
-          if (!this.mv || this.mv.entry !== this.entry || this.mv.part !== this.part) this.mv = { views: [], redo: -1, entry: this.entry, part: this.part };
-          await this._askOrientation(); // called inside the tap: iOS only asks for motion access in answer to one
-        }
-        this._go("aim");
-      }),
-    );
+    next = this._btn("Next", "btn", async () => {
+      const groups = this._groups();
+      if (!groups.length) return;
+      const multi = !!this.multiAngles && !!this.mods.multiview;
+      this.multiAngles = multi;
+      if (multi) await this._askOrientation(); // called inside the tap: iOS only asks for motion access in answer to one
+      this._pick = { sel: this.sel ? [...this.sel] : null };
+      this._rounds = groups.map((g) => ({ method: g.method, ids: g.runs.map((r) => r.id) }));
+      this._roundNo = 0;
+      this._roundTotal = groups.length;
+      this._beginRound();
+    });
+    this.foot.append(this._btn("Cancel", "btn alt", () => this.close()), next);
+    redraw();
+  }
+
+  // start the next round of scans: its runs and its method
+  _beginRound() {
+    const g = this._rounds.shift();
+    this._roundNo++;
+    this.sel = g.ids;
+    this.method = g.method;
+    this.view = "front";
+    this.scans = {};
+    this.pos = null;
+    this.edited = false;
+    this._viewOk = false;
+    this.mv = this.multiAngles ? { views: [], redo: -1, entry: this.entry, part: this._selKey(), method: g.method } : null;
+    this._go("aim");
   }
 
   // ---- step 2: aim / start ------------------------------------------------------------------------------------------------
@@ -478,8 +687,20 @@ export class ScanWizard {
     this.title.textContent = this.multiAngles ? `Angle ${k + 1}` : side ? "Scan from the side" : `Scan ${L?.title || "the light"}`;
     const b = this.body;
     if (!L) return this._go("pick");
+    if (!this._selected().length) return this._go("pick");
     const glow = this._m() === "glow";
-    b.append(this._el("h3", "", this.multiAngles ? (k === 0 ? "Stand in front of the lights" : this._angleHint(k)) : side ? "Walk about a quarter of the way round, to the right of the lights" : glow ? "Face the surfaces the lights shine on" : "Stand in front of the lights"));
+    const names = this._selected().map((r) => r.name);
+    // which round, which runs
+    if (this._roundTotal > 1) {
+      const nx = this._rounds?.[0];
+      const bn = this._el("div", "box");
+      bn.append(this._el("strong", "", `Round ${this._roundNo} of ${this._roundTotal}: ${glow ? "Glow" : "Point"} scan of ${names.join(", ")}`));
+      if (nx) bn.append(this._el("div", "muted", `Then: ${nx.method === "glow" ? "Glow" : "Point"} scan of ${this.runs.filter((r) => nx.ids.includes(r.id)).map((r) => r.name).join(", ")}.`));
+      b.append(bn);
+    } else if (names.length < this._entryRuns().length) {
+      b.append(this._el("div", "muted", `Scanning ${names.join(", ")}. The other runs of this light stay as they are.`));
+    }
+    b.append(this._el("h3", "", this.multiAngles ? (k === 0 ? (glow ? "Stand where you can see the glow on every surface" : "Stand in front of the lights") : this._angleHint(k)) : side ? "Walk about a quarter of the way round, to the right of the lights" : glow ? "Face the surfaces the lights shine on" : "Stand in front of the lights"));
     // which method, and a one-tap switch
     const mrow = this._el("div", "row");
     mrow.append(this._el("span", "muted", glow ? "Glow scan: for hidden strips." : this.multiAngles ? "Point scan from several angles." : "Point scan: for lights you can see."));
@@ -490,6 +711,12 @@ export class ScanWizard {
       }));
     }
     b.append(mrow);
+    if (!glow) {
+      const w = this._el("div", "box mp-banner");
+      w.append(this._el("strong", "", "The whole strip will flash"));
+      w.append(this._el("div", "muted", L.kind === "wled" ? "A Point scan lights every pixel at once, several times. WLED strips on Wi-Fi can lag and give errors with that. If the strip is hidden or indirect, use the Glow scan." : "A Point scan lights every pixel of the scan at once, several times. Pick Glow instead if the strip is hidden."));
+      b.append(w);
+    }
     const tips = this._el("ul", "scw-tips");
     const tip = (icon, text) => {
       const li = this._el("li");
@@ -501,9 +728,16 @@ export class ScanWizard {
     if (!glow && this._codeMode() === "colour") tip(ICON.moon, "Dim the room lights; it doesn't have to be pitch dark. Switch off bright screens and turn lamps away from the camera.");
     else tip(ICON.moon, "Use a dark room or wait until night. Switch off other bright lights and screens.");
     if (glow) {
-      tip(ICON.frame, side ? "Keep the same surfaces in view, from about 90 degrees around. Stay at the same distance." : "Fit all the glow in the picture: the counter, floor or ceiling the strips light up. You don't need to see the strips.");
-      tip(ICON.hand, "Hold the phone steady, or lean it on something. Don't move until it finishes.");
-      tip(ICON.eye, "A few pixels light at a time and the soft patch of light they make is tracked along. If one can't be found it asks you to tap where the glow is.");
+      if (this.multiAngles) {
+        tip(ICON.frame, k === 0
+          ? "Pick a spot where the glow of every ticked run is in the picture: the floor in front of the toe-kick, the counter, the ceiling or wall above the cabinets. You don't need to see the strips themselves."
+          : "Keep the same glowing patches in view as before, at the same distance. Don't use the phone's zoom: take a step instead, and hold the phone at the same height.");
+        tip(ICON.eye, "Go round the island a few steps at a time, about a quarter of the way round each time, so each angle shares most of its glow patches with the one before. A strip that wraps the island shows on the floor around it: keep that floor in view.");
+      } else {
+        tip(ICON.frame, side ? "Keep the same surfaces in view, from about 90 degrees around. Stay at the same distance." : "Fit all the glow in the picture: the counter, floor or ceiling the strips light up. You don't need to see the strips.");
+        tip(ICON.eye, "A few pixels light at a time and the soft patch of light they make is tracked along. If one can't be found you'll be asked to retry it or tap where the glow is.");
+      }
+      tip(ICON.hand, "Hold the phone steady, or lean it on something. Don't move until it finishes. You can pause if someone walks through.");
     } else {
       tip(ICON.frame, this.multiAngles && k > 0 ? "Keep the whole light in view again and stay at about the same distance. Parts hidden from this spot can stay hidden: lights seen from two spots get a 3D place." : side ? "Keep the whole light in view again, from about 90 degrees around. Stay at the same distance." : "Fit all of the light in the picture, with a little space around it.");
       tip(ICON.hand, "Hold the phone steady, or lean it on something. Don't move until it finishes.");
@@ -558,10 +792,15 @@ export class ScanWizard {
     const err = this._el("div", "serr");
     err.hidden = true;
     err.setAttribute("role", "alert");
-    b.append(cam, err, this._tips);
-    const go = this._btn("Start scan", "btn", () => (this._m() === "glow" ? this._runGlowLive() : this._runLive()), ICON.cam);
+    const card = this._el("div", "scw-card");
+    card.hidden = true;
+    b.append(cam, err, card, this._tips);
+    this._viewOk = false;
+    const go = this._btn("Start scan", "btn alt", () => (this._m() === "glow" ? this._runGlowLive() : this._runLive()), ICON.cam);
     go.disabled = true;
-    const open = this._btn("Open camera", "btn alt", async () => {
+    const check = this._btn("Check the view", "btn", () => this._checkView({ cam, card, check, go }), ICON.frame);
+    check.hidden = true;
+    const open = this._btn("Open camera", "btn", async () => {
       open.disabled = true;
       err.hidden = true;
       try {
@@ -570,8 +809,12 @@ export class ScanWizard {
         await video.play();
         video.hidden = guide.hidden = false;
         ph.hidden = true;
-        go.disabled = false;
         open.hidden = true;
+        check.hidden = false;
+        go.disabled = false; // skipping the check is allowed: it is a safety net, not a gate
+        card.hidden = false;
+        card.textContent = "";
+        card.append(this._el("h3", "", "Check the view first"), this._el("div", "muted", "Frame everything, then tap Check the view. The first, middle and last spot of each run light up for a moment so you can see they are all in the picture. It takes a few seconds."));
       } catch (e) {
         open.disabled = false;
         if (this.closed) return;
@@ -591,29 +834,177 @@ export class ScanWizard {
       this._go("aim");
     });
     useVideo.hidden = true;
-    this.foot.append(this._btn("Back", "btn alt", () => (this._closeCamera(), this._go(this._backStep(false)))), useVideo, open, go);
+    this.foot.append(this._btn("Back", "btn alt", () => (this._closeCamera(), this._go(this._backStep(false)))), useVideo, open, check, go);
     this._goBtn = go;
   }
 
+  // The first, middle and last spot of every run, as [[label, {start (pixel of the light), width}]]. Glow: spots of the real plan.
+  _checkSpots(r) {
+    const pick = (start, width) => ({ start: r.first + start, width });
+    if (this._m() === "glow") {
+      const o = {};
+      if (this.glowAnchors) o.anchors = this.glowAnchors;
+      if (this.glowWidth) o.width = this.glowWidth;
+      const A = this.S.glowPlan(r.count, o).anchors;
+      const ids = [...new Set([0, Math.floor((A.length - 1) / 2), A.length - 1])];
+      return ids.map((i) => [i === 0 ? "start" : i === A.length - 1 ? "end" : "middle", pick(A[i].start, A[i].width)]);
+    }
+    const w = Math.min(4, r.count), at = [0, Math.floor((r.count - w) / 2), r.count - w];
+    return [...new Set(at)].map((s) => [s === 0 ? "start" : s === r.count - w ? "end" : "middle", pick(s, w)]);
+  }
+
+  // the check: light a few spots, one at a time, over the live camera; each is looked for in the picture; the person confirms they are all in frame
+  async _checkView(ui) {
+    const { cam, card, check, go } = ui, video = this.video, S = this.S;
+    if (!video || !this.stream || this._capturing) return;
+    this._aborted = null;
+    this._paused = false;
+    this._capturing = true;
+    this._viewOk = false;
+    go.disabled = check.disabled = true;
+    go.className = "btn alt";
+    card.hidden = false;
+    card.textContent = "";
+    const status = this._el("div", "muted", "Starting. Hold the phone steady.");
+    status.setAttribute("role", "status");
+    const list = this._el("div");
+    card.append(this._el("h3", "", "Checking the view"), status, list);
+    const draw = this._overlay(cam, video);
+    const cv = document.createElement("canvas");
+    const marks = [], results = [];
+    let size = null, failed = "";
+    const renderList = () => {
+      list.textContent = "";
+      for (const r of results) {
+        const row = this._el("div", "scw-spotrow");
+        row.append(this._el("b", "", r.run.name));
+        for (const sp of r.spots) {
+          const p = this._el("span", "scw-spot " + (sp.seen ? "ok" : "no"), `${sp.label} ${sp.seen ? "✓" : "not seen"}`);
+          p.title = sp.seen ? `${sp.label} spot found` : `The ${sp.label} spot wasn't seen in the picture`;
+          row.append(p);
+        }
+        list.append(row);
+      }
+    };
+    try {
+      await this._scanStart();
+      const hold = this._hold("live");
+      await this._wsRetry({ type: "light_show_studio/map/scan/frame", entry_id: this.entry, frame: 0 });
+      await sleep(hold + 400);
+      const dark = await this._grabGlow(video, cv);
+      if (!dark) throw new Error("The camera picture isn't ready. Try again.");
+      size = { W: dark.W, H: dark.H };
+      for (const r of this._ranges()) {
+        const res = { run: r.run, spots: [] };
+        results.push(res);
+        for (const [label, sp] of this._checkSpots(r)) {
+          if (this._aborted) throw new Error(this._aborted);
+          status.textContent = `${r.run.name}: lighting the ${label}…`;
+          await this._wsRetry({ type: "light_show_studio/map/scan/segment", entry_id: this.entry, start: sp.start, count: sp.width });
+          await sleep(hold);
+          const lit = await this._settledGlow(video, cv, dark, null);
+          if (!lit) throw new Error("The camera picture isn't ready. Try again.");
+          const g = S.findGlow(dark.data, lit.data, lit.w, lit.h, { f: lit.f });
+          const seen = !g.reason && g.conf >= S.GLOW.minConf * 0.7;
+          res.spots.push({ label, seen });
+          marks.push({ x: g.x, y: g.y, c: seen ? "#37d67a" : "#ff6b4a" });
+          if (g.x == null) marks.pop();
+          draw(marks, size);
+          renderList();
+        }
+      }
+    } catch (e) {
+      failed = this._aborted === "Cancelled." ? "" : this._friendly(e, "The check stopped.");
+    }
+    this._capturing = false;
+    await this._stopScan(true);
+    if (this.closed) return;
+    check.disabled = false;
+    check.lastChild.textContent = "Check again";
+    go.disabled = false;
+    if (failed) {
+      status.textContent = failed;
+      status.style.color = "var(--lss-err, var(--lss-warn))";
+      return;
+    }
+    const missing = results.flatMap((r) => r.spots.filter((s) => !s.seen).map((s) => `${r.run.name} (${s.label})`));
+    status.style.color = "";
+    status.textContent = missing.length
+      ? `Not seen: ${missing.join(", ")}. Step back, tilt the phone or aim at the missing glow, then check again. Green dots on the picture are spots that were found.`
+      : "Every spot was found. The green dots on the picture are where they showed up.";
+    const q = this._el("div", "scw-ask2");
+    q.append(this._el("strong", "", "Are all the lit spots inside the picture?"));
+    const row = this._el("div", "row");
+    row.append(
+      this._btn(missing.length ? "Yes, start anyway" : "Yes, all in frame", "btn", () => {
+        this._viewOk = true;
+        q.textContent = "";
+        q.append(this._el("span", "okmsg", "Good. Hold the phone where it is and tap Start scan."));
+        go.className = "btn";
+        go.focus?.({ preventScroll: true });
+      }),
+      this._btn("No, I'll adjust", "btn alt", () => {
+        q.textContent = "";
+        q.append(this._el("span", "muted", "Move the phone until everything fits, then tap Check again."));
+        check.focus?.({ preventScroll: true });
+      }),
+    );
+    q.append(row);
+    card.append(q);
+    if (missing.length === 0) go.className = "btn";
+  }
+
+  // found centres drawn over the live picture (the video is shown "cover": same crop here). Returns draw(marks [{x, y, c}], size {W, H}).
+  _overlay(cam, video) {
+    let ov = cam.querySelector("canvas.ov");
+    if (!ov) {
+      ov = this._el("canvas", "ov");
+      cam.append(ov);
+    }
+    return (marks, size) => {
+      const cw = cam.clientWidth, ch = cam.clientHeight;
+      if (!cw || !ch || !size || !video.videoWidth) return;
+      if (ov.width !== cw) ov.width = cw;
+      if (ov.height !== ch) ov.height = ch;
+      const g = ov.getContext("2d");
+      g.clearRect(0, 0, cw, ch);
+      const sc = Math.max(cw / video.videoWidth, ch / video.videoHeight), k = size.W / video.videoWidth;
+      const ox = (cw - video.videoWidth * sc) / 2, oy = (ch - video.videoHeight * sc) / 2;
+      for (const m of marks) {
+        g.beginPath();
+        g.arc(ox + (m.x / k) * sc, oy + (m.y / k) * sc, 5, 0, 6.2832);
+        g.fillStyle = m.c;
+        g.fill();
+      }
+    };
+  }
+
   // ---- live scan ----------------------------------------------------------------------------------------------------------------
+  // how long to wait after a frame before the picture: the person's setting or the light's own advice (hold_ms), whichever is longer.
+  // (A recorded video is decoded later from a fixed schedule, so it only uses the setting.)
   _hold(mode) {
-    return this.hold ?? (mode === "video" ? 500 : 350);
+    const own = this.hold ?? (mode === "video" ? 500 : 350);
+    return mode === "video" ? own : Math.max(own, this._holdMs || 0);
   }
 
   // a single run is coded on its own (pixel first + i is code index i); the whole light otherwise
   _scope() {
-    const run = this.part ? this.runs.find((r) => r.id === this.part) : null;
-    return run ? { first: run.first, count: run.count } : { first: 0, count: this._light().bulbs };
+    const rs = this._ranges();
+    if (!rs.length || this._selected().length === this._entryRuns().length) return { first: 0, count: this._light().bulbs };
+    return this._groupScope({ runs: rs.map((r) => r.run) });
   }
 
   async _scanStart() {
     const sc = this._scope();
     const msg = { type: "light_show_studio/map/scan/start", entry_id: this.entry };
-    if (this.part) Object.assign(msg, sc);
+    if (this._selected().length !== this._entryRuns().length) Object.assign(msg, sc);
     if (this._m() !== "glow") msg.mode = this._codeMode();
     this._orientAtScan = this.orient ? { ...this.orient } : null; // the phone is held still for the whole scan
     const r = await this._ws(msg);
     this._started = true;
+    this._holdMs = Math.min(2500, Math.max(0, Number(r?.hold_ms) || 0));
+    this._noise = []; // grab-to-grab noise of settled glow pictures, to spot a picture caught mid-change
+    this._sameMiss = 0;
     this.base = sc.first;
     this.N = sc.count;
     if (this._m() === "glow") return r;
@@ -661,44 +1052,88 @@ export class ScanWizard {
     }
   }
 
+  // The screen while a scan runs: the camera picture, a progress bar, "n of N, about X left", a status line, Pause and Cancel.
+  _scanUi(video, heading) {
+    this._paused = false;
+    this.foot.textContent = "";
+    const ui = { t0: performance.now(), pausedMs: 0 };
+    ui.pause = this._btn("Pause", "btn alt", () => {
+      this._paused = !this._paused;
+      ui.pause.textContent = this._paused ? "Resume" : "Pause";
+    });
+    this.foot.append(ui.pause, this._btn("Cancel", "btn alt", () => {
+      this._paused = false;
+      this._abort("Cancelled.");
+    }));
+    const prog = this._el("div", "scw-prog");
+    ui.bar = this._el("i");
+    prog.append(ui.bar);
+    ui.status = this._el("div", "muted", "Starting. Hold the phone steady.");
+    ui.status.setAttribute("role", "status");
+    ui.eta = this._el("div", "muted scw-eta");
+    ui.note = this._el("div", "muted");
+    this.body.textContent = "";
+    ui.h3 = this._el("h3", "", heading);
+    this.body.append(ui.h3);
+    ui.cam = this._el("div", "scw-cam");
+    video.hidden = false;
+    ui.cap = this._el("div", "cap", "");
+    ui.cam.append(video);
+    ui.cam.append(ui.cap);
+    this.body.append(ui.cam, prog, ui.eta, ui.status, ui.note);
+    // done of total pictures: the bar and a time estimate from the pace so far (time spent paused doesn't count)
+    ui.set = (done, total, what = "pictures") => {
+      ui.bar.style.width = `${Math.round((done / Math.max(1, total)) * 100)}%`;
+      const el = performance.now() - ui.t0 - ui.pausedMs;
+      ui.eta.textContent = done >= 2 && done < total
+        ? `${done} of ${total} ${what}, about ${this._fmtSecs((el / done) * (total - done) / 1000)} left`
+        : `${done} of ${total} ${what}`;
+    };
+    return ui;
+  }
+
+  // Waits while the person has paused. The lights go dark meanwhile, and a dark frame is sent now and then so the light isn't let go
+  // (it is released after 120 s without a frame). Returns true if it paused, so the caller can take a fresh dark reference.
+  async _gate(ui) {
+    if (!this._paused) return false;
+    const t = performance.now();
+    ui.status.textContent = "Paused. The lights are dark. Don't move the phone; tap Resume to carry on.";
+    await this._ws({ type: "light_show_studio/map/scan/frame", entry_id: this.entry, frame: 0 }).catch(() => {});
+    let ka = performance.now();
+    while (this._paused && !this._aborted && !this.closed) {
+      await sleep(150);
+      if (performance.now() - ka > 15000) {
+        ka = performance.now();
+        this._ws({ type: "light_show_studio/map/scan/frame", entry_id: this.entry, frame: 0 }).catch(() => {});
+      }
+    }
+    ui.pausedMs += performance.now() - t;
+    return true;
+  }
+
   async _runLive() {
     const video = this.video;
     if (!video || !this.stream) return;
-    const hold = this._hold("live");
-    const keepVideo = video;
     this._aborted = null;
     this._capturing = true;
-    // show progress under the camera picture
-    this.foot.textContent = "";
-    const cancel = this._btn("Cancel", "btn alt", () => this._abort("Cancelled."));
-    this.foot.append(cancel);
-    const prog = this._el("div", "scw-prog");
-    const bar = this._el("i");
-    prog.append(bar);
-    const status = this._el("div", "muted", "Starting. Hold the phone steady.");
-    status.setAttribute("role", "status");
-    this.body.textContent = "";
-    this.body.append(this._el("h3", "", "Scanning. Keep the phone still."));
-    const cam = this._el("div", "scw-cam");
-    cam.append(keepVideo);
-    keepVideo.hidden = false;
-    cam.append(this._el("div", "guide"));
-    const cap = this._el("div", "cap", "");
-    cam.append(cap);
-    this.body.append(cam, prog, status);
+    const ui = this._scanUi(video, "Scanning. Keep the phone still.");
+    const { bar, status, cap } = ui;
     const cv = document.createElement("canvas");
     const frames = [];
     let size = null;
     try {
       await this._scanStart();
+      const hold = this._hold("live"); // after the start: the light may have asked for longer
       const colour = this.usedMode === "colour", key = colour ? "rgb" : "luma", settle = colour ? 4 : 2;
       if (colour) await this._pinWhiteBalance();
       for (let k = 0; k < this.F; k++) {
         if (this._aborted) throw new Error(this._aborted);
+        await this._gate(ui);
+        if (this._aborted) throw new Error(this._aborted);
         cap.textContent = colour ? `Frame ${k + 1} of ${this.F}` : `Flash ${k + 1} of ${this.F}`;
         status.textContent = k < settle ? "Setting the exposure…" : "Reading the code…";
-        bar.style.width = `${Math.round((k / this.F) * 100)}%`;
-        await this._ws({ type: "light_show_studio/map/scan/frame", entry_id: this.entry, frame: k });
+        ui.set(k, this.F, "frames");
+        await this._wsRetry({ type: "light_show_studio/map/scan/frame", entry_id: this.entry, frame: k });
         await sleep(hold + (k < settle ? 350 : 0));
         const a = this._grab(video, cv, colour);
         if (!a) throw new Error("The camera picture isn't ready. Try again.");
@@ -739,26 +1174,29 @@ export class ScanWizard {
   // ---- glow scan (hidden strips) ------------------------------------------------------------------------------------------------
   // The lights show one item at a time: a dark reference, or a short lit stretch of one run. See light-show-studio-scan.js (glow*).
   async _showItem(it) {
-    if (it.kind === "seg") return this._ws({ type: "light_show_studio/map/scan/segment", entry_id: this.entry, start: it.start, count: it.count });
-    return this._ws({ type: "light_show_studio/map/scan/frame", entry_id: this.entry, frame: 0 });
+    if (it.kind === "seg") return this._wsRetry({ type: "light_show_studio/map/scan/segment", entry_id: this.entry, start: it.start, count: it.count });
+    return this._wsRetry({ type: "light_show_studio/map/scan/frame", entry_id: this.entry, frame: 0 });
   }
 
   _glowSetup() {
     const plans = this._glowPlans();
     const items = this.S.glowSchedule(plans.map((p) => ({ key: p.key, first: p.first, plan: p.plan })));
-    this._glow = { plans, items, res: Object.fromEntries(plans.map((p) => [p.key, new Array(p.plan.anchors.length).fill(null)])) };
+    this._glow = { sat: new Set(), clip: new Set(), plans, items, res: Object.fromEntries(plans.map((p) => [p.key, new Array(p.plan.anchors.length).fill(null)])) };
     return this._glow;
   }
 
-  // a camera picture shrunk for the glow search (two grabs averaged); .W/.H are the full picture's size
+  // a camera picture shrunk for the glow search (two grabs averaged); .W/.H are the full picture's size, .noise how much the two
+  // grabs (45 ms apart) differed: a lot means the picture was still changing, i.e. a late frame arrived in between
   async _grabGlow(video, cv) {
     const S = this.S, a = this._grab(video, cv);
     if (!a) return null;
     const f = S.glowFactor(a.w), out = S.downscaleLuma(a.luma, a.w, a.h, f);
+    out.noise = 0;
     await sleep(45);
     const b = this._grab(video, cv);
     if (b && b.w === a.w && b.h === a.h) {
       const o2 = S.downscaleLuma(b.luma, b.w, b.h, f);
+      out.noise = changeScore(out.data, o2.data);
       for (let i = 0; i < out.data.length; i++) out.data[i] = (out.data[i] + o2.data[i]) / 2;
     }
     out.W = a.w;
@@ -766,11 +1204,75 @@ export class ScanWizard {
     return out;
   }
 
+  _noteNoise(v) {
+    this._noise.push(v);
+    if (this._noise.length > 9) this._noise.shift();
+  }
+
+  // typical grab-to-grab noise of a settled picture in this scan (null until a few have been seen)
+  _noiseRef() {
+    if (this._noise.length < 3) return null;
+    const s = [...this._noise].sort((x, y) => x - y);
+    return s[s.length >> 1];
+  }
+
+  // A picture that has really settled: not caught mid-change (the two grabs agree) and, if `against` (the previous picture, which
+  // showed something else) is given, different from it. Otherwise a late frame is assumed (WLED over Wi-Fi can lag by 0.7 s) and
+  // it waits and looks again, up to three times. pic.waits = how many times it had to.
+  async _settledGlow(video, cv, against, ui) {
+    let pic = await this._grabGlow(video, cv);
+    if (!pic) return null;
+    let waits = 0;
+    for (;;) {
+      const ref = this._noiseRef();
+      const moving = ref != null && pic.noise > ref * 3 + 2;
+      const same = !moving && !!against && this._sameMiss < 3 && changeScore(against.data, pic.data) < Math.max(2, pic.noise * 2.5);
+      if (!(moving || same) || waits >= (moving ? 3 : 2) || this._aborted) {
+        if (same && waits) this._sameMiss++; // waited and still the same: not a late frame, a faint glow; stop fretting about it
+        break;
+      }
+      waits++;
+      if (ui) ui.note.textContent = moving ? "The light is still changing; waiting a moment…" : "The picture hasn't changed yet (slow Wi-Fi?); waiting…";
+      await sleep(250 * waits);
+      pic = await this._grabGlow(video, cv);
+      if (!pic) return null;
+    }
+    if (ui) ui.note.textContent = "";
+    if (!waits) this._noteNoise(pic.noise);
+    pic.waits = waits;
+    return pic;
+  }
+
   // find the glow of one lit stretch and note it; good = found clearly enough to use
-  _glowMeasure(it, dark, lit) {
-    const g = this.S.findGlow(dark.data, lit.data, lit.w, lit.h, { f: lit.f });
-    this._glow.res[it.key][it.a] = { x: g.x, y: g.y, conf: g.conf, reason: g.reason };
-    return { g, good: !g.reason && g.conf >= this.S.GLOW.minConf };
+  // Spots after the first of a run are looked for near where the earlier ones say the next should be (glowPredict). darkAfter: the
+  // .data of a dark picture taken after the lit one, when there is one.
+  _glowMeasure(it, dark, lit, darkAfter) {
+    const S = this.S, G = this._glow, plan = G.plans.find((p) => p.key === it.key);
+    const opts = { f: lit.f };
+    if (darkAfter) opts.darkAfter = darkAfter;
+    if (plan && it.a > 0) {
+      const done = G.res[it.key].slice(0, it.a).map((r, k) => (r && r.x != null ? { c: plan.plan.anchors[k].c, x: r.x, y: r.y, conf: r.conf, status: r.manual || r.conf >= S.GLOW.minConf ? "ok" : "low" } : null));
+      const ex = S.glowPredict(done, it.start - plan.first + (it.count - 1) / 2);
+      if (ex) opts.expect = ex;
+    }
+    const g = S.findGlow(dark.data, lit.data, lit.w, lit.h, opts);
+    G.res[it.key][it.a] = { x: g.x, y: g.y, conf: g.conf, reason: g.reason, alt: g.alt, hint: g.hint, saturated: g.saturated, clipped: g.clipped };
+    const k = `${it.key}:${it.a}`;
+    (g.saturated > 0.2 ? G.sat.add(k) : G.sat.delete(k));
+    (g.clipped ? G.clip.add(k) : G.clip.delete(k));
+    return { g, good: !g.reason && g.conf >= S.GLOW.minConf };
+  }
+
+  // the same spot lit again for a retry: when the last try said "wider" or "narrower", with a different number of pixels, still centred
+  // on the same place and inside its run
+  _adapt(it, g) {
+    if (!g?.hint) return it;
+    const plan = this._glow.plans.find((p) => p.key === it.key);
+    if (!plan) return it;
+    const w = Math.min(plan.count, Math.round(this.S.glowAdaptWidth(it.count, g.hint)));
+    const centre = it.start + (it.count - 1) / 2;
+    const start = Math.max(plan.first, Math.min(plan.first + plan.count - w, Math.round(centre - (w - 1) / 2)));
+    return { ...it, start, count: w };
   }
 
   // Pause and ask: show the frozen glow picture, the person taps the middle of the glow (or skips this spot).
@@ -782,7 +1284,7 @@ export class ScanWizard {
       const total = plan.plan.anchors.length;
       const box = this._el("div", "scw-card");
       box.setAttribute("role", "group");
-      const why = g.reason === "wide" ? "The light spread over the whole picture." : g.reason ? "No clear glow was seen." : "The glow was faint or there were two patches.";
+      const why = g.reason === "wide" ? "The light spread over the whole picture." : g.reason ? "No clear glow was seen." : g.alt?.length ? "Two patches of light were seen (the numbered rings)." : "The glow was faint.";
       box.append(this._el("h3", "", `Where is the glow? ${plan.run.name}, spot ${it.a + 1} of ${total}`));
       box.append(this._el("div", "muted", `${why} Tap the middle of the glow on the picture${g.x != null ? ", or use the cross it found" : ""}. Or skip this spot: the pixels around it are worked out from the other spots.`));
       const wrap = this._el("div", "scw-ask");
@@ -798,6 +1300,17 @@ export class ScanWizard {
       let pick = g.x != null ? { x: g.x, y: g.y } : null;
       const draw = () => {
         cg.putImageData(base, 0, 0);
+        (g.alt || []).forEach((a, i) => {
+          const ax = (a.x + 0.5) / lit.f - 0.5, ay = (a.y + 0.5) / lit.f - 0.5, ar = Math.max(7, lit.w * 0.03);
+          cg.strokeStyle = "#4aa3ff";
+          cg.lineWidth = Math.max(1.5, lit.w / 240);
+          cg.beginPath();
+          cg.arc(ax + 0.5, ay + 0.5, ar, 0, 6.2832);
+          cg.stroke();
+          cg.fillStyle = "#4aa3ff";
+          cg.font = `${Math.round(ar * 1.3)}px system-ui, sans-serif`;
+          cg.fillText(String(i + 1), ax + ar + 2, ay - ar);
+        });
         if (!pick) return;
         const px = (pick.x + 0.5) / lit.f - 0.5, py = (pick.y + 0.5) / lit.f - 0.5, r = Math.max(5, lit.w * 0.025);
         cg.lineWidth = Math.max(1.5, lit.w / 240);
@@ -845,90 +1358,73 @@ export class ScanWizard {
   async _runGlowLive() {
     const video = this.video;
     if (!video || !this.stream) return;
-    const S = this.S, hold = this._hold("live");
+    const S = this.S;
     this._aborted = null;
     this._capturing = true;
-    this.foot.textContent = "";
-    this.foot.append(this._btn("Cancel", "btn alt", () => this._abort("Cancelled.")));
-    const prog = this._el("div", "scw-prog");
-    const bar = this._el("i");
-    prog.append(bar);
-    const status = this._el("div", "muted", "Starting. Hold the phone steady.");
-    status.setAttribute("role", "status");
-    this.body.textContent = "";
-    const h3 = this._el("h3", "", "Scanning. Keep the phone still.");
-    this.body.append(h3);
-    const cam = this._el("div", "scw-cam");
-    video.hidden = false;
-    const ov = this._el("canvas", "ov");
-    const cap = this._el("div", "cap", "");
-    cam.append(video, ov, cap);
-    this.body.append(cam, prog, status);
+    const ui = this._scanUi(video, "Scanning. Keep the phone still.");
+    const { cap } = ui;
+    const draw = this._overlay(ui.cam, video);
     const cv = document.createElement("canvas");
     const G = this._glowSetup();
-    const darks = new Map();
-    let size = null;
-    // found centres drawn over the live picture (the video is shown "cover": same crop here)
-    const drawOv = (now) => {
-      const cw = cam.clientWidth, ch = cam.clientHeight;
-      if (!cw || !ch || !size) return;
-      if (ov.width !== cw) ov.width = cw;
-      if (ov.height !== ch) ov.height = ch;
-      const g = ov.getContext("2d");
-      g.clearRect(0, 0, cw, ch);
-      const sc = Math.max(cw / video.videoWidth, ch / video.videoHeight), k = size.W / video.videoWidth;
-      const ox = (cw - video.videoWidth * sc) / 2, oy = (ch - video.videoHeight * sc) / 2;
+    const total = G.items.length;
+    let size = null, lastDark = null, prev = null, bonus = 0;
+    const bad = []; // spots that could not be found: dealt with at the end, while the phone is still in place
+    const marks = () => {
+      const out = [];
       for (const list of Object.values(G.res)) {
-        for (const r of list) {
-          if (!r || r.x == null) continue;
-          g.beginPath();
-          g.arc(ox + (r.x / k) * sc, oy + (r.y / k) * sc, 5, 0, 6.2832);
-          g.fillStyle = r.manual ? "#4aa3ff" : r.conf >= S.GLOW.minConf ? "#37d67a" : "#ff9d00";
-          g.fill();
-        }
+        for (const r of list) if (r && r.x != null) out.push({ x: r.x, y: r.y, c: r.manual ? "#4aa3ff" : r.conf >= S.GLOW.minConf ? "#37d67a" : "#ff9d00" });
       }
-      void now;
+      return out;
+    };
+    const redraw = () => draw(marks(), size);
+    // show an item, wait for the light (its own advice, the person's setting, and extra if it proved slow), and take a settled picture
+    const take = async (it, against, extra = 0) => {
+      await this._showItem(it);
+      await sleep(this._hold("live") + bonus + extra);
+      const pic = await this._settledGlow(video, cv, against, ui);
+      if (!pic) throw new Error("The camera picture isn't ready. Try again.");
+      if (size && (pic.W !== size.W || pic.H !== size.H)) throw new Error("The camera changed size during the scan. Try again.");
+      size = { W: pic.W, H: pic.H };
+      if (pic.waits) bonus = Math.min(600, bonus + 100 * pic.waits); // this light is slow today: wait longer from now on
+      return pic;
     };
     try {
       await this._scanStart();
-      for (let n = 0; n < G.items.length; n++) {
+      for (let n = 0; n < total; n++) {
         if (this._aborted) throw new Error(this._aborted);
+        if (await this._gate(ui)) {
+          // back after a pause: the camera's exposure may have drifted while it was dark, so take a new dark reference
+          if (this._aborted) throw new Error(this._aborted);
+          lastDark = prev = await take({ kind: "dark" }, null, 350);
+        }
         const it = G.items[n];
         const plan = it.kind === "seg" ? G.plans.find((p) => p.key === it.key) : null;
         cap.textContent = plan ? `${plan.run.name}: spot ${it.a + 1} of ${plan.plan.anchors.length}` : "Reference picture (all dark)";
-        status.textContent = n < 2 ? "Setting the exposure…" : "Following the glow along the lights…";
-        bar.style.width = `${Math.round((n / G.items.length) * 100)}%`;
-        await this._showItem(it);
-        await sleep(hold + (n < 2 ? 350 : 0));
-        let small = await this._grabGlow(video, cv);
-        if (!small) throw new Error("The camera picture isn't ready. Try again.");
-        if (size && (small.W !== size.W || small.H !== size.H)) throw new Error("The camera changed size during the scan. Try again.");
-        size = { W: small.W, H: small.H };
+        ui.status.textContent = n < 2 ? "Setting the exposure…" : "Following the glow along the lights…";
+        ui.set(n, total, "pictures");
+        let pic = await take(it, prev, n < 2 ? 350 : 0);
+        prev = pic;
         if (it.kind === "dark") {
-          darks.set(n, small);
+          lastDark = pic;
           continue;
         }
-        const dark = darks.get(it.dark);
-        let out = this._glowMeasure(it, dark, small);
-        drawOv();
-        while (!out.good) {
-          h3.textContent = "Needs your help";
-          cam.classList.add("off"); // the camera keeps running, out of sight, while the frozen picture is shown
-          const act = await this._askAnchor(it, dark, small, out.g, { live: true, host: cam });
-          cam.classList.remove("off");
-          h3.textContent = "Scanning. Keep the phone still.";
-          if (this._aborted) throw new Error(this._aborted);
-          if (act === "stop") throw new Error("Cancelled.");
-          if (act !== "retry") break;
-          await this._showItem(it);
-          await sleep(hold + 250);
-          small = await this._grabGlow(video, cv);
-          if (!small) throw new Error("The camera picture isn't ready. Try again.");
-          out = this._glowMeasure(it, dark, small);
+        let out = this._glowMeasure(it, lastDark, pic);
+        if (!out.good) {
+          // one quiet second go with more patience (a late frame is the usual reason) before it is left for the end
+          const it2 = this._adapt(it, out.g);
+          const again = await take(it2, lastDark, 400);
+          const out2 = this._glowMeasure(it2, lastDark, again);
+          if (out2.good || out2.g.conf >= out.g.conf) (out = out2), (pic = again);
+          else this._glowMeasure(it, lastDark, pic);
+          prev = pic;
+          if (out.good && it2 !== it) it.count = it2.count, it.start = it2.start;
         }
-        drawOv();
+        if (!out.good) bad.push({ it, dark: lastDark, lit: pic, g: out.g });
+        redraw();
+        if (out.g.saturated > 0.2) ui.note.textContent = "That glow is very bright. If it keeps happening, dim the room lights or step back.";
       }
-      bar.style.width = "100%";
+      ui.set(total, total, "pictures");
+      if (bad.length) await this._glowFixups(ui, bad, take, redraw);
     } catch (e) {
       this._capturing = false;
       await this._stopScan(true);
@@ -937,10 +1433,128 @@ export class ScanWizard {
       return this._failScan(this._aborted === "Cancelled." || e.message === "Cancelled." ? "" : this._friendly(e, "The scan stopped."));
     }
     this._capturing = false;
+    G.size = size;
     await this._stopScan(true);
     this._closeCamera();
     if (this.closed) return;
     this._glowFinish();
+  }
+
+  // Spots that weren't found, listed while the phone is still where it was: each can be retried on its own, tapped on the picture,
+  // or skipped (the pixels around a skipped spot are worked out from its neighbours).
+  async _glowFixups(ui, bad, take, redraw) {
+    const G = this._glow;
+    const plan = (it) => G.plans.find((p) => p.key === it.key);
+    ui.h3.textContent = "A few spots need a second look";
+    ui.set(1, 1, "pictures");
+    ui.eta.textContent = "";
+    const card = this._el("div", "scw-card");
+    const err = this._el("div", "serr");
+    err.hidden = true;
+    err.setAttribute("role", "alert");
+    this.body.append(card);
+    // the light is let go after 120 s without a frame: keep it awake (dark) while the person decides
+    const ka = setInterval(() => this._ws({ type: "light_show_studio/map/scan/frame", entry_id: this.entry, frame: 0 }).catch(() => {}), 15000);
+    let busy = false, leave;
+    const left = new Promise((r) => (leave = r));
+    const why = (q) => (q.g.alt?.length && !q.g.reason ? "two patches of light were seen and it couldn't tell which is right" : q.g.reason === "wide" ? "the light spread over the whole picture" : q.g.reason ? "no clear glow was seen" : "the glow was faint or there were two patches");
+    const drop = (q) => bad.splice(bad.indexOf(q), 1);
+    const retry = async (q) => {
+      try {
+        const it2 = this._adapt(q.it, q.g);
+        const pic = await take(it2, q.dark, 500);
+        const out = this._glowMeasure(it2, q.dark, pic);
+        q.lit = pic;
+        q.g = out.g;
+        if (out.good) (q.it = it2), drop(q);
+        redraw();
+      } catch (e) {
+        if (this._aborted || e.message === "Cancelled.") throw e;
+        err.textContent = this._friendly(e, "That spot couldn't be tried again.");
+        err.hidden = false;
+      }
+    };
+    const tap = async (q) => {
+      for (;;) {
+        ui.cam.classList.add("off"); // the camera keeps running, out of sight, while the frozen picture is shown
+        const act = await this._askAnchor(q.it, q.dark, q.lit, q.g, { live: true, host: ui.cam });
+        ui.cam.classList.remove("off");
+        if (this._aborted) throw new Error(this._aborted);
+        if (act === "stop") throw new Error("Cancelled.");
+        if (act === "retry") {
+          await retry(q);
+          if (!bad.includes(q)) return;
+          continue;
+        }
+        drop(q); // used or skipped: _askAnchor has noted it
+        redraw();
+        return;
+      }
+    };
+    const skip = (q) => {
+      G.res[q.it.key][q.it.a] = { x: null, y: null, conf: 0, skipped: true };
+      drop(q);
+    };
+    const render = () => {
+      card.textContent = "";
+      if (!bad.length) return leave();
+      ui.status.textContent = `${bad.length} spot${bad.length === 1 ? "" : "s"} couldn't be found. Retry them, tap where the glow is, or skip them.`;
+      for (const q of [...bad]) {
+        const row = this._el("div", "scw-fix");
+        row.append(this._el("span", "", `${plan(q.it).run.name}, spot ${q.it.a + 1} of ${plan(q.it).plan.anchors.length}: ${why(q)}.`));
+        const act = this._el("span", "scw-fixb");
+        const run = (fn) => async () => {
+          if (busy) return;
+          busy = true;
+          err.hidden = true;
+          ui.status.textContent = "Working on it…";
+          try {
+            await fn(q);
+          } catch (e) {
+            busy = false;
+            return leave(e);
+          }
+          busy = false;
+          render();
+        };
+        act.append(this._btn("Retry", "btn alt sm", run(retry)), this._btn("Tap it", "btn alt sm", run(tap)), this._btn("Skip", "btn alt sm", run(async (x) => skip(x))));
+        row.append(act);
+        card.append(row);
+      }
+      card.append(err);
+    };
+    this.foot.textContent = "";
+    this.foot.append(
+      this._btn("Cancel", "btn alt", () => this._abort("Cancelled.") || leave(new Error("Cancelled."))),
+      this._btn("Retry all", "btn alt", async () => {
+        if (busy) return;
+        busy = true;
+        try {
+          for (const q of [...bad]) {
+            ui.status.textContent = `Trying ${plan(q.it).run.name}, spot ${q.it.a + 1} again…`;
+            await retry(q);
+          }
+        } catch (e) {
+          busy = false;
+          return leave(e);
+        }
+        busy = false;
+        render();
+      }),
+      this._btn("Skip them all", "btn", () => {
+        if (busy) return;
+        for (const q of [...bad]) skip(q);
+        render();
+      }),
+    );
+    render();
+    try {
+      const r = await left;
+      if (r instanceof Error) throw r;
+    } finally {
+      clearInterval(ka);
+      card.remove();
+    }
   }
 
   // solve every run from its anchors and show the review
@@ -949,7 +1563,7 @@ export class ScanWizard {
       const S = this.S, G = this._glow;
       const parts = [], ranges = [], infos = [], dropped = [];
       for (const p of G.plans) {
-        const anchors = p.plan.anchors.map((a, k) => ({ c: a.c, ...(G.res[p.key][k] || {}) }));
+        const anchors = S.glowReconsider(p.plan.anchors.map((a, k) => ({ c: a.c, ...(G.res[p.key][k] || {}) })));
         const sol = S.solveGlow(p.count, anchors);
         infos.push({ run: p.run, first: p.first, plan: p.plan, sol });
         if (!sol.ok) {
@@ -960,6 +1574,10 @@ export class ScanWizard {
         ranges.push({ run: p.run, first: p.first, count: p.count });
       }
       if (!parts.length) throw new Error("Not enough of the glow could be followed. Try a darker room, hold the phone steadier, point it at the glowing surfaces, or tap the glow when asked.");
+      if (this.multiAngles && this.mv) {
+        this._addGlowAngle(infos);
+        return this._go("angles");
+      }
       if (this.view === "side" && this.scans.front && this.scans.front.ranges.map((r) => r.run.id).join() !== ranges.map((r) => r.run.id).join()) {
         throw new Error(`The side scan found different runs from the front scan (missing: ${dropped.join(", ") || "none"}). Scan again so the same runs are followed.`);
       }
@@ -977,7 +1595,7 @@ export class ScanWizard {
       for (const i of infos) allA += i.plan.anchors.length;
       const world = S.toWorld(cat);
       this._remerge = true;
-      this.scans[this.view] = { glow: true, world, found: okA, total: allA, guessed, px: total, ranges, infos, dropped };
+      this.scans[this.view] = { glow: true, world, found: okA, total: allA, guessed, px: total, ranges, infos, dropped, warn: { sat: G.sat.size, clip: G.clip.size } };
       this._go("review");
     } catch (e) {
       if (this.closed) return;
@@ -1344,6 +1962,27 @@ export class ScanWizard {
     mv.result = null;
   }
 
+  // a glow scan's spots as one more view: the middle pixel of each spot that was found (or tapped) -> where its glow was
+  _addGlowAngle(infos) {
+    const G = this._glow, points = new Map();
+    let found = 0;
+    for (const inf of infos) {
+      if (!inf.sol?.anchors) continue;
+      inf.sol.anchors.forEach((a) => {
+        if (a.status !== "ok") return;
+        points.set(inf.first - this.base + Math.round(a.c), [a.x, a.y]);
+        found++;
+      });
+    }
+    const view = { width: G.size?.W, height: G.size?.H, points, orientation: this._orientAtScan || undefined, found, glow: true };
+    const mv = this.mv;
+    if (mv.redo >= 0) {
+      mv.views[mv.redo] = view;
+      mv.redo = -1;
+    } else mv.views.push(view);
+    mv.result = null;
+  }
+
   // a single front scan becomes the first angle of a several-angle scan
   async _toMulti() {
     const f = this.scans.front;
@@ -1351,7 +1990,7 @@ export class ScanWizard {
     const points = new Map();
     f.res.points.forEach((p, i) => p && points.set(i, [p[0], p[1]]));
     this.multiAngles = true;
-    this.mv = { views: [{ width: f.res.w, height: f.res.h, points, orientation: f.orient || undefined, found: f.found }], redo: -1, entry: this.entry, part: this.part, result: null };
+    this.mv = { views: [{ width: f.res.w, height: f.res.h, points, orientation: f.orient || undefined, found: f.found }], redo: -1, entry: this.entry, part: this._selKey(), method: "point", result: null };
     this.scans = {};
     this.pos = null;
     this._go("aim");
@@ -1365,6 +2004,13 @@ export class ScanWizard {
   // where to go for angle number k+1
   _angleHint(k) {
     const r = this.mv?.result;
+    if (this.mv?.method === "glow") {
+      // indirect strips: it is the glow patches that must be shared between angles, not the strips
+      if (r && r.ok && r.views.length >= k && r.views.slice(0, k).some((v) => !v.ok)) return "The last angle didn't join up with the others. Go back to about where you stood before, with the same glowing floor, counter and ceiling patches in view, and scan again.";
+      if (k === 1) return "Take a few steps to the left, about a quarter of the way round the island, and keep the same glowing surfaces in view. Don't zoom; hold the phone at the same height.";
+      if (k === 2) return "Go back to the front and walk a few steps to the right the same way, keeping the glowing floor and ceiling patches in view.";
+      return "Carry on round the island, or to whichever side you've covered less, a few steps further each time. Keep the glow of every ticked run in view.";
+    }
     if (r && r.ok && r.views.length >= k) {
       if (r.views.slice(0, k).some((v) => !v.ok)) return "The last angle didn't join up with the others. Stand about 20 degrees closer to your earlier spots, where the same lights are still in view, and scan again.";
       const az = this._azimuths(r).filter((a) => a !== null);
@@ -1375,9 +2021,13 @@ export class ScanWizard {
     return k === 1 ? "Move about 45 degrees to the left of where you stood, keep the lights in view, and scan again." : k === 2 ? "Now go back to the front and move about 45 degrees to the right, then scan again." : "Move about 45 degrees further round, on whichever side you've covered less, and scan again.";
   }
 
-  // pixel indexes (of the scan's code) that belong to the runs being scanned
+  // pixel indexes (of the scan's code) that belong to the runs being scanned; for a glow scan, the middle pixel of every spot
   _scanIdx() {
     const out = [];
+    if (this.mv?.method === "glow") {
+      for (const p of this._glowPlans()) for (const a of p.plan.anchors) out.push(p.first - this.base + Math.round(a.c));
+      return out;
+    }
     for (const r of this._ranges()) for (let i = 0; i < r.count; i++) out.push(r.first - this.base + i);
     return out;
   }
@@ -1387,7 +2037,9 @@ export class ScanWizard {
     const mv = this.mv;
     if (mv.result) return mv.result;
     await sleep(40);
-    const res = this.mods.multiview.solveMultiView(mv.views, { n: this.N, fovDeg: 65 });
+    // runs keep the string prior and gap filling inside each strip; glow views get the looser glow tolerances
+    const runs = this._ranges().map((r) => [r.first - this.base, r.count]).filter(([s, c]) => s >= 0 && c > 0);
+    const res = this.mods.multiview.solveMultiView(mv.views, { n: this.N, fovDeg: 65, runs, glow: mv.method === "glow" || undefined });
     mv.result = res;
     return res;
   }
@@ -1410,11 +2062,12 @@ export class ScanWizard {
       stats.append(s);
     };
     const total = idx.length;
-    stat(two, `of ${total} bulbs seen in 2+ views`, K > 1 && two < total * 0.5);
+    const what = mv.method === "glow" ? "glow spots" : "bulbs";
+    stat(two, `of ${total} ${what} seen in 2+ views`, K > 1 && two < total * 0.5);
     stat(one, "seen in at least one view");
     stat(K, "angles so far");
     b.append(stats);
-    b.append(this._el("p", "lead", K > 1 ? `${two} of ${total} bulbs seen in 2+ views. Bulbs seen from two angles or more get a true 3D place; the others are placed along the string.` : "The first angle is done. Scan again from a different spot so each bulb is seen from at least two."));
+    b.append(this._el("p", "lead", K > 1 ? `${two} of ${total} ${what} seen in 2+ views. Those seen from two angles or more get a true 3D place; the others are placed along the strip.` : `The first angle is done. Scan again from a different spot so each ${mv.method === "glow" ? "glow spot" : "bulb"} is seen from at least two.`));
     const box = this._el("div", "box");
     box.setAttribute("role", "status");
     const guide = this._el("strong", "", K >= 6 ? "That's plenty of angles. Tap Finish." : this._angleHint(K));
@@ -1528,7 +2181,8 @@ export class ScanWizard {
       const res = await this._solveViews();
       if (this.closed || this._decodeCancel) return;
       if (!res.ok) throw new Error(res.error);
-      const ranges = this._ranges();
+      let ranges = this._ranges();
+      if (mv.method === "glow") return this._finishGlowMulti(res, ranges);
       const total = ranges.reduce((a, r) => a + r.count, 0);
       const pos = new Float32Array(total * 3), est = new Uint8Array(total);
       let o = 0, found = 0;
@@ -1559,6 +2213,50 @@ export class ScanWizard {
       box.append(this._el("strong", "", "Couldn't work out the 3D positions"), this._el("div", "", e.message || "Something went wrong."));
       this.body.prepend(box);
     }
+  }
+
+  // several-angle glow scan: each run's spots that got a 3D place (seen from 2+ angles) carry the run; the pixels between are placed on
+  // the lines between them. A run with fewer than two placed spots is left out (it keeps its old place).
+  _finishGlowMulti(res, ranges) {
+    const mv = this.mv, plans = this._glowPlans();
+    const keep = [], parts = [], dropped = [];
+    let found = 0, allA = 0;
+    for (const r of ranges) {
+      const p = plans.find((q) => q.key === r.run.id);
+      if (!p) continue;
+      allA += p.plan.anchors.length;
+      const known = [];
+      for (const a of p.plan.anchors) {
+        const i = r.first - this.base + Math.round(a.c);
+        if (i < 0 || i >= res.est.length || res.est[i]) continue;
+        known.push({ c: Math.round(a.c), p: [res.pos[3 * i], res.pos[3 * i + 1], res.pos[3 * i + 2]] });
+      }
+      const sol = this.S.glowRun3D(r.count, known);
+      if (!sol) {
+        dropped.push(r.run.name);
+        continue;
+      }
+      keep.push(r);
+      parts.push(sol);
+      found += sol.found;
+    }
+    if (found < 3 || !parts.length) throw new Error("Too few glow spots were seen from two angles. Keep the same glowing surfaces in view from each spot and scan again.");
+    const total = parts.reduce((a, s) => a + s.est.length, 0);
+    const pos = new Float32Array(total * 3), est = new Uint8Array(total);
+    let o = 0;
+    for (const s of parts) {
+      pos.set(s.pos, o * 3);
+      est.set(s.est, o);
+      o += s.est.length;
+    }
+    this.pos = pos;
+    this.est = est;
+    this.fitInfo = null;
+    this._remerge = false;
+    this.edited = false;
+    const guessed = est.reduce((a, v) => a + v, 0);
+    this.scans = { front: { multi: true, glow: true, found, total: allA, guessed, px: total, ranges: keep, dropped, solve: res, angles: mv.views.length } };
+    this._go("review");
   }
 
   // ---- review ------------------------------------------------------------------------------------------------------------------------------
@@ -1611,6 +2309,11 @@ export class ScanWizard {
       b.append(w);
       if (!f.glow) b.append(this._glowOffer("If these lights are hidden (under cabinets, behind covers), the camera only sees a glow, not dots. The Glow scan follows that glow instead."));
     }
+    if (f.warn && (f.warn.sat || f.warn.clip)) {
+      const w = this._el("div", "muted");
+      w.textContent = [f.warn.sat ? `${f.warn.sat} spot${f.warn.sat === 1 ? " was" : "s were"} very bright, so the camera may have over-exposed ${f.warn.sat === 1 ? "it" : "them"} (a dimmer room or a step back helps).` : "", f.warn.clip ? `${f.warn.clip} glow${f.warn.clip === 1 ? " ran" : "s ran"} off the edge of the picture, so ${f.warn.clip === 1 ? "its" : "their"} middle may be a little off (keep all the glow in view next time).` : ""].filter(Boolean).join(" ");
+      b.append(w);
+    }
     if (f.dropped?.length) {
       const w = this._el("div", "box mp-banner");
       w.setAttribute("role", "alert");
@@ -1635,7 +2338,7 @@ export class ScanWizard {
     const hint = this._el("div", "muted");
     hint.setAttribute("aria-live", "polite");
     b.append(wrap, hint);
-    if (f.glow) b.append(this._chips(f));
+    if (f.glow && f.infos) b.append(this._chips(f));
     // viewer data
     const n = this.pos.length / 3;
     const base = new Uint8ClampedArray(n * 3);
@@ -1713,17 +2416,40 @@ export class ScanWizard {
       }));
       if (!f.glow && f.res?.points && this.mods.multiview) this.foot.append(this._btn("Scan from several angles", "btn alt", () => this._toMulti()));
     }
-    const save = this._btn("Save positions", "btn", async () => {
-      save.disabled = true;
+    // which runs to keep: a run that came out badly can be left out, saved later, and scanned again on its own
+    const keep = new Set(f.ranges.map((r) => r.run.id));
+    if (f.ranges.length > 1) {
+      const kb = this._el("div", "scw-card");
+      kb.append(this._el("h3", "", "Runs to save"));
+      for (const r of f.ranges) {
+        const l = this._el("label", "scw-runl");
+        const cb = this._el("input");
+        cb.type = "checkbox";
+        cb.checked = true;
+        cb.onchange = () => {
+          cb.checked ? keep.add(r.run.id) : keep.delete(r.run.id);
+          save.disabled = again.disabled = !keep.size;
+        };
+        l.append(cb, this._el("span", "", r.run.name));
+        kb.append(l);
+      }
+      kb.append(this._el("div", "muted", "Untick a run that looks wrong, save the rest, then scan that run again on its own. The runs you save stay as they are."));
+      b.insertBefore(kb, err);
+    }
+    const doSave = async (again) => {
+      save.disabled = again.disabled = true;
       err.hidden = true;
-      const msg = await this._save();
-      save.disabled = false;
+      const msg = await this._save({ keep, again });
+      save.disabled = again.disabled = !keep.size;
       if (msg) {
         err.textContent = msg;
         err.hidden = false;
       }
-    }, ICON.save);
-    this.foot.append(save);
+    };
+    const save = this._btn(this._rounds?.length ? "Save and go to the next round" : "Save positions", "btn", () => doSave(false), ICON.save);
+    const again = this._btn("Save, then scan other runs", "btn alt", () => doSave(true));
+    again.hidden = f.ranges.length < 2 && this._entryRuns().length < 2;
+    this.foot.append(again, save);
     if (this.view === "side" && !hasSide) this.view = "front";
   }
 
@@ -1764,11 +2490,15 @@ export class ScanWizard {
     w.est[i] = 0;
   }
 
-  async _save() {
+  async _save(opts = {}) {
     const f = this.scans.front;
     const out = [];
     let o = 0;
     for (const r of f.ranges) {
+      if (opts.keep && !opts.keep.has(r.run.id)) {
+        o += r.count;
+        continue;
+      }
       const arr = new Array(r.count * 3);
       for (let i = 0; i < r.count; i++) {
         for (let k = 0; k < 3; k++) arr[i * 3 + k] = Math.max(0, Math.min(1000, Math.round(this.pos[(o + i) * 3 + k] * 1000)));
@@ -1778,6 +2508,23 @@ export class ScanWizard {
     }
     const msg = await this.o.onSave({ entry_id: this.entry, runs: out, depth: !!this.scans.side || !!f.multi });
     if (msg) return msg;
+    for (const r of out) this._saved.add(r.id);
+    if (this._rounds?.length && !opts.again) {
+      this._beginRound(); // the next method's round
+      return "";
+    }
+    if (opts.again) {
+      // back to the first screen with whatever has not been saved yet ticked
+      const left = this._entryRuns().filter((r) => !this._saved.has(r.id)).map((r) => r.id);
+      this._rounds = null;
+      this.method = null;
+      this.sel = left.length ? left : null;
+      this.mv = null;
+      this.scans = {};
+      this.pos = null;
+      this._go("pick");
+      return "";
+    }
     this.close();
     return "";
   }

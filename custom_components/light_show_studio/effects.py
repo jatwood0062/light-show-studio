@@ -5,6 +5,7 @@ STILL effects are drawn once; the rest are animated by the coordinator.
 from __future__ import annotations
 
 import colorsys
+import functools
 import math
 import random
 
@@ -14,6 +15,20 @@ RED, GREEN, WHITE, BLACK = (255, 0, 0), (0, 255, 0), (255, 255, 255), (0, 0, 0)
 ORANGE, PURPLE, WARM = (255, 80, 0), (140, 0, 255), (255, 150, 40)
 BLUE, PINK, GOLD = (0, 40, 255), (255, 20, 110), (255, 140, 0)
 PASTELS = [(255, 120, 170), (120, 200, 255), (255, 220, 90), (150, 255, 140), (190, 130, 255)]
+
+# A warm white for RGB-only bulbs (about 3000 K: the red, green and blue ratio of that colour temperature). Pure
+# (255, 255, 255) is a cold, blue-green white on RGB LEDs; use this wherever a palette means "warm white". Keep
+# (255, 255, 255) for lights with a real white channel.
+WARM_WHITE = (255, 176, 100)
+
+# Colour sets that patterns.py and the effects below both use, defined once. Where the two files had their own
+# versions of the same name they differ visibly, so both are kept here under explicit names and nothing changes
+# on screen: CLASSIC and PASTELS are shared as they were; Halloween and Gold & White exist as the string-effect
+# set (two colours; soft gold and a soft white) and the C9 pattern set (three colours; deeper orange and a warm cream).
+CLASSIC = [RED, GREEN, (0, 60, 255), ORANGE, (255, 0, 120)]  # "Classic Multicolor" pattern == "Classic Multicolour" effect
+HALLOWEEN_EFFECT = [ORANGE, PURPLE]
+HALLOWEEN_C9 = [(255, 70, 0), PURPLE, (40, 255, 0)]
+GOLD_WHITE_C9 = [(255, 140, 0), (255, 200, 140)]
 
 
 def _hsv(h: float, s: float = 1.0, v: float = 1.0) -> Colour:
@@ -78,16 +93,71 @@ def _breathe(t, n, base):
     return [_scale(base, 0.15 + 0.85 * (0.5 + 0.5 * math.sin(t * 2)))] * n
 
 
-_twinkle_state: dict[int, list[float]] = {}
+def event_window(i: int, k: int, seed: int, slot: float, prob: float, dmin: float, dmax: float):
+    """(start, duration, peak 0.55-1, hash 0-1) in seconds from the start of slot k for bulb i, or None when the
+    slot holds no event. Never longer than the slot, so events never overlap."""
+    s = i + seed * 7919
+    if _hash(s, k * 4 + 1) >= prob:
+        return None
+    dur = min(slot, dmin + (dmax - dmin) * _hash(s, k * 4 + 2))
+    return (slot - dur) * _hash(s, k * 4 + 3), dur, 0.55 + 0.45 * _hash(s, k * 4 + 4), _hash(s, k * 4 + 5)
+
+
+def event_at(t: float, i: int, seed: int, slot: float, prob: float, dmin: float, dmax: float):
+    """Random one-off events for bulb i, as a pure function of wall time t (nothing is remembered, so a late or
+    skipped frame just lands on the right state, and drawing more or fewer frames changes nothing).
+
+    Each bulb has its own clock, offset at random, cut into `slot`-second slots. A slot holds an event with
+    probability `prob`; the event lasts a random dmin..dmax seconds and starts at a random moment inside the slot,
+    with a random peak. Gaps between a bulb's events are therefore irregular (about slot / prob apart on average)
+    and bulbs never line up. Returns (progress 0-1 through the event, peak, extra hash) or None when resting."""
+    x = t / slot + _hash(i, seed)
+    k = math.floor(x)
+    w = event_window(i, k, seed, slot, prob, dmin, dmax)
+    if w is None:
+        return None
+    start, dur, peak, h = w
+    s = (x - k) * slot - start
+    return (s / dur, peak, h) if 0.0 <= s < dur else None
+
+
+def twinkle_level(t: float, i: int, seed: int = 0) -> float:
+    """0-1: how far bulb i is brightened above its resting level right now. Few bulbs (about one in five) are
+    swelling at any moment, each for 0.7-1.5 s at a random time; the rest hold still."""
+    ev = event_at(t, i, seed + 1, 3.0, 0.6, 0.7, 1.5)
+    return 0.0 if ev is None else ev[1] * math.sin(math.pi * ev[0]) ** 2
+
+
+def sparkle_level(t: float, i: int, seed: int = 0) -> float:
+    """0-1: a white glint on bulb i: pops up almost at once, then fades over 0.15-0.45 s. About one bulb in ten
+    at a time, at random moments."""
+    ev = event_at(t, i, seed + 2, 1.2, 0.4, 0.15, 0.45)
+    if ev is None:
+        return 0.0
+    u, peak, _ = ev
+    return (0.7 + 0.3 * peak) * (u / 0.1 if u < 0.1 else (1 - (u - 0.1) / 0.9) ** 2)
+
+
+TWINKLE_FLOOR = 0.32  # bulbs rest here and swell up to full
 
 
 def _twinkle(t, n, base):
-    phases = _twinkle_state.setdefault(n, [random.random() * 6.28 for _ in range(n)])
-    return [_scale(base, 0.25 + 0.75 * max(0.0, math.sin(t * 1.7 + p)) ** 3) for p in phases]
+    return [_scale(base, TWINKLE_FLOOR + (1 - TWINKLE_FLOOR) * twinkle_level(t, i, 5)) for i in range(n)]
 
 
 def _fire(t, n, base):
-    return [_hsv(0.02 + random.random() * 0.06, 1, 0.55 + random.random() * 0.45) for _ in range(n)]
+    """Flames: the same orange-red flicker as ever, but each bulb follows smooth noise in time (and a bit of noise
+    along the string, so flames seem to lick upward) instead of a fresh random number every frame. A pure function
+    of t: the same t always gives the same frame, however often frames are drawn."""
+    out = []
+    for i in range(n):
+        off = _hash(i, 91) * 997.0
+        heat = 0.6 * _vnoise(t * 8.0 + off, 92) + 0.4 * _vnoise(i * 0.45 - t * 4.0, 93)
+        tone = _vnoise(t * 5.0 + off * 0.5, 94)
+        heat = max(0.0, min(1.0, (heat - 0.5) * 1.6 + 0.5))
+        tone = max(0.0, min(1.0, (tone - 0.5) * 1.6 + 0.5))
+        out.append(_hsv(0.02 + tone * 0.06, 1, 0.55 + heat * 0.45))
+    return out
 
 
 def _ocean(t, n, base):
@@ -134,6 +204,9 @@ def _hash(a: int, b: int = 0) -> float:
     return x / 4294967296.0
 
 
+hash01 = _hash  # public name for other modules
+
+
 def _rgb(r: float, g: float, b: float) -> Colour:
     return (max(0, min(255, int(r))), max(0, min(255, int(g))), max(0, min(255, int(b))))
 
@@ -163,19 +236,17 @@ def _particles(t: float, n: int, speed: float, spacing: float, seed: int, margin
         yield (c + h) * spacing + shift, _hash(c, seed + 101)
 
 
-def _twinkler(colour, period: float, prob: float, floor: float, seed: int):
-    """Each bulb independently fades in and out on its own clock; `colour(r, v)` picks the shade."""
+def _twinkler(colour, slot: float, prob: float, floor: float, seed: int, dmin: float = 0.6, dmax: float = 1.8):
+    """Each bulb keeps its own colour and, at random moments, swells up from `floor` and settles again;
+    `colour(r, v)` picks the shade from the bulb's fixed hash r and the level v. Only a few bulbs at once."""
     def fx(t, n, base):
         out = []
         for i in range(n):
-            x = t / period + _hash(i, seed)
-            k = int(x)
-            u = x - k
-            r = _hash(i, k * 131 + seed + 5)
             v = floor
-            if _hash(i, k * 131 + seed + 9) < prob:
-                v = floor + (1 - floor) * math.sin(math.pi * u) ** 2
-            out.append(colour(r, v))
+            ev = event_at(t, i, seed, slot, prob, dmin, dmax)
+            if ev is not None:
+                v = floor + (1 - floor) * ev[1] * math.sin(math.pi * ev[0]) ** 2
+            out.append(colour(_hash(i, seed + 5), v))
         return out
     return fx
 
@@ -199,26 +270,19 @@ def _snowy(t, n, base):
     return [(120, 190, 255) if _hash(i, 3) < 0.12 else (235, 240, 255) for i in range(n)]
 
 
-_rainbow_twinkle = _twinkler(lambda r, v: _hsv(r, 1, v), 2.4, 0.4, 0.06, 11)
-_vintage_twinkle = _twinkler(lambda r, v: _scale(VINTAGE[int(r * len(VINTAGE))], 0.2 + 0.8 * v), 3.0, 0.5, 0.0, 23)
+_rainbow_twinkle = _twinkler(lambda r, v: _hsv(r, 1, v), 3.0, 0.6, 0.12, 11)
+_vintage_twinkle = _twinkler(lambda r, v: _scale(VINTAGE[int(r * len(VINTAGE))], 0.2 + 0.8 * v), 3.2, 0.6, 0.0, 23)
 _christmas_twinkle = _twinkler(
-    lambda r, v: _scale([RED, GREEN, GOLD_LIGHT][int(r * 3)], 0.12 + 0.88 * v), 2.2, 0.45, 0.0, 37)
+    lambda r, v: _scale([RED, GREEN, GOLD_LIGHT][int(r * 3)], 0.12 + 0.88 * v), 3.0, 0.6, 0.0, 37)
 
 
 def _sparkle(t, n, base):
-    """Base colour with quick white sparkles that pop and fade."""
-    rate = 10.0
-    slot = int(t * rate)
-    f = t * rate - slot
+    """Base colour with quick white glints that pop at random bulbs and moments, then fade."""
     dim = _scale(base, 0.75)
     out = []
     for i in range(n):
-        m = 0.0
-        if _hash(i, slot) < 0.05:
-            m = 1 - f * 0.6
-        elif _hash(i, slot - 1) < 0.05:
-            m = 0.4 * (1 - f)
-        out.append(_lerp(dim, WHITE, m) if m else dim)
+        m = sparkle_level(t, i, 7)
+        out.append(_lerp(dim, WHITE, m) if m > 0 else dim)
     return out
 
 
@@ -419,18 +483,335 @@ def _meteor_shower(t, n, base):
     return [_rgb(*p) for p in buf]
 
 
+# --- Palettes: gradient stops, sampled smoothly ------------------------------------------------------
+# Written from scratch: the OKLab matrices are Bjorn Ottosson's published ones (public domain).
+
+def _to_lin(v: int) -> float:
+    c = v / 255.0
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _from_lin(c: float) -> float:
+    c = max(0.0, min(1.0, c))
+    return 255.0 * (12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055)
+
+
+def _cbrt(x: float) -> float:
+    return math.copysign(abs(x) ** (1 / 3), x)
+
+
+def rgb_to_oklab(c: Colour) -> tuple[float, float, float]:
+    r, g, b = _to_lin(c[0]), _to_lin(c[1]), _to_lin(c[2])
+    l_ = _cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+    m_ = _cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+    s_ = _cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+    return (0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
+            1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
+            0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_)
+
+
+def oklab_to_rgb(lab: tuple[float, float, float]) -> Colour:
+    L, a, b = lab
+    l_, m_, s_ = L + 0.3963377774 * a + 0.2158037573 * b, L - 0.1055613458 * a - 0.0638541728 * b, \
+        L - 0.0894841775 * a - 1.2914855480 * b
+    l, m, s = l_ ** 3, m_ ** 3, s_ ** 3
+    return (int(round(_from_lin(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s))),
+            int(round(_from_lin(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s))),
+            int(round(_from_lin(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s))))
+
+
+class Palette:
+    """A colour gradient: stops of (position 0-1, RGB), blended in OKLab (smooth, even brightness) or plain RGB
+    ("linear"). `at(x)` gives the colour at x: with wrap the gradient loops (the last stop blends back into the
+    first), otherwise x is clamped to 0-1. Immutable once built; sampling is a table lookup."""
+
+    SIZE = 512
+    __slots__ = ("stops", "mode", "wrap", "_lut")
+
+    def __init__(self, stops, mode: str = "oklab", wrap: bool = True) -> None:
+        if mode not in ("oklab", "linear"):
+            raise ValueError("mode must be 'oklab' or 'linear'")
+        pts = sorted(((max(0.0, min(1.0, float(p))), (int(c[0]), int(c[1]), int(c[2]))) for p, c in stops),
+                     key=lambda s: s[0])
+        self.stops = tuple(pts) if pts else ((0.0, WHITE),)
+        self.mode, self.wrap = mode, bool(wrap)
+        self._lut = self._build()
+
+    @classmethod
+    def even(cls, colours, mode: str = "oklab", wrap: bool = True) -> "Palette":
+        """Colours spread evenly (a looping palette puts them at k/K so the loop closes cleanly)."""
+        cols = list(colours) or [WHITE]
+        k = len(cols)
+        step = 1.0 / (k if wrap else max(1, k - 1))
+        return cls([(i * step, c) for i, c in enumerate(cols)], mode, wrap)
+
+    def _build(self) -> tuple[Colour, ...]:
+        st, wrap, size = self.stops, self.wrap, self.SIZE
+        conv = rgb_to_oklab if self.mode == "oklab" else (lambda c: (float(c[0]), float(c[1]), float(c[2])))
+        back = oklab_to_rgb if self.mode == "oklab" else (lambda v: _rgb(round(v[0]), round(v[1]), round(v[2])))
+        labs = [conv(c) for _, c in st]
+        pos = [p for p, _ in st]
+        last = len(st) - 1
+        lut = []
+        for k in range(size):
+            x = k / size if wrap else k / (size - 1)
+            if x <= pos[0] and not wrap:
+                lut.append(st[0][1])
+                continue
+            if x >= pos[last] and not wrap:
+                lut.append(st[last][1])
+                continue
+            if x < pos[0]:  # wrap: from the last stop round to the first
+                a, b, pa, pb = last, 0, pos[last] - 1.0, pos[0]
+            elif x >= pos[last]:
+                a, b, pa, pb = last, 0, pos[last], pos[0] + 1.0
+            else:
+                a = 0
+                while pos[a + 1] <= x:
+                    a += 1
+                b, pa, pb = a + 1, pos[a], pos[a + 1]
+            f = (x - pa) / (pb - pa) if pb > pa else 0.0
+            la, lb = labs[a], labs[b]
+            lut.append(back((la[0] + (lb[0] - la[0]) * f, la[1] + (lb[1] - la[1]) * f, la[2] + (lb[2] - la[2]) * f)))
+        return tuple(lut)
+
+    def at(self, x: float, wrap: bool | None = None) -> Colour:
+        size = self.SIZE
+        if self.wrap if wrap is None else wrap:
+            return self._lut[int((x % 1.0) * size) % size]
+        return self._lut[int(max(0.0, min(1.0, x)) * (size - 1) + 0.5)]
+
+
+@functools.lru_cache(maxsize=64)
+def palette_for(colours: tuple, mode: str = "oklab", wrap: bool = True) -> Palette:
+    """A looping palette of evenly spaced colours (cached: building one costs about a millisecond)."""
+    return Palette.even(colours, mode, wrap)
+
+
+# Gradients the effect list uses (the pattern effects use the pattern's own colours instead).
+GRAD_DUSK = Palette([(0.0, (50, 0, 110)), (0.28, (255, 30, 100)), (0.55, (255, 110, 0)), (0.8, (255, 200, 50))])
+GRAD_PARTY = Palette.even([(255, 0, 140), (120, 0, 255), (0, 120, 255), (0, 230, 200), (255, 220, 0)])
+GRAD_DRIFT = Palette.even([(0, 60, 160), (0, 180, 200), (30, 220, 120), (90, 60, 240)])
+CONFETTI_COLOURS = [(255, 40, 70), (255, 150, 0), (255, 230, 30), (30, 220, 80), (0, 190, 255), (150, 70, 255), (255, 60, 200)]
+
+
+# --- Smooth noise (deterministic: a hash at the lattice points, no state) ----------------------------------
+def _vnoise(x: float, seed: int = 0) -> float:
+    """Smooth 1-D value noise in [0, 1)."""
+    i = math.floor(x)
+    f = x - i
+    u = f * f * (3 - 2 * f)
+    a = _hash(i, seed)
+    return a + (_hash(i + 1, seed) - a) * u
+
+
+def _vnoise2(x: float, y: float, seed: int = 0) -> float:
+    """Smooth 2-D value noise in [0, 1)."""
+    ix, iy = math.floor(x), math.floor(y)
+    fx, fy = x - ix, y - iy
+    ux, uy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
+    s = seed + 31 * iy
+    a, b = _hash(ix, s), _hash(ix + 1, s)
+    c, d = _hash(ix, s + 31), _hash(ix + 1, s + 31)
+    top = a + (b - a) * ux
+    return top + (c + (d - c) * ux - top) * uy
+
+
+def _smooth(x: float) -> float:
+    x = max(0.0, min(1.0, x))
+    return x * x * (3 - 2 * x)
+
+
+# --- Palette effects: each is (t, n, palette ...) -> n colours, a pure function of t ---------------------------
+def gradient_flow(t: float, n: int, pal: Palette, speed: float = 0.07) -> list[Colour]:
+    """The palette as a gradient scrolling along the string (about 36 bulbs per loop on 50 bulbs, longer on long
+    strips). `speed` is loops per second."""
+    k = 1.0 / (36.0 * _unit(n))
+    shift = t * speed
+    at = pal.at
+    return [at(i * k - shift) for i in range(n)]
+
+
+def plasma(t: float, n: int, pal: Palette) -> list[Colour]:
+    """A sine-sum plasma field, coloured through the palette: soft blobs of colour that swell and slide."""
+    u = _unit(n)
+    sin = math.sin
+    drift = t * 0.03
+    out = []
+    for i in range(n):
+        x = i / u
+        s = (sin(x * 0.21 + t * 0.9) + sin(x * 0.083 - t * 0.55 + 1.3) + sin(x * 0.047 + t * 0.31 + 2.1)
+             + sin(x * 0.06 + sin(x * 0.13 + t * 0.7) * 1.6 + t * 0.25))
+        out.append(pal.at(0.5 + 0.5 * s / 3.2 + drift))
+    return out
+
+
+def noise_drift(t: float, n: int, pal: Palette) -> list[Colour]:
+    """Colour drifting through the palette on slow, smooth value noise (two octaves), so patches of the palette
+    grow, slide and melt into each other."""
+    u = _unit(n)
+    out = []
+    for i in range(n):
+        x = i / u
+        v = 0.65 * _vnoise2(x / 9.0, t * 0.18, 201) + 0.35 * _vnoise2(x / 3.7 + 17.0, t * 0.31, 202)
+        out.append(pal.at((v - 0.5) * 1.7 + 0.5 + t * 0.012))
+    return out
+
+
+def storm_flash(t: float, n: int, dark: Colour, flash: Colour, seed: int = 0) -> list[Colour]:
+    """A dark, faintly rolling sky with lightning. Every 2.6 s slot may hold one strike (decided by a hash of the
+    slot number); a strike is 2-3 quick flickers, each lighting a stretch of the string around a point that
+    spreads outward, with a dimmer glow over the whole string. Nothing is remembered between frames."""
+    slot = 2.6
+    k = math.floor(t / slot)
+    out = None
+    w = event_window(0, k, seed + 900, slot, 0.7, 0.5, 1.6)
+    s = 0.0
+    if w is not None:
+        start, dur, peak, h = w
+        s = t - k * slot - start
+        if not 0.0 <= s < dur:
+            w = None
+    pulses = []
+    if w is not None:
+        n_pulses = 2 + int(_hash(k, seed + 905) * 2.0)  # 2 or 3
+        for j in range(n_pulses):
+            o = (0.0 if j == 0 else 0.12 + 0.55 * _hash(k, seed + 906 + j)) * dur
+            d = s - o
+            if d >= 0.0:
+                amp = (1.0 if j == 0 else 0.45 + 0.4 * _hash(k, seed + 910 + j)) * min(1.0, d / 0.02) * math.exp(-d / 0.17)
+                centre = (h + (0.0 if j == 0 else 0.12 * (_hash(k, seed + 914 + j) - 0.5))) * (n - 1)
+                reach = (0.12 + 0.88 * min(1.0, d / 0.25)) * 0.5 * max(1, n - 1) * (0.5 + 0.5 * peak)
+                pulses.append((amp * peak, centre, max(0.5, reach)))
+    glow = max((p[0] for p in pulses), default=0.0) * 0.2
+    out = []
+    for i in range(n):
+        sky = 0.75 + 0.5 * _vnoise2(i / 6.0, t * 0.25, 221)
+        v = glow
+        for amp, centre, reach in pulses:
+            d = abs(i - centre)
+            if d < reach:
+                v = max(v, amp * (1 - d / reach) ** 0.7)
+        base = (dark[0] * sky, dark[1] * sky, dark[2] * sky)
+        m = min(1.0, v)
+        out.append(_rgb(base[0] + (flash[0] - base[0]) * m, base[1] + (flash[1] - base[1]) * m,
+                        base[2] + (flash[2] - base[2]) * m))
+    return out
+
+
+def confetti(t: float, n: int, cols: list[Colour], bg: list[Colour] | None = None, seed: int = 0) -> list[Colour]:
+    """Colours that pop on random bulbs at random moments and fade away over about a second, over a dim backdrop
+    (`bg`, one colour per bulb, default near black). Each pop picks its own colour from `cols` (a rainbow hue when
+    `cols` is empty)."""
+    out = []
+    for i in range(n):
+        back = bg[i] if bg is not None else (2, 2, 6)
+        ev = event_at(t, i, seed + 301, 1.6, 0.45, 0.6, 1.3)
+        if ev is None:
+            out.append(back)
+            continue
+        u, peak, h = ev
+        v = peak * (u / 0.07 if u < 0.07 else (1 - (u - 0.07) / 0.93) ** 2)
+        c = cols[int(h * len(cols)) % len(cols)] if cols else _hsv(h)
+        out.append(_lerp(back, c, v))
+    return out
+
+
+def dissolve(t: float, n: int, base: list[Colour], seed: int = 0, period: float = 12.0) -> list[Colour]:
+    """Bulbs fill in at random moments until the string is full, hold, then drain away in another random order,
+    then rest dark before the next round. Each round (a `period`) shuffles the order again."""
+    cyc = math.floor(t / period)
+    q = t - cyc * period
+    fill, hold_end, drain = 4.5, 6.5, 4.5  # seconds: filling takes up to 4.5, draining runs 6.5 .. 11
+    out = []
+    for i in range(n):
+        a = _hash(i, cyc * 2 + seed + 401) * fill
+        d = hold_end + _hash(i, cyc * 2 + seed + 402) * drain
+        v = _smooth((q - a) / 0.4) * (1.0 - _smooth((q - d) / 0.4))
+        c = base[i]
+        out.append(_scale(c, 0.03 + 0.97 * v))
+    return out
+
+
+EMBER = (255, 40, 0)
+
+
+def sunrise_ramp(t: float, n: int, base: list[Colour], duration: float = 60.0, hold: float = 15.0) -> list[Colour]:
+    """A slow warm-up: from a dim ember glow through orange to the full colours over `duration` seconds, spreading
+    in from the start of the string, holding for `hold` seconds, dipping for 4 s and starting over."""
+    fall = 4.0
+    q = t % (duration + hold + fall)
+    if q < duration:
+        level = _smooth(q / duration)
+    elif q < duration + hold:
+        level = 1.0
+    else:
+        level = 1.0 - _smooth((q - duration - hold) / fall)
+    top = max(1, n - 1)
+    out = []
+    for i in range(n):
+        local = max(0.0, min(1.0, level * 1.35 - 0.35 * i / top))
+        warm = (1.0 - local) ** 1.5 * 0.85
+        c = _lerp(base[i], EMBER, warm)
+        out.append(_scale(c, 0.02 + 0.98 * local ** 1.8))
+    return out
+
+
+def lightest(cols: list[Colour]) -> Colour:
+    """The brightest colour of a list (white when the list is empty)."""
+    return max(cols, key=sum) if cols else WHITE
+
+
+def storm_colours(cols: list[Colour]) -> tuple[Colour, Colour]:
+    """(dark sky, flash) for a palette: the sky is the palette's average at about 6 per cent, the bolt its lightest
+    colour pulled 60 per cent towards white."""
+    if not cols:
+        return (3, 5, 14), (225, 232, 255)
+    k = len(cols)
+    avg = (sum(c[0] for c in cols) / k, sum(c[1] for c in cols) / k, sum(c[2] for c in cols) / k)
+    return _rgb(avg[0] * 0.06, avg[1] * 0.06, avg[2] * 0.06), _lerp(lightest(cols), WHITE, 0.6)
+
+
+def _gradient_flow_fx(t, n, base):
+    return gradient_flow(t, n, GRAD_DUSK)
+
+
+def _plasma_fx(t, n, base):
+    return plasma(t, n, GRAD_PARTY)
+
+
+def _noise_drift_fx(t, n, base):
+    return noise_drift(t, n, GRAD_DRIFT)
+
+
+def _storm_flash_fx(t, n, base):
+    return storm_flash(t, n, _scale(base, 0.05), _lerp(base, WHITE, 0.6), 0)
+
+
+def _confetti_fx(t, n, base):
+    return confetti(t, n, CONFETTI_COLOURS)
+
+
+def _dissolve_fx(t, n, base):
+    return dissolve(t, n, [base] * n)
+
+
+def _sunrise_fx(t, n, base):
+    return sunrise_ramp(t, n, [base] * n)
+
+
 STILL = {
     "Rainbow": _rainbow,
     "Christmas": _pattern([RED, GREEN]),
     "Candy Cane": _pattern([RED, WHITE], 2),
-    "Halloween": _pattern([ORANGE, PURPLE]),
+    "Halloween": _pattern(HALLOWEEN_EFFECT),
     "Valentine's": _pattern([RED, PINK, WHITE]),
     "St. Patrick's": _pattern([GREEN, WHITE, GOLD]),
     "Easter": _pattern(PASTELS),
     "July 4th": _pattern([RED, WHITE, BLUE]),
     "Thanksgiving": _pattern([ORANGE, GOLD, (180, 30, 0)]),
     "Hanukkah": _pattern([BLUE, WHITE]),
-    "Classic Multicolour": _pattern([RED, GREEN, (0, 60, 255), ORANGE, (255, 0, 120)]),
+    "Classic Multicolour": _pattern(CLASSIC),
     "Warm White": _pattern([WARM]),
     # old incandescent C9 colours: warm, a little soft
     "Vintage Rainbow": _pattern([(230, 18, 0), (255, 90, 0), (255, 170, 20), (20, 150, 25), (0, 50, 200), (230, 60, 90)]),
@@ -450,7 +831,7 @@ ANIMATED = {
     "Christmas Chase": _chase([RED, GREEN], 3, 4),
     "Candy Cane Chase": _chase([RED, WHITE], 2, 4),
     "Candy Cane Spin": _candy_spin,
-    "Halloween Chase": _chase([ORANGE, PURPLE], 3, 4),
+    "Halloween Chase": _chase(HALLOWEEN_EFFECT, 3, 4),
     "Valentine's Chase": _chase([RED, PINK, WHITE], 2, 4),
     "July 4th Chase": _chase([RED, WHITE, BLUE], 3, 4),
     "Fireworks": _fireworks,
@@ -478,6 +859,13 @@ ANIMATED = {
     "Peppermint Swirl": _peppermint_swirl,
     "Heartbeat": _heartbeat,
     "Meteor Shower": _meteor_shower,
+    "Gradient Flow": _gradient_flow_fx,
+    "Plasma": _plasma_fx,
+    "Noise Drift": _noise_drift_fx,
+    "Storm Flash": _storm_flash_fx,
+    "Confetti": _confetti_fx,
+    "Dissolve": _dissolve_fx,
+    "Sunrise Ramp": _sunrise_fx,
 }
 
 EFFECTS = {**STILL, **ANIMATED}

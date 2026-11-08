@@ -14,6 +14,8 @@ from .patterns import PATTERN
 from .hosts import valid_ipv4
 from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
 
+SCAN_RESEND = (0.05, 0.15)  # seconds after a scan frame at which it is sent once more (UDP may lose it)
+RESEND_AFTER = 1.0  # an unchanged frame is sent again after this long (a light may have dropped it)
 SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive the string
 
 
@@ -78,6 +80,7 @@ class C9Controller:
         self._scan_prev_show = False
         self._scan_powered = False
         self._scan_before: list[Colour] = []
+        self._scan_resend: list[asyncio.TimerHandle] = []  # re-sends of the last scan frame (UDP can lose one)
         # transitions: a brightness ramp (turn on / off, long fades) and a cross-fade from the previous look
         self.default_transition = 0.0  # seconds; the integration sets it from the `default_transition` option
         self.entry_id: str | None = None  # the config entry this light belongs to (set by the integration)
@@ -85,6 +88,11 @@ class C9Controller:
         self._now: Callable[[], float] = time.monotonic  # the clock fades use (tests replace it)
         self._ramp: fade.Ramp | None = None
         self._xf: fade.Xfade | None = None
+        self._wire: tuple[list[Colour], float] | None = None  # the last frame sent to the light, and when
+        self._wire_raw: tuple[bytes, int] | None = None  # ...and the sequencer bytes + brightness it was made from
+        self._zone_dirty = False  # a zone frame is waiting to be sent (several zones on one light make one send)
+        self._base_key: tuple | None = None
+        self._base: list[Colour] = []
         self._last_raw: list[Colour] = []  # the last effect frame before the brightness setting and any fade-in/out
         self._off_handle: asyncio.TimerHandle | None = None
 
@@ -133,6 +141,7 @@ class C9Controller:
 
     def _set_frame(self, frame: list[Colour]) -> None:
         self.frame = frame
+        self._wire = None  # something other than _send_frame is showing this: the next frame must go out
         for cb in list(self._frame_listeners):
             cb()
 
@@ -144,14 +153,26 @@ class C9Controller:
     # --- rendering -------------------------------------------------------
     def _base_frame(self, t: float) -> list[Colour]:
         if self.effect == PATTERN:
-            return patterns.render(self.pattern, self.pattern_effect, t, self.bulbs, self.entry_id)
+            base = None
+            if patterns.light_effect(self.pattern_effect) != patterns.CHASE:  # (Chase must see no base: it looks the same)
+                base = self._pattern_base()
+            return patterns.render(self.pattern, self.pattern_effect, t, self.bulbs, self.entry_id, base=base)
         if self.effect in EFFECTS:
             return EFFECTS[self.effect](t, self.bulbs, self.colour)
         if self.custom:
             return [tuple(v * lvl // 255 for v in c) for c, lvl in zip(self.bulb_colour, self.bulb_level)]
         return [self.colour] * self.bulbs
 
-    def _send_frame(self, frame: list[Colour], scaled: bool = True, fx: bool = False) -> None:
+    def _pattern_base(self) -> list[Colour]:
+        """The pattern's colours along the string, worked out once (again when a user pattern changes)."""
+        name = patterns.canonical(self.pattern) or patterns.DEFAULT_PATTERN
+        key = (name, self.bulbs, self.entry_id, patterns.user_epoch())
+        if self._base_key != key:
+            self._base_key, self._base = key, patterns.base_colours(name, self.bulbs, self.entry_id)
+        return self._base
+
+    def _send_frame(self, frame: list[Colour], scaled: bool = True, fx: bool = False,
+                    raw: tuple[bytes, int] | None = None) -> None:
         """Show a frame; `scaled` applies the brightness setting (a scan frame must not depend on it); `fx` is a
         frame of this light's own colour / effect / pattern, which turn on / off and look changes fade (sequencer,
         scan and zone frames are never faded here)."""
@@ -160,11 +181,17 @@ class C9Controller:
         if not self.segmented:
             self._send_whole(frame)
             return
-        if scaled:
+        if scaled and self.brightness != 255:
             f = self.brightness / 255
             frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
+        now = time.monotonic()
+        wire = self._wire
+        if wire is not None and now - wire[1] < RESEND_AFTER and wire[0] == frame:
+            self._wire_raw = raw  # nothing changed: don't send it again (a periodic resend covers a dropped one)
+            return
         self._hw_frame(frame)
         self._set_frame(frame)
+        self._wire, self._wire_raw = (frame, now), raw
 
     def _fade_frame(self, frame: list[Colour]) -> list[Colour]:
         now = self._now()
@@ -334,6 +361,7 @@ class C9Controller:
             self._hw_power(True)
             self._realtime = False  # the light may leave realtime mode while off
             self._whole = None
+            self._wire = None
             self.is_on = True
             powered = True
             await asyncio.sleep(0.3)
@@ -511,9 +539,20 @@ class C9Controller:
         if cur is None or not self.is_on:
             return False
         self._zones[zone_id] = (cur[0], slices)
-        if not self._identifying and not self._scanning:
+        if self._identifying or self._scanning:
+            return True
+        if len(self._zones) == 1:  # nothing to merge with: show it now (a painted pixel appears at once)
             self._send_frame(self._zone_frame())
+        elif not self._zone_dirty:
+            self._zone_dirty = True  # several zones on this light push in the same loop turn: one send for all
+            self.hass.loop.call_soon(self._send_zone)
         return True
+
+    def _send_zone(self) -> None:
+        if self._zone_dirty:
+            self._zone_dirty = False
+            if self._zones and self.is_on and not self._identifying and not self._scanning:
+                self._send_frame(self._zone_frame())
 
     def _zone_frame(self) -> list[Colour]:
         frame: list[Colour] = [(0, 0, 0)] * self.bulbs
@@ -573,12 +612,26 @@ class C9Controller:
         self._notify()
 
     def push_scan_frame(self, frame: list[Colour]) -> bool:
-        """Show one code frame, at exactly the colours given (not dimmed by the brightness setting).
-        False when the light isn't being scanned any more (a person took it, or it was turned off)."""
+        """Show one code frame, at exactly the colours given (not dimmed by the brightness setting). Lights take
+        frames over UDP, so the same frame is sent again after 50 and 150 ms (the last one wins; a lost or late
+        packet can't leave the previous code showing). False when the light isn't being scanned any more (a
+        person took it, or it was turned off)."""
         if not self._scanning or not self.is_on:
             return False
+        self._cancel_scan_resend()
         self._send_frame(frame, scaled=False)
+        if self.segmented:
+            self._scan_resend = [self.hass.loop.call_later(d, self._scan_resend_frame, frame) for d in SCAN_RESEND]
         return True
+
+    def _scan_resend_frame(self, frame: list[Colour]) -> None:
+        if self._scanning and self.is_on:
+            self._hw_frame(frame)
+
+    def _cancel_scan_resend(self) -> None:
+        for handle in self._scan_resend:
+            handle.cancel()
+        self._scan_resend = []
 
     @callback
     def release_scan(self, restore: bool = False) -> None:
@@ -587,6 +640,7 @@ class C9Controller:
         if not self._scanning:
             return
         self._scanning = False
+        self._cancel_scan_resend()
         if restore:
             self.show_mode = self._scan_prev_show
             before, self._scan_before = self._scan_before, []
@@ -618,6 +672,7 @@ class C9Controller:
             self.is_on = True
             self._realtime = False
             self._whole = None
+            self._wire = None
         self.show_mode, self.effect, self.custom = True, None, False
         self._ext_sent = 0.0
         self._notify()
@@ -636,14 +691,22 @@ class C9Controller:
             self._stop_animation()
             self._realtime = False  # re-arm realtime mode in case the string dropped it
             self._whole = None
+            self._wire = None
             self.effect, self.custom = None, False
             self._notify()
         self._ext_sent = now
-        self._send_frame([tuple(rgb[i : i + 3]) for i in range(0, self.bulbs * 3, 3)])
+        n = self.bulbs * 3
+        raw = (bytes(rgb[:n]), self.brightness)
+        wire = self._wire
+        if self.segmented and wire is not None and self._wire_raw == raw and now - wire[1] < RESEND_AFTER:
+            return  # the same bytes as the frame on the wire: don't even build the frame
+        data = raw[0].ljust(n, b"\0")
+        self._send_frame(list(zip(data[0::3], data[1::3], data[2::3])), raw=raw)
 
     def shutdown(self) -> None:
         self._zones.clear()
         self._scanning = False
+        self._cancel_scan_resend()
         self._stop_animation()
         if self._identify_task:  # don't let a flash wake a light that's being removed
             self._identify_task.cancel()
@@ -682,6 +745,7 @@ class C9Controller:
                 await asyncio.sleep(0.3)
         finally:
             self._whole = None
+            self._wire = None
             if not was_on:
                 self._hw_power(False)
                 self._realtime = False

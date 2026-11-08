@@ -506,6 +506,7 @@ class ShowPlayer:
         size = max((start + length for start, length, _ in subs), default=0)
         loop = asyncio.get_running_loop()
         t0, step = loop.time(), 1 / transitions.FPS
+        due = t0
         while (t := loop.time() - t0) < gap:
             k = t / gap
             if mode == transitions.FADE:
@@ -517,7 +518,11 @@ class ShowPlayer:
             else:
                 return
             receiver.show(buf)
-            await asyncio.sleep(step)
+            due += step  # frames on a fixed beat, not a fixed gap after the work
+            wait = due - loop.time()
+            if wait < -step:  # fell behind: don't rush to catch up
+                due, wait = loop.time(), 0.0
+            await asyncio.sleep(max(0.0, wait))
 
     @staticmethod
     def _first_frame(path: str) -> bytes | None:

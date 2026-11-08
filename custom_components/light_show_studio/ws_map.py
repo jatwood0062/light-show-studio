@@ -159,6 +159,13 @@ def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection
 
 
 # --- camera scan: the light shows a code sequence while the phone records it ----------------------
+SEQ = vol.All(int, vol.Range(min=0, max=2**53 - 1))  # the panel's own request counter, echoed back in the reply
+
+
+def _scan_reply(msg: dict[str, Any]) -> dict[str, Any]:
+    return {"seq": msg["seq"]} if "seq" in msg else {}
+
+
 @websocket_api.websocket_command({
     vol.Required("type"): "light_show_studio/map/scan/start",
     vol.Required("entry_id"): ENTRY_ID,
@@ -173,7 +180,7 @@ async def ws_scan_start(hass: HomeAssistant, connection: websocket_api.ActiveCon
     when this connection closes."""
     if not (manager := _manager(hass, connection, msg)):
         return
-    token = object()
+    token = connection  # the connection owns its scan: only it may drive or stop it
     entry_id = msg["entry_id"]
     connection.subscriptions[msg["id"]] = lambda: manager.scan_stop(entry_id, token)  # runs when the socket closes
     try:
@@ -183,13 +190,14 @@ async def ws_scan_start(hass: HomeAssistant, connection: websocket_api.ActiveCon
         connection.subscriptions.pop(msg["id"], None)
         connection.send_error(msg["id"], "failed", str(err))
         return
-    connection.send_result(msg["id"], result)  # {bulbs, frames, first, level, mode}
+    connection.send_result(msg["id"], result)  # {bulbs, frames, first, level, mode, hold_ms}
 
 
 @websocket_api.websocket_command({
     vol.Required("type"): "light_show_studio/map/scan/frame",
     vol.Required("entry_id"): ENTRY_ID,
     vol.Required("frame"): vol.All(int, vol.Range(min=0, max=scan_codes.frame_count(mapping.MAX_PIXELS) - 1)),
+    vol.Optional("seq"): SEQ,
 })
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -197,11 +205,11 @@ async def ws_scan_frame(hass: HomeAssistant, connection: websocket_api.ActiveCon
     if not (manager := _manager(hass, connection, msg)):
         return
     try:
-        await manager.async_scan_frame(msg["entry_id"], msg["frame"])
+        await manager.async_scan_frame(msg["entry_id"], msg["frame"], connection)
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "failed", str(err))
         return
-    connection.send_result(msg["id"], {})
+    connection.send_result(msg["id"], _scan_reply(msg))
 
 
 @websocket_api.websocket_command({
@@ -212,6 +220,7 @@ async def ws_scan_frame(hass: HomeAssistant, connection: websocket_api.ActiveCon
     vol.Optional("count"): vol.All(int, vol.Range(min=1, max=mapping.MAX_PIXELS)),
     vol.Optional("colour"): COLOUR,
     # ... or up to three at once, each in its own colour (red, green, blue by default)
+    vol.Optional("seq"): SEQ,
     vol.Optional("segments"): vol.All([{
         vol.Required("start"): vol.All(int, vol.Range(min=0, max=mapping.MAX_PIXELS - 1)),
         vol.Required("count"): vol.All(int, vol.Range(min=1, max=mapping.MAX_PIXELS)),
@@ -230,11 +239,11 @@ async def ws_scan_segment(hass: HomeAssistant, connection: websocket_api.ActiveC
         return
     try:
         await manager.async_scan_segment(msg["entry_id"], msg.get("start"), msg.get("count"), msg.get("colour"),
-                                         msg.get("segments"))
+                                         msg.get("segments"), connection)
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "failed", str(err))
         return
-    connection.send_result(msg["id"], {})
+    connection.send_result(msg["id"], _scan_reply(msg))
 
 
 @websocket_api.websocket_command({vol.Required("type"): "light_show_studio/map/scan/stop", vol.Required("entry_id"): ENTRY_ID})
@@ -242,5 +251,10 @@ async def ws_scan_segment(hass: HomeAssistant, connection: websocket_api.ActiveC
 @callback
 def ws_scan_stop(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     if manager := _manager(hass, connection, msg):
-        manager.scan_stop(msg["entry_id"])
+        try:
+            manager.check_scan_owner(msg["entry_id"], connection)
+        except HomeAssistantError as err:
+            connection.send_error(msg["id"], "failed", str(err))
+            return
+        manager.scan_stop(msg["entry_id"], connection)
         connection.send_result(msg["id"], {})

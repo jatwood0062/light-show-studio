@@ -240,6 +240,7 @@ async def test_zone_frames_are_not_dimmed_by_the_lights_own_fade(hass):
     ctl.default_transition = 3.0
     await ctl.async_claim_zone("z", "Z")  # takes the light with no fade of its own
     assert ctl.push_zone_frame("z", [(0, [RED] * 4)])
+    await asyncio.sleep(0)
     assert ctl.sent[-1] == [RED] * 4
 
 
@@ -359,3 +360,15 @@ async def test_stop_with_fade_zero_overrides_the_zones_own_fade(hass):
     await runner.async_start()
     runner.stop(fade_out=0)
     assert ctl.zone is None
+
+
+def test_scale_bytes_and_frames_match_int_of_v_times_g():
+    data = bytes(range(256)) * 3
+    for g in (0.0, 0.004, 0.3, 0.5, 0.999, 1.0, 1.5):
+        k = max(0.0, min(1.0, g))
+        want = bytes(int(v * k) for v in data) if k < 1 else data
+        assert fade.scale_bytes(data, g) == want
+        frame = [(10, 200, 255), (0, 1, 2)]
+        if 0 < g < 1:
+            assert fade.scale_frame(frame, g) == [(int(r * g), int(gr * g), int(b * g)) for r, gr, b in frame]
+    assert fade.scale_table(0.5) is fade.scale_table(0.5)  # cached

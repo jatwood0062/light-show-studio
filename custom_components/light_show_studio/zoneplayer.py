@@ -9,16 +9,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable, Collection, Coroutine
 from typing import Any, Protocol
 
 from . import fade, patterns
-from .const import ZONE_FPS, ZONE_FPS_LARGE, ZONE_LARGE
+from .const import WHOLE_LIGHT_FPS, ZONE_FPS, ZONE_FPS_LARGE, ZONE_LARGE
 from .mapped_patterns import ZonePlan
 
 _LOGGER = logging.getLogger(__name__)
+HANDOVER_WINDOW = 5.0  # a runner replacing one of the same zone within this many seconds carries on its clock
+_HANDOVER: dict[str, tuple[float, float]] = {}  # zone id -> (zone clock, when it was handed over)
 STILL_RESEND = 1.0  # a Steady zone is sent again this often, in case a light dropped the frame
+
+
+def send_divisor(ctl: object, zone_fps: float) -> int:
+    """Send to a light only every k-th zone frame, so a light that draws slower than the zone gets evenly
+    spaced frames (not a stale or uneven one from its own limiter). 1 when it keeps up."""
+    fps = getattr(ctl, "max_fps", None)
+    if not isinstance(fps, (int, float)) or isinstance(fps, bool) or fps <= 0:
+        fps = WHOLE_LIGHT_FPS if getattr(ctl, "segmented", True) is False else None
+    if fps is None:
+        return 1
+    return max(1, math.ceil(zone_fps / fps - 0.1))  # a little slack: 25 fps to a 12 fps strip is every 2nd
 
 
 class ZoneLight(Protocol):
@@ -45,12 +59,17 @@ class ZoneRunner:
         self._task: asyncio.Future | None = None
         self._ended = False
         self._t = 0.0  # the zone's clock
+        taken = _HANDOVER.pop(self.zone_id, None)
+        if taken is not None and time.monotonic() - taken[1] <= HANDOVER_WINDOW:
+            self._t = taken[0]  # restarted (map edit, pattern edit, new look): a chase carries on, it doesn't start over
         self._clock = clock  # what fades measure time with (tests replace it)
         self.fade_out = fade.clean_seconds(fade_out)  # seconds the lights fade over when the zone is stopped
         self._ramp: fade.Ramp | None = fade.Ramp(0.0, 1.0, fade.clean_seconds(fade_in), clock()) if fade_in > 0 else None
         self._wake: asyncio.Event | None = None  # set to cut a long sleep short
         self._leaving = False  # fading out; the run loop ends the zone when the fade is done
         self.interval = 1 / (ZONE_FPS_LARGE if plan.n > ZONE_LARGE else ZONE_FPS)
+        self._frames = 0  # frames rendered so far, for the per-light send divisor
+        self._divisor: dict[str, int] = {}
 
     @property
     def running(self) -> bool:
@@ -79,7 +98,7 @@ class ZoneRunner:
         if not self._ended:
             self._claimed[entry] = ctl
             if show_now:  # a light that joins late shows the current frame at once, not at the next (maybe 1 s away)
-                self._tick(self._t)
+                self._tick(self._t, force=True)
 
     def _rejoin(self, entry: str, ctl: ZoneLight) -> None:
         if entry not in self._claiming:
@@ -142,7 +161,9 @@ class ZoneRunner:
     def _ramping(self) -> bool:
         return self._ramp is not None and not self._ramp.done(self._clock())
 
-    def _tick(self, t: float) -> None:
+    def _tick(self, t: float, force: bool = False) -> None:
+        if not force:
+            self._frames += 1
         by_light: dict[str, list[tuple[int, list[Any]]]] = {}
         frame = self.plan.render(t)
         if self._ramp is not None and (gain := self._gain()) < 1:
@@ -159,9 +180,17 @@ class ZoneRunner:
             if self._claimed.get(entry) is not ctl:
                 self._rejoin(entry, ctl)
                 continue
+            if not force and self.plan.animated and (self._frames - 1) % self._send_every(entry, ctl):
+                continue  # this light draws slower than the zone: it gets every k-th frame
             if not ctl.push_zone_frame(self.zone_id, slices):
                 self._dropped.add(entry)
                 self._claimed.pop(entry, None)
+
+    def _send_every(self, entry: str, ctl: ZoneLight) -> int:
+        k = self._divisor.get(entry)
+        if k is None:
+            k = self._divisor[entry] = send_divisor(ctl, 1 / self.interval)
+        return k
 
     def stop(self, restore: bool = True, keep: Collection[str] = (), fade_out: float | None = None) -> None:
         """End the zone. Lights go back to what they showed before (restore), except those in `keep`,
@@ -175,6 +204,8 @@ class ZoneRunner:
             if self._wake is not None:
                 self._wake.set()
             return
+        if keep and not self._ended:
+            _HANDOVER[self.zone_id] = (self._t, time.monotonic())
         if self._task and self._task is not asyncio.current_task():
             self._task.cancel()
         self._finish(restore, keep, notify=False)
@@ -196,4 +227,4 @@ class ZoneRunner:
         """Swap in a new plan for the same lights (a pattern being painted) and show its frame at once."""
         self.plan = plan
         if not self._ended:
-            self._tick(self._t)
+            self._tick(self._t, force=True)

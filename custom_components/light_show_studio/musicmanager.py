@@ -21,6 +21,7 @@ from .zoneplayer import ZoneRunner
 _LOGGER = logging.getLogger(__name__)
 MAX_SESSIONS = 16
 FADE_IN, FADE_OUT = 0.4, 0.6
+AREA_CACHE = 30.0  # seconds an area lookup is kept at most
 
 
 class MusicError(ValueError):
@@ -68,6 +69,10 @@ class MusicManager:
         self._clock = clock
         self.sessions: dict[str, MusicSession] = {}
         self._n = 0
+        self._area_ids: dict[str, str | None] = {}  # area ref -> area id, kept until the map changes
+        self._area_at = 0.0
+        if hasattr(mgr, "add_listener"):
+            mgr.add_listener(self._area_ids.clear)
 
     # --- start ---------------------------------------------------------------------------------
     async def async_start(self, owner: object, lights: list[str], areas: list[str], pattern: str | None = None,
@@ -94,7 +99,8 @@ class MusicManager:
         units = frozenset([("light", e) for e in dict.fromkeys(lights)] + [("area", a.id) for a in found])
         for old in [s for s in self.sessions.values() if s.units & units]:  # one music session per light or area
             if old.id == sid and old.runner is not None:  # the same targets again: swap without the lights flashing back
-                self.sessions.pop(old.id, None)
+                if self.sessions.get(old.id) is old:
+                    del self.sessions[old.id]
                 old.runner.stop(restore=True, keep=set(entries))
             else:
                 self.stop_session(old)
@@ -109,7 +115,8 @@ class MusicManager:
         try:
             await runner.async_start()
         except BaseException:
-            self.sessions.pop(sid, None)
+            if self.sessions.get(sid) is session:
+                del self.sessions[sid]
             runner.stop(restore=True, fade_out=0)
             raise
         for ctl in runner._claimed.values():  # noqa: SLF001
@@ -123,11 +130,24 @@ class MusicManager:
 
     # --- frames -----------------------------------------------------------------------------------
     def _unit_set(self, lights: list[str], areas: list[str]) -> frozenset[tuple[str, str]]:
-        model = self.mgr.model
         out = {("light", e) for e in lights}
-        for ref in areas:
-            if (a := model.area(ref)) is not None:
-                out.add(("area", a.id))
+        if areas:  # the map model is only built when an area has to be looked up
+            now = self._clock()
+            if now - self._area_at > AREA_CACHE:  # the map listener clears it; this covers lights moving areas
+                self._area_ids.clear()
+                self._area_at = now
+            model = None
+            for ref in areas:
+                if ref not in self._area_ids:
+                    model = model or self.mgr.model
+                    a = model.area(ref)
+                    if len(self._area_ids) < 256:
+                        self._area_ids[ref] = a.id if a is not None else None
+                    elif a is not None:
+                        out.add(("area", a.id))
+                        continue
+                if self._area_ids.get(ref) is not None:
+                    out.add(("area", self._area_ids[ref]))
         return frozenset(out)
 
     def feed(self, owner: object, lights: list[str], areas: list[str], features: Features) -> int:
@@ -151,14 +171,16 @@ class MusicManager:
         return len(hit)
 
     def stop_session(self, session: MusicSession, fade_out: float | None = None) -> None:
-        if self.sessions.pop(session.id, None) is None:
-            return
+        if self.sessions.get(session.id) is not session:
+            return  # already ended, or a newer session has the id
+        del self.sessions[session.id]
         if session.runner is not None:
             session.runner.stop(restore=True, fade_out=fade_out)
 
     def stop_all(self) -> None:
         for s in list(self.sessions.values()):
-            self.sessions.pop(s.id, None)
+            if self.sessions.get(s.id) is s:
+                del self.sessions[s.id]
             if s.runner is not None:
                 s.runner.stop(restore=False)
 

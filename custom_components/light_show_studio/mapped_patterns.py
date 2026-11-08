@@ -116,6 +116,8 @@ class ZonePlan:
         self.override: list[Colour] | None = painted_base(up, self.slices, self.n) \
             if up is not None and up.kind == "pixels" and self.n else None
         self.epoch = patterns.user_epoch()
+        self._flat: list[Colour] | None = None
+        self._flat_epoch = -1
         if self.spatial:
             self.u = zone_u(self.slices, zone.axis)
             top = max(0, self.n - 1)
@@ -135,13 +137,23 @@ class ZonePlan:
             if self.mapfx:
                 self.mapfx_plan = MapEffects(self.slices, zone.axis, self.u, self.base, patterns.palette_of(self.pattern))
 
+    def _flat_base(self) -> list[Colour]:
+        """The pattern's colours along the string, kept until a user pattern changes."""
+        epoch = patterns.user_epoch()
+        if self._flat is None or self._flat_epoch != epoch:
+            self._flat, self._flat_epoch = patterns.base_colours(self.pattern, self.n), epoch
+        return self._flat
+
     def render(self, t: float) -> list[Colour]:
         """The virtual string at time t (already scaled by the speed)."""
         n = self.n
         if n == 0:
             return []
         if not self.spatial:
-            return patterns.render(self.pattern, self.effect, t, n, base=self.override)
+            base = self.override
+            if base is None and patterns.light_effect(self.effect) != patterns.CHASE:
+                base = self._flat_base()  # worked out once, not each frame (Chase must see "no base" to look the same)
+            return patterns.render(self.pattern, self.effect, t, n, base=base)
         effect, base = self.effect, self.base
         if self.mapfx:
             return self.mapfx_plan.render(effect, t)

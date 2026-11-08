@@ -1,8 +1,9 @@
-# Light schedules (2.5.0, fades and more in 2.6.0)
+# Light schedules (2.5.0, fades and more in 2.6.0, rotation / holidays / random / presence in 2.6.1)
 
 Lights or areas that come on with a pattern at a set moment and go off later. Separate from the show scheduler
 (`schedules/*`, which plays xLights playlists one at a time): any number of light schedules can be active at once.
-Code: `light_schedules.py` (engine), `ws_light_schedules.py` (websocket). Store: `light_show_studio.light_schedules`.
+Code: `light_schedules.py` (engine), `ws_light_schedules.py` (websocket), `schedule_math.py` (windows, random offset, rotation),
+`holiday_calendar.py` (the holiday table and date maths). Store: `light_show_studio.light_schedules`.
 
 ## A schedule
 
@@ -19,7 +20,8 @@ Code: `light_schedules.py` (engine), `ws_light_schedules.py` (websocket). Store:
   "targets": {"areas": ["outdoor", "Living Room"], "lights": ["<config entry id>"]},
   "look": {"pattern": "Warm White", "effect": "Steady", "speed": 50, "brightness": 80},
   "fade_in_s": 120,
-  "fade_out_s": 120
+  "fade_out_s": 120,
+  "looks": [], "rotate": null, "holiday_looks": false, "random_offset_min": 0, "only_when": "any"
 }
 ```
 
@@ -37,9 +39,19 @@ Code: `light_schedules.py` (engine), `ws_light_schedules.py` (websocket). Store:
 | `fade_in_s` | optional number of seconds, 0-1800, default **2** (a real number, not a string or boolean): the lights fade up from black over this long when the window opens |
 | `fade_out_s` | optional, 0-1800, default **2**: they fade down over this long when the window closes (or the schedule is stopped / disabled / deleted) and are then switched off |
 | `look.pattern` | required: a built-in pattern or **one of your own** (name or id; stored by name, see `MUSIC_PAINT_FX.md`). Deleting / renaming one of your patterns updates schedules that use it |
-| `look.effect` | required: a string effect (`Steady`, `Twinkle`, `Chase` ...) or a **map effect** (`Sweep`, `Ripple`, `Snowfall`, `Rise`, `Rainbow Wash`, `Fireworks`, `Breathe Outward`). Map effects need an area target: an area zone draws them in 3D; a target **light** shows the nearest string effect instead (Sweep/Rise/Rainbow Wash -> Chase, Ripple -> Wave, Snowfall -> Twinkle, Fireworks -> Sparkle, Breathe Outward -> Fade) |
+| `look.effect` | required: a string effect (`Steady`, `Twinkle`, `Chase` ...) or a **map effect** (`Sweep`, `Ripple`, `Snowfall`, `Rise`, `Rainbow Wash`, `Fireworks`, `Breathe Outward`, `Gradient Axis`, `Plasma Field`, `Candy Helix`). Map effects need an area target: an area zone draws them in 3D; a target **light** shows the nearest string effect instead (Sweep/Rise/Rainbow Wash -> Chase, Ripple -> Wave, Snowfall -> Twinkle, Fireworks -> Sparkle, Breathe Outward -> Fade, Gradient Axis -> Gradient Flow, Plasma Field -> Plasma, Candy Helix -> Chase) |
 | `look.speed` | 1-100, default 50 |
 | `look.brightness` | 1-100 percent, default 100 |
+
+New in 2.6.1 (all optional; schedules saved earlier load with these defaults and behave exactly as before):
+
+| field | rules |
+|---|---|
+| `looks` | list of 1-12 looks (same shape as `look`). `look` is then always `looks[0]` (the server sets it; if you send both, `look` must equal `looks[0]`). Send `look` alone for a single look, as before. Default `[]` |
+| `rotate` | `null`, `{"type": "night"}` (a different look each night) or `{"type": "interval", "minutes": 1..1440}`. Needs 2+ looks; with 2+ looks and no `rotate` the server stores `{"type": "night"}` |
+| `holiday_looks` | bool, default `false`. In a window that **starts** on a day inside an enabled holiday's date window, the holiday's look replaces the schedule's look (and rotation). Season dates (`date_from`/`date_to`) still apply first |
+| `random_offset_min` | whole number 0-60, default 0. The start and the end each move by a deterministic per-day amount in -N..+N minutes, so the house looks lived in. A `duration` end moves with the start |
+| `only_when` | `"any"` (default), `"home"` (at least one person is home) or `"away"` (nobody home). Based on the state of `zone.home` (its person count) |
 
 Unknown keys are an error. Max 100 schedules. `id` is assigned by the server.
 
@@ -51,6 +63,7 @@ All payloads below use `type: "light_show_studio/light_schedules/<command>"`. `s
 `stop` need an admin user; `list` and `subscribe` do not.
 
 ### The schedule as the server returns it ("view")
+(New view fields in 2.6.1 are listed in the table below.)
 
 The saved fields above, plus:
 
@@ -58,13 +71,16 @@ The saved fields above, plus:
 |---|---|
 | `active` | `true` while a window with an end is open (and not stopped early) |
 | `next_on` | ISO string (UTC, with offset) of the next start after now, or `null` (disabled / no season date ahead). While active, this is the *following* start |
+| `look_now` | the look in force right now for the open window (after rotation / holiday), else `null` |
+| `holiday_now` | id of the holiday whose look replaced the schedule's, else `null` |
+| `skipped_now` | `true` when a window that is open now did not start because of `only_when` |
 | `next_off` | while active: when the open window ends; otherwise when the next window ends. `null` when disabled or the schedule has no end ("leave on") |
 
 ### `list`
 `{type}` -> `{"schedules": [view, ...]}`
 
 ### `save`
-`{type, schedule_id?, name, days, start, targets, look, enabled?, end?, date_from?, date_to?, fade_in_s?, fade_out_s?}` -> `{"schedule": view}`.
+`{type, schedule_id?, name, days, start, targets, look | looks, enabled?, end?, date_from?, date_to?, fade_in_s?, fade_out_s?, rotate?, holiday_looks?, random_offset_min?, only_when?}` -> `{"schedule": view}`.
 Without `schedule_id` a new schedule is made, with it that one is replaced entirely (send all fields). Editing an
 open window's settings (anything but `name`) turns off what it had on and starts the window again with the new
 settings; a rename changes nothing running.
@@ -90,6 +106,31 @@ next day's does.
 `{type}` -> result `null`, then an event `{"schedules": [view, ...]}` immediately and after every change (save, delete,
 toggle, a window opening or closing).
 
+### `holidays`
+`{type, days?}` (`days` 1-366, default 120; not admin-only) -> 
+```json
+{"today": "2026-12-07", "active": "hanukkah", "table_years": [2026, 2030],
+ "holidays": [{"id": "christmas", "name": "Christmas", "rule": "fixed|easter|nth|table", "note": "", "enabled": true,
+               "look": {"pattern": "Red & Green", "effect": "Twinkle", "speed": 50, "brightness": 100},
+               "before": 24, "after": 1, "default_look": {}, "default_before": 24, "default_after": 1, "overridden": false,
+               "date": "2026-12-25", "window_start": "2026-12-01", "window_end": "2026-12-26", "active": true}],
+ "upcoming": [{"id": "christmas", "name": "Christmas", "date": "2026-12-25", "window_start": "2026-12-01",
+               "window_end": "2026-12-26", "enabled": true, "look": {}}]}
+```
+`holidays` has every built-in holiday with its next occurrence (`date` etc. are `null` for table holidays - Hanukkah, Diwali,
+Lunar New Year - once past 2030). `upcoming` lists occurrences whose window has not ended and starts within `days` days,
+soonest window first (disabled ones included, `enabled: false`). Dates are local `YYYY-MM-DD`.
+
+### `holiday_set` (admin)
+`{type, holiday_id, look?, before?, after?, enabled?}` -> `{"holiday": <one entry of holidays[]>}`. Each key given overrides
+that setting; a key set to `null` clears the override (back to the built-in value). `look` is a full look
+(`pattern`, `effect`, optional `speed`, `brightness`; patterns may be your own), `before`/`after` are whole days 0-60,
+`enabled` a boolean. Unknown keys are an error. Stored in the schedule Store (`holidays`). Schedules with `holiday_looks`
+follow immediately (an open window swaps its look). Unknown `holiday_id` -> `not_found`; bad values -> `invalid_format`.
+
+### `holiday_reset` (admin)
+`{type, holiday_id}` -> `{"holiday": ...}`. Removes every override of that holiday.
+
 ### Errors
 | code | when |
 |---|---|
@@ -99,6 +140,23 @@ toggle, a window opening or closing).
 | `unauthorized` | not an admin (writes) |
 
 ## Behaviour the UI should know
+
+- **Look rotation**: the look is worked out from the clock each time, so it is the same after a restart. `night`: the look
+  index is `(day number + a per-schedule offset) mod count` for the day the window starts on, so neighbouring nights always
+  differ and it cycles in list order. `interval`: starts at that night's index and steps to the next look every N minutes
+  from the window start (a cross-fade; a light a person changed is left alone). Windows with no end apply the night's look once.
+- **Holidays**: built in (look uses existing patterns only): New Year (Dec 31-Jan 1), Lunar New Year, Valentine's Day,
+  St Patrick's Day (Rainbow, there is no green pattern), Easter, Mother's Day, Memorial Day, Father's Day, Independence Day,
+  Labor Day, Halloween (14 days before), Diwali, Thanksgiving, Hanukkah (first candle + 7 days), Christmas (Dec 1-26).
+  Fixed dates; Easter by the computus; Thanksgiving = 4th Thursday of November; Mother's / Father's Day = 2nd Sunday of May /
+  3rd Sunday of June; Memorial = last Monday of May; Labor = first Monday of September; Hanukkah / Diwali / Lunar New Year come
+  from a table for 2026-2030 (no date, so no window, outside those years). When windows overlap the one that opened last wins
+  (Hanukkah over Christmas). The holiday is chosen by the day the schedule's window starts on.
+- **Random offset**: the shift is a hash of the schedule id, the day and start / end, so it is stable across calls and restarts.
+  `next_on` / `next_off` show the shifted times. Run-now windows are not shifted.
+- **Presence** (`only_when`): checked once, when a window opens (also for "turn on and leave" starts). If it fails the window
+  is skipped for the day (`skipped_now`) and is not re-checked, even if someone arrives later. A window that is already open is
+  never closed because people leave. If `zone.home` is missing or not a number the schedule runs. Run now ignores it.
 
 - **Fades**: a light that is off fades up from black over `fade_in_s` (a brightness ramp - a 120 s sunset fade is a slow ramp,
   a couple of frames a second, not a frame blend); a light that is already on cross-fades into the new look. At the end the

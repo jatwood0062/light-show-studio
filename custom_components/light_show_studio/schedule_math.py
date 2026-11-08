@@ -5,6 +5,8 @@ A schedule is a dict with:
   start      {"type": "time"|"sunset"|"sunrise", "time": "HH:MM", "offset_min": int}
   end        the same shape, or None (= play once, at the start)
   date_from  optional "MM-DD"; date_to optional "MM-DD" (the season; may wrap the year, e.g. 11-25 .. 01-06)
+  random_offset_min  optional 0-60: start and end each move by a deterministic per-day amount of -N..+N minutes
+                     (seeded by the schedule's "id" and the day, so every call agrees and a restart changes nothing)
 
 Times of day are local wall-clock times, so they stay put across daylight saving changes. Sunrise and
 sunset come from the `sun(day, event)` callable the caller passes in (a UTC datetime or None).
@@ -12,6 +14,7 @@ Everything returned is timezone-aware UTC.
 """
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
@@ -72,6 +75,38 @@ def resolve_edge(edge: "dict[str, Any]", day: date, tz: tzinfo, sun: SunFn) -> O
     return (base + timedelta(minutes=int(edge.get("offset_min") or 0))).astimezone(UTC)
 
 
+def random_offset(salt: str, day: date, kind: str, max_min: int) -> int:
+    """A deterministic pseudo-random shift in whole minutes, -max_min..+max_min, for `kind` ("start"/"end") on `day`.
+    The same inputs always give the same answer (a hash, not the random module)."""
+    if max_min <= 0:
+        return 0
+    digest = hashlib.sha256(f"{salt}|{day.isoformat()}|{kind}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % (2 * max_min + 1) - max_min
+
+
+def rotation_index(count: int, rotate: "dict[str, Any] | None", salt: str, day: date,
+                   start: datetime, now: datetime) -> int:
+    """Which of `count` looks is showing at `now` in the window that started at `start` on local day `day`.
+    rotate {"type": "night"}: one look per night, stepping one place a day (so neighbouring nights differ), offset by a
+    per-schedule amount; it depends on the date only. rotate {"type": "interval", "minutes": N}: step to the next look
+    every N minutes from the window's start, beginning with the schedule's own per-night offset."""
+    if count <= 1 or not rotate:
+        return 0
+    base = (day.toordinal() + int.from_bytes(hashlib.sha256(salt.encode()).digest()[:4], "big")) % count
+    if rotate.get("type") == "interval":
+        step = max(0, int((now - start).total_seconds() // (int(rotate["minutes"]) * 60)))
+        return (base + step) % count
+    return base
+
+
+def next_rotation(rotate: "dict[str, Any] | None", start: datetime, now: datetime) -> Optional[datetime]:
+    """When an interval rotation next steps after `now` (None for no / per-night rotation)."""
+    if not rotate or rotate.get("type") != "interval":
+        return None
+    span = timedelta(minutes=int(rotate["minutes"]))
+    return start + span * (int((now - start) // span) + 1)
+
+
 def window_for_day(s: "dict[str, Any]", day: date, tz: tzinfo, sun: SunFn) -> Optional[Window]:
     """The window that starts on local day `day`, or None (wrong weekday, out of season, no sun that day)."""
     if day.weekday() not in s.get("days", ()):
@@ -81,14 +116,24 @@ def window_for_day(s: "dict[str, Any]", day: date, tz: tzinfo, sun: SunFn) -> Op
     start = resolve_edge(s["start"], day, tz, sun)
     if start is None:
         return None
+    shake = int(s.get("random_offset_min") or 0)
+    salt = str(s.get("id", ""))
     if not s.get("end"):
-        return Window(start, None, day)
+        return Window(_shift(start, salt, day, "start", shake), None, day)
     end = resolve_edge(s["end"], day, tz, sun)
     if end is None or end <= start:  # the end is after midnight (or the sun hasn't set yet): the next day's
         end = resolve_edge(s["end"], day + timedelta(days=1), tz, sun)
         if end is None or end <= start:
             return None
+    if shake:
+        start, end = _shift(start, salt, day, "start", shake), _shift(end, salt, day, "end", shake)
+        if end <= start:  # a very short window must not turn inside out
+            end = start + timedelta(minutes=1)
     return Window(start, end, day)
+
+
+def _shift(moment: datetime, salt: str, day: date, kind: str, max_min: int) -> datetime:
+    return moment + timedelta(minutes=random_offset(salt, day, kind, max_min))
 
 
 def _days(first: date, count: int) -> Iterator[date]:

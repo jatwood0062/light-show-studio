@@ -23,6 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 DDP_PORT = 4048
 MAX_DATA = 1440  # data bytes per DDP packet (480 RGB pixels)
 KEEPALIVE = 1.0  # WLED leaves realtime mode ~2.5 s after the last packet: resend the last frame
+SCAN_KEEPALIVE = 0.4  # while a scan holds the light: well inside WLED's realtime timeout even if a packet or two is lost
 MAX_FPS = 40.0
 TIMEOUT = aiohttp.ClientTimeout(total=5)
 NET_ERRORS = (aiohttp.ClientError, TimeoutError, ValueError)
@@ -105,7 +106,10 @@ class WledController(C9Controller):
             return
         self._send(frame)
         if self._keepalive is None:
-            self._keepalive = self.hass.loop.call_later(KEEPALIVE, self._tick)
+            self._keepalive = self.hass.loop.call_later(self._keepalive_every(), self._tick)
+
+    def _keepalive_every(self) -> float:
+        return SCAN_KEEPALIVE if self._scanning else KEEPALIVE
 
     def _hw_close(self) -> None:
         self._closed = True
@@ -144,9 +148,10 @@ class WledController(C9Controller):
         self._keepalive = None
         if self._closed or self.show_mode or not (self._on and self._last is not None):  # shows stream their own frames; idle, the strip goes back to its own look
             return
-        if time.monotonic() - self._last_sent >= KEEPALIVE - 0.1:
+        every = self._keepalive_every()
+        if time.monotonic() - self._last_sent >= every - 0.1:
             self._send(self._last)
-        self._keepalive = self.hass.loop.call_later(KEEPALIVE, self._tick)
+        self._keepalive = self.hass.loop.call_later(every, self._tick)
 
     async def _post_state(self, body: dict[str, Any]) -> None:
         try:

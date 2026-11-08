@@ -86,7 +86,7 @@ async def test_scan_takes_the_light_and_shows_frames_at_a_fixed_level(hass):
     assert ctl.scanning
     assert ctl.push_scan_frame([LEVEL, BLACK, LEVEL, BLACK])
     assert ctl.sent[-1] == [LEVEL, BLACK, LEVEL, BLACK]
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.25)  # the frame's two re-sends are done
     n = len(ctl.sent)
     await asyncio.sleep(0.2)
     assert len(ctl.sent) == n  # the effect's animation task is gone
@@ -274,7 +274,7 @@ async def test_manager_scan_start_frame_stop(hass):
     m = make_manager(hass, [("e1", ctl, "Roof")])
     tok = object()
     info = await m.async_scan_start("e1", tok, mode="white")
-    assert info == {"bulbs": 20, "frames": 2 + 2 * 5, "first": 0, "level": 128, "mode": "white"} and m.scanning == ["e1"]
+    assert info == {"bulbs": 20, "frames": 2 + 2 * 5, "first": 0, "level": 128, "mode": "white", "hold_ms": 350} and m.scanning == ["e1"]
     assert ctl.sent[-1] == [BLACK] * 20  # starts dark
     await m.async_scan_frame("e1", 1)
     assert ctl.sent[-1] == [LEVEL] * 20
@@ -294,7 +294,7 @@ async def test_manager_scan_a_stretch_of_the_light(hass):
     ctl = FakeLight(hass, 20)
     m = make_manager(hass, [("e1", ctl, "Roof")])
     info = await m.async_scan_start("e1", object(), first=5, count=8, mode="white")
-    assert info == {"bulbs": 8, "frames": 2 + 2 * 3, "first": 5, "level": 128, "mode": "white"}
+    assert info == {"bulbs": 8, "frames": 2 + 2 * 3, "first": 5, "level": 128, "mode": "white", "hold_ms": 350}
     await m.async_scan_frame("e1", 1)
     assert ctl.sent[-1] == [BLACK] * 5 + [LEVEL] * 8 + [BLACK] * 7
     for bad in ({"first": 20}, {"first": 15, "count": 6}, {"count": 0}):
@@ -602,7 +602,7 @@ async def test_manager_colour_scan_is_the_default(hass):
     ctl.colour, ctl.show_mode = tz.G, False
     m = make_manager(hass, [("e1", ctl, "Roof")])
     info = await m.async_scan_start("e1", object())
-    assert info == {"bulbs": 20, "frames": 8, "first": 0, "level": 140, "mode": "colour"}
+    assert info == {"bulbs": 20, "frames": 8, "first": 0, "level": 140, "mode": "colour", "hold_ms": 350}
     assert ctl.sent[-1] == [BLACK] * 20
     for frame, want in ((1, (140, 0, 0)), (2, (0, 140, 0)), (3, (0, 0, 140))):
         await m.async_scan_frame("e1", frame)
@@ -675,3 +675,132 @@ def test_scan_start_command_takes_a_mode_and_segment_a_list_of_three():
         schema = next(ast.unparse(d) for d in fn.decorator_list if ast.unparse(d).startswith("websocket_api.websocket_command"))
         for part in parts:
             assert part in schema, (name, part)
+
+
+# --- delivery robustness: hold_ms, seq, resend, races ------------------------------------------------------
+def test_hold_ms_default_kind_and_latency():
+    h = scan_codes.hold_ms
+    assert h("govee") == 350 and h("twinkly", None, None) == 350 and h("wled") == 450
+    assert h("wled", 20, 30) == 450  # healthy: nothing added
+    assert h("wled", 100, 700) == 450 + 560 - 50
+    assert h("govee", 10_000, 10_000) == 1500  # capped
+    assert h("govee", -5, "x") == 350  # junk is ignored
+    assert 250 <= h("govee", 0, 0) <= 1500
+
+
+@aio
+async def test_scan_start_reports_hold_ms_from_the_light_kind_and_latency(hass):
+    ctl = FakeLight(hass, 8)
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    info = await m.async_scan_start("e1", object())
+    assert info["hold_ms"] == 350
+    m.scan_stop("e1")
+    ctl.latency_ms, ctl.latency_peak_ms = 80.0, 400.0
+    info = await m.async_scan_start("e1", object())
+    assert info["hold_ms"] == 350 + 320 - 50
+
+
+@aio
+async def test_scan_frame_is_sent_again_shortly_after(hass):
+    ctl = FakeLight(hass, 4)
+    await ctl.async_claim_scan()
+    n = len(ctl.sent)
+    assert ctl.push_scan_frame([LEVEL, BLACK, LEVEL, BLACK])
+    assert len(ctl.sent) == n + 1
+    await asyncio.sleep(0.25)
+    assert len(ctl.sent) == n + 3 and ctl.sent[-1] == [LEVEL, BLACK, LEVEL, BLACK]
+    # a newer frame cancels the old frame's re-sends; releasing cancels all
+    ctl.push_scan_frame([LEVEL] * 4)
+    ctl.push_scan_frame([BLACK] * 4)
+    ctl.release_scan()
+    m = len(ctl.sent)
+    await asyncio.sleep(0.25)
+    assert len(ctl.sent) == m and ctl._scan_resend == []
+
+
+@aio
+async def test_stop_while_the_light_is_turning_on_still_lets_it_go(hass):
+    ctl = FakeLight(hass, 8)
+    real = ctl.async_claim_scan
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    tok = object()
+
+    async def slow():
+        await asyncio.sleep(0.05)
+        await real()
+
+    ctl.async_claim_scan = slow
+    task = asyncio.ensure_future(m.async_scan_start("e1", tok))
+    await asyncio.sleep(0.01)
+    m.scan_stop("e1", tok)  # the socket closes mid-claim
+    with pytest.raises(mapmanager.HomeAssistantError, match="stopped"):
+        await task
+    assert not ctl.scanning and m.scanning == []
+
+
+@aio
+async def test_scanning_list_drops_a_light_a_person_took(hass):
+    ctl = FakeLight(hass, 8)
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    await m.async_scan_start("e1", object())
+    assert m.scanning == ["e1"]
+    await ctl.async_turn_on(colour=R)
+    assert m.scanning == []
+
+
+def test_seq_is_optional_bounded_and_echoed_by_frame_and_segment():
+    import ast
+    src = (tz.PKG / "ws_map.py").read_text()
+    tree = ast.parse(src)
+    assert "SEQ = vol.All(int, vol.Range(min=0, max=2**53 - 1))" in src
+    for name in ("ws_scan_frame", "ws_scan_segment"):
+        fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
+        schema = next(ast.unparse(d) for d in fn.decorator_list if ast.unparse(d).startswith("websocket_api.websocket_command"))
+        assert "vol.Optional('seq'): SEQ" in schema
+        assert "_scan_reply(msg)" in ast.unparse(fn)
+    reply = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_scan_reply")
+    ns: dict = {}
+    exec(compile(ast.Module([reply], []), "ws", "exec"), {"Any": object}, ns)
+    assert ns["_scan_reply"]({"seq": 4, "id": 1}) == {"seq": 4} and ns["_scan_reply"]({"id": 1}) == {}
+
+
+@aio
+async def test_only_the_owning_connection_drives_or_stops_a_scan(hass):
+    ctl = FakeLight(hass, 8)
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    a, b = object(), object()
+    await m.async_scan_start("e1", a)
+    for call in (lambda: m.async_scan_frame("e1", 1, b),
+                 lambda: m.async_scan_segment("e1", 0, 2, None, None, b)):
+        with pytest.raises(mapmanager.HomeAssistantError, match="another connection"):
+            await call()
+    with pytest.raises(mapmanager.HomeAssistantError, match="another connection"):
+        m.check_scan_owner("e1", b)
+    m.check_scan_owner("e1", a)
+    m.check_scan_owner("e2", b)  # nothing scanned there: stop is a harmless no-op
+    await m.async_scan_frame("e1", 1, a)
+    await m.async_scan_segment("e1", 0, 2, None, None, a)
+    m.scan_stop("e1", b)  # a late close of someone else's socket
+    assert ctl.scanning
+    m.scan_stop("e1", a)  # the owner's socket closing still cleans up
+    assert not ctl.scanning and m.scanning == []
+
+
+@aio
+async def test_scan_commands_are_rate_limited(hass):
+    ctl = FakeLight(hass, 8)
+    m = make_manager(hass, [("e1", ctl, "Roof")])
+    await m.async_scan_start("e1", object())
+    for _ in range(mapmanager.SCAN_RATE):
+        await m.async_scan_frame("e1", 1)
+    with pytest.raises(mapmanager.HomeAssistantError, match="Too many"):
+        await m.async_scan_frame("e1", 1)
+    assert ctl.scanning  # refused, not stopped
+    await asyncio.sleep(0.1)  # the bucket refills
+    await m.async_scan_frame("e1", 1)
+
+
+def test_ws_scan_commands_pass_the_connection_as_owner():
+    src = (tz.PKG / "ws_map.py").read_text()
+    assert "token = connection" in src and "async_scan_frame(msg[\"entry_id\"], msg[\"frame\"], connection)" in src
+    assert "check_scan_owner(msg[\"entry_id\"], connection)" in src and "scan_stop(msg[\"entry_id\"], connection)" in src

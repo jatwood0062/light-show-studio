@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
@@ -11,7 +12,7 @@ from homeassistant.helpers.event import async_call_later
 
 from .const import CONF_DEVICE_ID, CONF_TYPE, DOMAIN, TYPE_PLAYER, TYPE_TWINKLY, TYPE_WLED
 from .controller import C9Controller
-from .hosts import is_lan_ipv4
+from .hosts import host_taken, is_lan_ipv4
 from .protocol import async_probe, async_scan
 from .twinkly import TwinklyController, async_discover, async_gestalt
 from .wled import async_info
@@ -23,6 +24,19 @@ FIRST_RUN = 10
 GOVEE_MISSES = 3
 TWINKLY_MISSES = 2
 WLED_MISSES = 2
+MAX_GESTALT_PROBES = 16  # discovery replies followed up per check
+
+
+def record_latency(ctl: object, ms: float) -> None:
+    """Keep how long the light takes to answer a check: `latency_ms` (smoothed) and `latency_peak_ms` (a recent worst,
+    decaying). The camera scan reads them to size its hold time (scan_codes.hold_ms)."""
+    old = getattr(ctl, "latency_ms", None)
+    peak = getattr(ctl, "latency_peak_ms", None) or 0.0
+    try:
+        ctl.latency_ms = ms if old is None else 0.7 * old + 0.3 * ms
+        ctl.latency_peak_ms = max(ms, peak * 0.85)
+    except AttributeError:
+        pass
 
 
 class HealthMonitor:
@@ -75,7 +89,12 @@ class HealthMonitor:
     def _move(self, entry: ConfigEntry, new_host: str) -> None:
         if not is_lan_ipv4(new_host):  # the address came off the network: never follow one to the internet
             return
-        _LOGGER.info("%s moved from %s to %s", entry.title, entry.data.get(CONF_HOST), new_host)
+        others = [e.data.get(CONF_HOST) for e in self.hass.config_entries.async_entries(DOMAIN)
+                  if e.entry_id != entry.entry_id]
+        if host_taken(new_host, others):  # another light lives there: never merge two entries onto one address
+            _LOGGER.debug("%s not moved to %s: another light uses it", entry.title, new_host)
+            return
+        _LOGGER.warning("%s moved from %s to %s", entry.title, entry.data.get(CONF_HOST), new_host)
         self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_HOST: new_host})
 
     async def _check_govee(self, entries: list[ConfigEntry]) -> None:
@@ -107,12 +126,14 @@ class HealthMonitor:
     async def _check_wled(self, entries: list[ConfigEntry]) -> None:
         session = async_get_clientsession(self.hass)
         for entry in entries:
+            t0 = time.monotonic()
             try:
                 await async_info(session, entry.data[CONF_HOST])
             except Exception as err:  # unreachable, or a reply we don't understand
                 _LOGGER.debug("WLED %s not reachable: %s", entry.data[CONF_HOST], err)
                 entry.runtime_data.mark_missed(WLED_MISSES)
             else:
+                record_latency(entry.runtime_data, (time.monotonic() - t0) * 1000)
                 entry.runtime_data.mark_seen()
 
     async def _check_twinkly(self, entries: list[ConfigEntry]) -> None:
@@ -120,6 +141,7 @@ class HealthMonitor:
         missed: list[ConfigEntry] = []
         for entry in entries:
             ctl: TwinklyController = entry.runtime_data
+            t0 = time.monotonic()
             try:
                 await async_gestalt(session, entry.data[CONF_HOST])
             except Exception as err:  # unreachable, or a reply we don't understand
@@ -127,12 +149,13 @@ class HealthMonitor:
                 ctl.mark_missed(TWINKLY_MISSES)
                 missed.append(entry)
                 continue
+            record_latency(ctl, (time.monotonic() - t0) * 1000)
             ctl.mark_seen()
             await ctl.async_check_mode()
         if not missed:
             return
         macs: dict[str, str] = {}  # mac -> ip, for whatever answers a broadcast
-        for ip in await async_discover():
+        for ip in list((await async_discover()))[:MAX_GESTALT_PROBES]:
             try:
                 info = await async_gestalt(session, ip)
             except Exception:

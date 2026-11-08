@@ -20,7 +20,7 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import voluptuous as vol
@@ -31,6 +31,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.sun import get_astral_event_date
 from homeassistant.util import dt as dt_util
 
+from . import holiday_calendar as hc
 from . import patterns
 from . import schedule_math as sm
 from .const import (
@@ -57,6 +58,10 @@ SAVE_DELAY = 1.0
 MAX_TARGETS = 64
 MAX_FADE = 1800  # seconds: the longest fade in / out a schedule can ask for
 DEFAULT_FADE = 2
+MAX_LOOKS = 12  # looks in one rotation
+MAX_ROTATE_MIN = 1440
+MAX_RANDOM_OFFSET = 60  # minutes
+ONLY_WHEN = ("any", "home", "away")
 
 
 # --- validation ---------------------------------------------------------------------
@@ -134,6 +139,36 @@ def _targets(value: Any) -> dict[str, Any]:
     return value
 
 
+def _int(lo: int, hi: int):
+    def check(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+            raise vol.Invalid(f"expected a whole number from {lo} to {hi}")
+        return value
+    return check
+
+
+_ROTATE_NIGHT = vol.Schema({vol.Required("type"): "night"})
+_ROTATE_INTERVAL = vol.Schema({vol.Required("type"): "interval",
+                               vol.Required("minutes"): _int(1, MAX_ROTATE_MIN)})
+
+
+def _rotate(value: Any) -> dict[str, Any] | None:
+    """None, {"type": "night"} (a different look each night) or {"type": "interval", "minutes": 1..1440}."""
+    if value is None:
+        return None
+    if isinstance(value, dict) and value.get("type") == "interval":
+        return _ROTATE_INTERVAL(value)
+    if isinstance(value, dict) and value.get("type") == "night":
+        return _ROTATE_NIGHT(value)
+    raise vol.Invalid('expected {"type": "night"} or {"type": "interval", "minutes": 1..1440}')
+
+
+def _only_when(value: Any) -> str:
+    if value not in ONLY_WHEN:
+        raise vol.Invalid("expected home, away or any")
+    return value
+
+
 LIGHT_SCHEDULE_FIELDS: dict[Any, Any] = {
     vol.Required("name"): _name,
     vol.Optional("enabled", default=True): _bool,
@@ -143,7 +178,12 @@ LIGHT_SCHEDULE_FIELDS: dict[Any, Any] = {
     vol.Optional("date_from", default=None): vol.Any(None, _mmdd),
     vol.Optional("date_to", default=None): vol.Any(None, _mmdd),
     vol.Required("targets"): _targets,
-    vol.Required("look"): _LOOK,
+    vol.Optional("look"): _LOOK,  # one look; or send `looks` (look is then looks[0])
+    vol.Optional("looks", default=list): vol.All([_LOOK], vol.Length(max=MAX_LOOKS)),  # several looks, see `rotate`
+    vol.Optional("rotate", default=None): _rotate,  # how `looks` take turns (2+ looks: default each night)
+    vol.Optional("holiday_looks", default=False): _bool,  # inside a holiday window the holiday's look replaces the look
+    vol.Optional("random_offset_min", default=0): _int(0, MAX_RANDOM_OFFSET),  # start / end move by -N..+N minutes a day
+    vol.Optional("only_when", default="any"): _only_when,  # check at window start: someone home / nobody home / always
     vol.Optional("fade_in_s", default=DEFAULT_FADE): _seconds,  # the lights fade up over this long when a window opens
     vol.Optional("fade_out_s", default=DEFAULT_FADE): _seconds,  # ... and down when it closes (a brightness ramp)
 }
@@ -155,6 +195,47 @@ def validate_light_schedule(data: dict[str, Any]) -> dict[str, Any]:
     out = _SCHEMA(data)
     if bool(out.get("date_from")) != bool(out.get("date_to")):
         raise vol.Invalid("set both season dates, or neither")
+    looks = out.get("looks") or []
+    if looks:
+        if out.get("look") is not None and out["look"] != looks[0]:
+            raise vol.Invalid("send look or looks, not both (look must equal the first of looks)")
+        out["look"] = looks[0]
+    elif out.get("look") is None:
+        raise vol.Invalid("required key not provided: look (or looks)")
+    if len(looks) >= 2:
+        out["rotate"] = out.get("rotate") or {"type": "night"}
+    elif out.get("rotate"):
+        raise vol.Invalid("rotate needs at least two looks")
+    return out
+
+
+_OVERRIDE = vol.Schema({
+    vol.Optional("look"): vol.Any(None, _LOOK),
+    vol.Optional("before"): vol.Any(None, _int(0, hc.MAX_WINDOW_DAYS)),
+    vol.Optional("after"): vol.Any(None, _int(0, hc.MAX_WINDOW_DAYS)),
+    vol.Optional("enabled"): vol.Any(None, _bool),
+})
+
+
+def validate_holiday_override(data: dict[str, Any]) -> dict[str, Any]:
+    """The changes a person asked for on one holiday: look, before, after, enabled. A key set to None clears that
+    override (back to the built-in value). Unknown keys are an error."""
+    return _OVERRIDE(data)
+
+
+def clean_overrides(raw: Any) -> dict[str, dict[str, Any]]:
+    """Stored holiday overrides, checked: unknown holidays and bad values are dropped (never trusted blindly)."""
+    out: dict[str, dict[str, Any]] = {}
+    for hid, o in raw.items() if isinstance(raw, dict) else []:
+        if hid not in hc.BY_ID or not isinstance(o, dict):
+            continue
+        try:
+            checked = {k: v for k, v in validate_holiday_override(o).items() if v is not None}
+        except vol.Invalid as err:
+            _LOGGER.warning("Dropping a saved holiday override that is no longer valid: %s", err)
+            continue
+        if checked:
+            out[hid] = checked
     return out
 
 
@@ -177,6 +258,7 @@ class _Owned:
     print: Any = None  # the light's state right after the look was applied
     runner: Any = None  # an area: the zone runner started for it
     fade_out: float = 0.0  # seconds to fade out over when the window closes
+    look: Any = None  # the look it was given (a rotation or holiday change swaps it)
 
 
 @dataclass
@@ -202,6 +284,7 @@ class LightScheduler:
         self.hass = hass
         self._store: Store[dict[str, Any]] = Store(hass, 1, LIGHT_SCHEDULE_STORE_KEY)
         self.schedules: list[dict[str, Any]] = []
+        self.holiday_overrides: dict[str, dict[str, Any]] = {}  # holiday id -> {look?, before?, after?, enabled?}
         self._windows: dict[str, dict[str, Any]] = {}  # window key -> {"end": iso, "stopped": bool, "units": [..]}
         self._manual: dict[str, dict[str, str]] = {}  # schedule id -> {"start": iso, "end": iso} (run now)
         self._owned: dict[str, _Owned] = {}  # unit ("light:<entry id>" / "area:<area id>") -> what we set
@@ -237,13 +320,14 @@ class LightScheduler:
                 self.schedules.append({**validate_light_schedule({k: v for k, v in s.items() if k != "id"}), "id": s["id"]})
             except (vol.Invalid, ValueError, TypeError, KeyError) as err:
                 _LOGGER.warning("Dropping a saved light schedule that is no longer valid: %s", err)
+        self.holiday_overrides = clean_overrides(data.get("holidays"))
         self._windows = {}
         windows = data.get("windows")
         for key, w in windows.items() if isinstance(windows, dict) else []:
             if isinstance(key, str) and isinstance(w, dict) and isinstance(w.get("end"), str):
                 units = w.get("units")
                 self._windows[key] = {"end": w["end"], "stopped": w.get("stopped") is True,
-                                      "announced": w.get("announced") is True,
+                                      "announced": w.get("announced") is True, "skipped": w.get("skipped") is True,
                                       "units": [u for u in units if isinstance(u, str)] if isinstance(units, list) else []}
         self._manual = {}
         manual = data.get("manual")
@@ -252,7 +336,8 @@ class LightScheduler:
                 self._manual[sid] = {"start": m["start"], "end": m["end"]}
 
     def _data(self) -> dict[str, Any]:
-        return {"schedules": self.schedules, "windows": self._windows, "manual": self._manual}
+        return {"schedules": self.schedules, "windows": self._windows, "manual": self._manual,
+                "holidays": self.holiday_overrides}
 
     @callback
     def _save(self) -> None:
@@ -381,6 +466,85 @@ class LightScheduler:
         await self._process()
         return stopped
 
+    # --- holidays ------------------------------------------------------------------
+    def holidays_view(self, days: int = 120, today: date | None = None) -> dict[str, Any]:
+        """The calendar for the UI: every holiday with its next date and effective settings, the upcoming windows,
+        and the holiday whose window includes today."""
+        today = today or dt_util.now().date()
+        rows = []
+        for h in hc.HOLIDAYS:
+            eff = hc.effective(h, self.holiday_overrides)
+            nxt = hc.next_occurrence(h, today, self.holiday_overrides)
+            rows.append({
+                "id": h.id, "name": h.name, "rule": h.rule, "note": h.note, "enabled": eff["enabled"],
+                "look": eff["look"], "before": eff["before"], "after": eff["after"],
+                "default_look": dict(h.look), "default_before": h.before, "default_after": h.after,
+                "overridden": h.id in self.holiday_overrides,
+                "date": nxt[0].isoformat() if nxt else None,
+                "window_start": nxt[1].isoformat() if nxt else None,
+                "window_end": nxt[2].isoformat() if nxt else None,
+                "active": bool(nxt and nxt[1] <= today <= nxt[2] and eff["enabled"]),
+            })
+        hit = hc.active_holiday(today, self.holiday_overrides)
+        return {"today": today.isoformat(), "holidays": rows, "active": hit[0].id if hit else None,
+                "upcoming": hc.upcoming(today, days, self.holiday_overrides),
+                "table_years": list(hc.TABLE_YEARS)}
+
+    async def async_set_holiday(self, holiday_id: str, changes: dict[str, Any]) -> None:
+        """Override a holiday's look, window (before / after days) or enabled flag. A value of None clears that override."""
+        if holiday_id not in hc.BY_ID:
+            raise KeyError(f"No holiday {holiday_id}")
+        changes = validate_holiday_override(changes)
+        async with self._lock:
+            o = dict(self.holiday_overrides.get(holiday_id, {}))
+            for k, v in changes.items():
+                if v is None:
+                    o.pop(k, None)
+                else:
+                    o[k] = v
+            if o:
+                self.holiday_overrides[holiday_id] = o
+            else:
+                self.holiday_overrides.pop(holiday_id, None)
+            self._save()
+        await self._process()
+
+    async def async_reset_holiday(self, holiday_id: str) -> None:
+        if holiday_id not in hc.BY_ID:
+            raise KeyError(f"No holiday {holiday_id}")
+        async with self._lock:
+            self.holiday_overrides.pop(holiday_id, None)
+            self._save()
+        await self._process()
+
+    def _look_at(self, s: dict[str, Any], w: sm.Window, now: datetime) -> tuple[dict[str, Any], str | None]:
+        """The look the schedule shows in window `w` at `now`, and the holiday id when a holiday's look replaced it."""
+        if s.get("holiday_looks"):
+            hit = hc.active_holiday(w.day, self.holiday_overrides)
+            if hit is not None:
+                return dict(hit[2]["look"]), hit[0].id
+        looks = s.get("looks") or []
+        if len(looks) > 1:
+            return dict(looks[sm.rotation_index(len(looks), s.get("rotate"), s["id"], w.day, w.start, now)]), None
+        return s["look"], None
+
+    def _presence_ok(self, s: dict[str, Any]) -> bool:
+        """only_when: is the house in the wanted state? zone.home's state is how many people are home. When that is
+        unknown or unavailable the schedule runs."""
+        mode = s.get("only_when", "any")
+        if mode == "any":
+            return True
+        try:
+            count = int(self.hass.states.get("zone.home").state)
+        except (AttributeError, TypeError, ValueError):
+            return True
+        return count > 0 if mode == "home" else count == 0
+
+    def _skip(self, s: dict[str, Any], key: str, end: datetime) -> None:
+        """Record that this window did not start because of only_when (so it is not checked again)."""
+        _LOGGER.info("Light schedule %s did not start: only_when=%s", s.get("name"), s.get("only_when"))
+        self._windows[key] = {"end": end.isoformat(), "stopped": True, "skipped": True, "announced": True, "units": []}
+
     # --- windows -------------------------------------------------------------------
     def _sun(self, day, event: str) -> datetime | None:
         return get_astral_event_date(self.hass, event, day)
@@ -430,8 +594,12 @@ class LightScheduler:
         cur = self._current(s, now) if s["enabled"] or s["id"] in self._manual else None
         nxt = self._next(s, now) if s["enabled"] else None
         off = cur[0].end if cur else (nxt.end if nxt else None)
+        look_now, holiday = self._look_at(s, cur[0], now) if cur else (None, None)
+        skipped = any(k.split("|", 1)[0] == s["id"] and w.get("skipped") and (e := _parse(w["end"])) is not None
+                      and e > now for k, w in self._windows.items())
         return {**s, "active": s["id"] in self._active, "next_on": nxt.start.isoformat() if nxt else None,
-                "next_off": off.isoformat() if off else None}
+                "next_off": off.isoformat() if off else None, "look_now": look_now, "holiday_now": holiday,
+                "skipped_now": skipped}
 
     def views(self) -> list[dict[str, Any]]:
         now = dt_util.utcnow()
@@ -537,16 +705,17 @@ class LightScheduler:
         if (key := self._active.pop(sid, None)) is not None:
             self._fire_ended(sid, key, reason)
 
-    async def _apply_once(self, s: dict[str, Any], key: str, now: datetime) -> None:
+    async def _apply_once(self, s: dict[str, Any], key: str, now: datetime, w: sm.Window | None = None) -> None:
         """A window with no end: apply the look to what is free and leave it on."""
         mgr = self.hass.data.get(MAP_KEY)
         if mgr is None:
             return
         plan = self._plan(s, mgr.model, {r["entry_id"]: r for r in mgr.lights()})
         done = self._windows.setdefault(key, {"end": (now + KEEP).isoformat(), "stopped": False, "units": []})
+        look = self._look_at(s, w or sm.Window(now, None, now.astimezone(self._tz).date()), now)[0]
         for unit in [f"light:{e}" for e in plan.lights] + [f"area:{a}" for a in plan.zones]:
             self._owned.pop(unit, None)  # whoever had it no longer turns it off
-            if await self._apply_unit(unit, s["look"], mgr, None, s["fade_in_s"]):
+            if await self._apply_unit(unit, look, mgr, None, s["fade_in_s"]):
                 done["units"].append(unit)
         self._fire_started(s, key, None)
 
@@ -590,9 +759,22 @@ class LightScheduler:
         if new == old:
             return
         async with self._lock:
-            hit = [s for s in self.schedules if s["look"]["pattern"].casefold() == old.casefold()]
-            for s in hit:
-                s["look"] = {**s["look"], "pattern": new or patterns.DEFAULT_PATTERN}
+            def fix(look: dict[str, Any]) -> dict[str, Any]:
+                if look["pattern"].casefold() == old.casefold():
+                    return {**look, "pattern": new or patterns.DEFAULT_PATTERN}
+                return look
+
+            hit = []
+            for s in self.schedules:
+                before = (s["look"], s.get("looks", []))
+                s["look"] = fix(s["look"])
+                s["looks"] = [fix(x) for x in s.get("looks", [])]
+                if before != (s["look"], s["looks"]):
+                    hit.append(s)
+            for o in self.holiday_overrides.values():
+                if "look" in o and fix(o["look"]) != o["look"]:
+                    o["look"] = fix(o["look"])
+                    hit.append(o)
             if hit:
                 self._save()
         if hit:
@@ -618,7 +800,11 @@ class LightScheduler:
         active: dict[str, tuple[sm.Window, str]] = {}
         for s in self.schedules:
             if (cur := self._current(s, now)) is not None:
-                active[s["id"]] = (cur[0], self._key(s["id"], cur[0], cur[1]))
+                key = self._key(s["id"], cur[0], cur[1])
+                if not cur[1] and key not in self._windows and not self._presence_ok(s):
+                    self._skip(s, key, cur[0].end)  # only_when is checked once, when the window is first seen
+                    continue
+                active[s["id"]] = (cur[0], key)
         # 2. windows that ended or were stopped
         for sid in [i for i in self._active if i not in active or active[i][1] != self._active[i]]:
             key = self._active.pop(sid)
@@ -634,8 +820,9 @@ class LightScheduler:
             for sid, (w, key) in sorted(active.items(), key=lambda kv: kv[1][0].start):
                 s = self.get_schedule(sid)
                 plan = self._plan(s, model, rows)
+                look = self._look_at(s, w, now)[0]
                 for unit in [f"light:{e}" for e in plan.lights] + [f"area:{a}" for a in plan.zones]:
-                    wants[unit] = _Want(sid, key, w.start, s["look"], s["fade_in_s"], s["fade_out_s"])
+                    wants[unit] = _Want(sid, key, w.start, look, s["fade_in_s"], s["fade_out_s"])
         # 4. let go of units nobody wants any more
         for unit, own in list(self._owned.items()):
             want = wants.get(unit)
@@ -648,6 +835,8 @@ class LightScheduler:
             own = self._owned.get(unit)
             done = self._windows[want.key]["units"]
             if own is not None and own.key == want.key:
+                if own.look is not None and own.look != want.look:  # the rotation stepped, or a holiday began / ended
+                    await self._retake(unit, own, want, mgr, now)
                 continue
             if own is not None:  # a different window held it
                 if self._untouched(unit, own, mgr):
@@ -666,7 +855,8 @@ class LightScheduler:
                     self._reclaimed.add((want.key, unit))
                     if unit.startswith("light:") and (ctl := mgr.controller(unit[6:])) is not None \
                             and self._reclaimable(ctl, want.look):
-                        self._owned[unit] = _Owned(want.sid, want.key, now, self._print(ctl), fade_out=want.fade_out)
+                        self._owned[unit] = _Owned(want.sid, want.key, now, self._print(ctl), fade_out=want.fade_out,
+                                                   look=want.look)
                 continue
             await self._take(unit, want, mgr, now)
         for sid, (w, key) in active.items():
@@ -678,8 +868,16 @@ class LightScheduler:
         self._last = now
         self._save()
 
+    async def _retake(self, unit: str, own: _Owned, want: _Want, mgr: Any, now: datetime) -> None:
+        """Same window, new look: swap it in (a cross-fade) unless a person changed the unit meanwhile."""
+        if self._untouched(unit, own, mgr):
+            if await self._apply_unit(unit, want.look, mgr, own, want.fade_in, want.fade_out):
+                own.look, own.applied_at = want.look, now
+        else:
+            own.look = want.look  # a person's change stands; the next step is judged the same way
+
     async def _take(self, unit: str, want: _Want, mgr: Any, now: datetime) -> bool:
-        own = _Owned(want.sid, want.key, now, fade_out=want.fade_out)
+        own = _Owned(want.sid, want.key, now, fade_out=want.fade_out, look=want.look)
         if not await self._apply_unit(unit, want.look, mgr, own, want.fade_in, want.fade_out):
             return False
         self._owned[unit] = own
@@ -698,7 +896,10 @@ class LightScheduler:
                 key = self._key(s["id"], w)
                 if key in self._windows or w.start < now - CATCHUP:
                     continue
-                await self._apply_once(s, key, now)
+                if not self._presence_ok(s):
+                    self._skip(s, key, now + KEEP)
+                    continue
+                await self._apply_once(s, key, now, w)
 
     # --- events ----------------------------------------------------------------------------
     def _fire_started(self, s: dict[str, Any] | None, key: str, w: sm.Window | None) -> None:
@@ -732,6 +933,8 @@ class LightScheduler:
                 for w, _ in self._windows_now(s, now):
                     if w.end:
                         wake = min(wake, w.end)
+                        if len(s.get("looks") or []) > 1 and (nr := sm.next_rotation(s.get("rotate"), w.start, now)):
+                            wake = min(wake, nr)
                 if s["enabled"]:
                     for w in self._natural(s, now, now + MAX_REARM):
                         if w.start > now:

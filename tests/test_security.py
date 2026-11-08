@@ -296,3 +296,88 @@ def test_receiver_accepts_only_lan_sources_and_honours_allowlist():
         assert got[-1] == b"\x01\x01\x01"
 
     asyncio.run(run())
+
+
+# --- hardening round 2 ---------------------------------------------------------------------
+@pytest.mark.parametrize("bad", ["169.254.169.254", "169.254.170.2", "169.254.169.1"])
+def test_metadata_ranges_refused(bad):
+    assert not hosts.is_lan_ipv4(bad)
+    with pytest.raises(ValueError):
+        hosts.valid_ipv4(bad)
+
+
+def test_rate_limiter_checks_source_before_global():
+    rl = packets.RateLimiter(per_source=2, overall=100)
+    t = 1.0
+    rl.allow("10.0.0.1", t)
+    before = rl._all[0]
+    for _ in range(50):  # flooding source: denied by its own bucket
+        rl.allow("10.0.0.2", t)
+    spent = before - rl._all[0]
+    assert spent <= 3  # only the two tokens it was entitled to (+ the first) reached the global bucket
+
+
+def _scan_with(replies, monkeypatch):
+    import asyncio
+    import json as _json
+    protocol = _load("protocol")
+
+    class FakeSock:
+        def __init__(self, *a, **k): pass
+        def setblocking(self, *a): pass
+        def setsockopt(self, *a): pass
+        def bind(self, *a): pass
+        def sendto(self, *a): pass
+        def close(self): pass
+
+    queue = list(replies)
+
+    async def fake_recvfrom(self, sock, n):
+        if not queue:
+            raise TimeoutError
+        data, src = queue.pop(0)
+        return (data if isinstance(data, bytes) else _json.dumps(data).encode()), (src, 4002)
+
+    fake_socket = types.SimpleNamespace(**{k: getattr(protocol.socket, k) for k in dir(protocol.socket)
+                                           if not k.startswith("__")})
+    fake_socket.socket = FakeSock
+    monkeypatch.setattr(protocol, "socket", fake_socket)
+    monkeypatch.setattr(asyncio.AbstractEventLoop, "sock_recvfrom", fake_recvfrom, raising=False)
+    return asyncio.run(protocol.async_scan(0.3))
+
+
+def _scan(ip, **extra):
+    return {"msg": {"cmd": "scan", "data": {"ip": ip, "sku": "H70", "device": "AA", **extra}}}
+
+
+def test_scan_survives_hostile_payloads_and_requires_matching_source(monkeypatch):
+    replies = [
+        (b"[" * 100000, "192.168.1.5"),          # RecursionError
+        (b"[1,2,3]", "192.168.1.5"),              # not a dict
+        ({"msg": [1]}, "192.168.1.5"),
+        ({"msg": {"cmd": "scan", "data": [1]}}, "192.168.1.5"),
+        (_scan("192.168.1.99"), "192.168.1.5"),   # names an address other than its source
+        (_scan("192.168.1.6"), "192.168.1.6"),    # honest
+    ]
+    found = _scan_with(replies, monkeypatch)
+    assert list(found) == ["192.168.1.6"]
+
+
+def test_twinkly_discovery_reply_must_match_source():
+    twinkly_src = (PKG / "twinkly.py").read_text()
+    assert "reply[0] == src" in twinkly_src
+
+
+def test_receiver_isolates_subscribers_and_logs_open_mode(caplog):
+    import logging
+    receiver = _load("receiver")
+    rx = receiver.PixelReceiver()
+    seen = []
+    rx._subs["bad"] = (0, 3, lambda b: 1 / 0)
+    rx._subs["good"] = (0, 3, seen.append)
+    rx.show(bytearray(b"abc"))
+    assert seen == [b"abc"]
+    with caplog.at_level(logging.INFO):
+        rx.set_allowed_sources("")
+        rx.set_allowed_sources("")
+    assert sum("any private LAN address" in r.message for r in caplog.records) == 1

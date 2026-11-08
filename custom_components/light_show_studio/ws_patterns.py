@@ -8,13 +8,31 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
-from . import patterns, user_patterns
+from . import music_engine, patterns, user_patterns
 from .const import PREVIEW_KEY, USER_PATTERNS_KEY
 from .patternpreview import PreviewError, PreviewManager
 from .pattern_store import PatternStore
+from .ws_music import may_control
 
 P = "light_show_studio/patterns"
 REF = vol.All(str, vol.Length(min=1, max=64))
+
+
+PREVIEW_RATE, PAINT_RATE = 5.0, 20.0  # calls a second per connection (painting while dragging sends many small batches)
+_limits: dict[tuple[str, int], music_engine.RateLimiter] = {}  # by (kind, connection)
+
+
+def _allowed(connection: Any, msg: dict[str, Any], kind: str, rate: float, burst: float) -> bool:
+    """Per-connection rate limit; sends rate_limited when over."""
+    key = (kind, id(connection))
+    limiter = _limits.get(key)
+    if limiter is None:
+        limiter = _limits[key] = music_engine.RateLimiter(rate, burst)
+        connection.subscriptions[("pattern_rate", key)] = lambda: _limits.pop(key, None)  # forgotten when it closes
+    if limiter.allow():
+        return True
+    connection.send_error(msg["id"], "rate_limited", "Too many calls; slow down")
+    return False
 
 
 def async_register(hass: HomeAssistant) -> None:
@@ -50,7 +68,7 @@ def limits() -> dict[str, int]:
             "max_palette_colours": user_patterns.MAX_COLOURS, "max_bulbs_per_colour": user_patterns.MAX_BULBS_PER_COLOUR,
             "max_light_pixels": user_patterns.MAX_LIGHT_PIXELS, "max_area_points": user_patterns.MAX_AREA_POINTS,
             "max_painted": user_patterns.MAX_PAINTED, "max_paint_batch": user_patterns.MAX_PAINT_BATCH,
-            "position_max": user_patterns.POS_MAX}
+            "position_max": user_patterns.POS_MAX, "max_total_painted": user_patterns.MAX_TOTAL_PAINTED}
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{P}/list"})
@@ -106,6 +124,12 @@ async def ws_preview(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) 
     preview_stop, after 60 s without a preview / paint call, or when this connection closes; the lights go back."""
     if (preview := _preview(hass, connection, msg)) is None:
         return
+    if not _allowed(connection, msg, "preview", PREVIEW_RATE, 10.0):
+        return
+    lights = [msg["entry_id"]] if msg.get("entry_id") else []
+    if not may_control(hass, connection, preview.mgr, lights, [msg["area"]] if msg.get("area") else []):
+        connection.send_error(msg["id"], "unauthorized", "You may not control those lights")
+        return
     connection.subscriptions[("pattern_preview", id(connection))] = lambda: preview.stop(connection)
     try:
         result = await preview.async_start(connection, msg.get("entry_id"), msg.get("area"), msg["pattern"],
@@ -145,6 +169,11 @@ def _pixel(row: Any) -> tuple[int, tuple[int, int, int]]:
 async def ws_paint(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
     """Paint pixels of the pattern being previewed (a pixels pattern), shown on the light at once."""
     if (preview := _preview(hass, connection, msg)) is None:
+        return
+    if not _allowed(connection, msg, "paint", PAINT_RATE, 30.0):
+        return
+    if not may_control(hass, connection, preview.mgr, [msg["entry_id"]], []):
+        connection.send_error(msg["id"], "unauthorized", "You may not control that light")
         return
     try:
         n = preview.paint(connection, msg["entry_id"], msg["set"])

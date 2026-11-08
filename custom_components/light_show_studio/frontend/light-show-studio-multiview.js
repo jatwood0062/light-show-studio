@@ -182,6 +182,47 @@ const median = (arr) => {
   return s[s.length >> 1];
 };
 
+// 2D points not (nearly) on one line: ratio of the spread across the best line to the spread along it
+function spreadOK(P, min = 0.04) {
+  let mx = 0, my = 0;
+  for (const p of P) (mx += p[0]), (my += p[1]);
+  mx /= P.length;
+  my /= P.length;
+  let a = 0, b = 0, c = 0;
+  for (const p of P) {
+    const x = p[0] - mx, y = p[1] - my;
+    a += x * x;
+    b += x * y;
+    c += y * y;
+  }
+  const tr = a + c, dt = Math.sqrt(Math.max(0, (a - c) * (a - c) / 4 + b * b));
+  const l1 = tr / 2 + dt, l2 = tr / 2 - dt;
+  return l1 > 1e-18 && Math.sqrt(Math.max(l2, 0) / l1) > min;
+}
+// 3D points not (nearly) on one line
+function lineLike3(P, min = 0.03) {
+  const mu = [0, 0, 0];
+  for (const p of P) for (let k = 0; k < 3; k++) mu[k] += p[k] / P.length;
+  const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (const p of P) {
+    const d = sub(p, mu);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i][j] += d[i] * d[j];
+  }
+  const sv = svd(C).S;
+  return Math.sqrt(sv[1] / (sv[0] || 1)) < min;
+}
+// index -> run number (0 for everything when there are no runs); runs = [[start, count], ...]
+function runIndex(n, runs) {
+  const r = new Int32Array(n).fill(-1);
+  if (!runs || !runs.length) return r.fill(0);
+  runs.forEach((q, k) => {
+    for (let i = Math.max(0, q[0]); i < Math.min(n, q[0] + q[1]); i++) r[i] = k;
+  });
+  let next = runs.length;
+  for (let i = 0; i < n; i++) if (r[i] < 0) r[i] = next++; // lights outside every run each stand alone (never bridged)
+  return r;
+}
+
 // ---- device orientation prior -----------------------------------------------------------------------------------------------
 // DeviceOrientationEvent (alpha about z, beta about x, gamma about y; degrees) -> rotation taking the phone's own axes (x right, y up the
 // screen, z out of it) to the world's (east, north, up): R = Rz(alpha) Rx(beta) Ry(gamma). The back camera looks along -z with image y down,
@@ -315,29 +356,50 @@ function transferErr(H, a, b) {
 }
 
 // RANSAC with local optimisation: whenever a sample beats the best, refit on all its inliers a few times (a minimal sample is noisy)
-function ransac(rand, n, minimal, fit, err, thr, iters) {
+function ransac(rand, n, minimal, fit, err, thr, iters, ro = {}) {
   let best = null;
+  const pool = [];
   const count = (model, t) => {
     const inl = [];
-    for (let i = 0; i < n; i++) if (err(model, i) <= t) inl.push(i);
-    return inl;
+    let sc = 0;
+    for (let i = 0; i < n; i++) {
+      const e = err(model, i);
+      if (e <= t) inl.push(i);
+      if (ro.msac && t === thr) sc += Math.min(e, thr) / thr; // truncated cost over all points: outliers cost 1, inliers by how well they fit
+    }
+    return { inl, sc };
   };
   for (let it = 0; it < iters; it++) {
     let model = fit(sample(rand, n, minimal));
     if (!model) continue;
-    let inl = count(model, thr);
-    // local optimisation: refit on everything fairly close, tightening step by step
-    for (const f of [6, 3, 1.8, 1]) {
-      const wide = count(model, thr * f);
+    let c = count(model, thr);
+    // local optimisation: refit on everything fairly close, tightening step by step (only for samples that already look promising)
+    const promising = !best || c.inl.length >= 0.55 * best.inl.length || ro.keep > 1 && c.inl.length >= 0.4 * best.inl.length;
+    for (const f of promising ? [6, 3, 1.8, 1] : []) {
+      const wide = count(model, thr * f).inl;
       if (wide.length < minimal + 2) break;
       const m2 = fit(wide);
       if (!m2) break;
-      const i2 = count(m2, thr);
-      if (i2.length >= inl.length) (model = m2), (inl = i2);
+      const c2 = count(m2, thr);
+      if (ro.msac ? c2.sc <= c.sc : c2.inl.length >= c.inl.length) (model = m2), (c = c2);
     }
-    if (!best || inl.length > best.inl.length) best = { model, inl };
+    const q = { model, inl: c.inl, cost: c.sc };
+    const key = (x) => (ro.msac ? -x.cost : x.inl.length);
+    if (!best || key(q) > key(best)) best = q;
+    if (ro.keep > 1) {
+      const set = new Set(c.inl);
+      const dup = pool.find((o) => {
+        let both = 0;
+        for (const i of o.inl) if (set.has(i)) both++;
+        return both > 0.8 * Math.max(o.inl.length, c.inl.length);
+      });
+      if (dup) {
+        if (key(q) > key(dup)) Object.assign(dup, q);
+      } else pool.push(q);
+    }
     if (best.inl.length >= 0.95 * n && it >= 10) break;
   }
+  if (best && ro.keep > 1) best.pool = pool.sort((p, q) => (ro.msac ? p.cost - q.cost : q.inl.length - p.inl.length)).slice(0, ro.keep);
   return best;
 }
 
@@ -392,8 +454,90 @@ function scorePose(R, t, x1, x2, idxs) {
   return { good, err: good ? errSum / good : Infinity };
 }
 
+// signed Sampson distance (bearing units) of a match under E
+function sampsonSigned(E, a, b) {
+  const Ea = mv(E, a), Eb = mtv(E, b);
+  return dot(b, Ea) / Math.sqrt(Ea[0] * Ea[0] + Ea[1] * Ea[1] + Eb[0] * Eb[0] + Eb[1] * Eb[1] + 1e-30);
+}
+const skew = (t) => [0, -t[2], t[1], t[2], 0, -t[0], -t[1], t[0], 0];
+// Polish a relative pose (R, unit t) against all matches: 5 parameters (a rotation and a direction), Cauchy-weighted Sampson error.
+// A pose from a 8-point fit has 7 free parameters and soaks up noise; this keeps it a genuine camera move. Returns {R, t, cost, inl} where
+// cost counts every match as min(error^2 / tau^2, 1), so a pose that fits more matches more closely costs less.
+function refinePose(R0, t0, A, B, tau, iters = 14) {
+  let R = R0, t = unit(t0);
+  const N = A.length;
+  const basis = (tv) => {
+    const h = Math.abs(tv[0]) < 0.8 ? [1, 0, 0] : [0, 1, 0];
+    const u1 = unit(cross(tv, h)), u2 = cross(tv, u1);
+    return [u1, u2];
+  };
+  const resid = (Rm, tv) => {
+    const E = mm(skew(tv), Rm);
+    return A.map((a, k) => sampsonSigned(E, a, B[k]));
+  };
+  const robust = (r) => {
+    let c = 0;
+    for (const x of r) c += Math.min((x * x) / (tau * tau), 1);
+    return c;
+  };
+  let r = resid(R, t), cost = robust(r), lambda = 1e-2;
+  const eps = 1e-5;
+  for (let it = 0; it < iters; it++) {
+    const [u1, u2] = basis(t);
+    const J = [];
+    const params = [
+      (d) => [mm(rodrigues([d, 0, 0]), R), t],
+      (d) => [mm(rodrigues([0, d, 0]), R), t],
+      (d) => [mm(rodrigues([0, 0, d]), R), t],
+      (d) => [R, unit([t[0] + d * u1[0], t[1] + d * u1[1], t[2] + d * u1[2]])],
+      (d) => [R, unit([t[0] + d * u2[0], t[1] + d * u2[1], t[2] + d * u2[2]])],
+    ];
+    for (const f of params) {
+      const [Rp, tp] = f(eps);
+      const rp = resid(Rp, tp);
+      J.push(rp.map((x, k) => (x - r[k]) / eps));
+    }
+    const w = r.map((x) => 1 / (1 + (x / tau) ** 2)); // Cauchy weights: a wrong match hardly counts
+    const H = Array.from({ length: 5 }, () => new Float64Array(5)), g = new Float64Array(5);
+    for (let k = 0; k < N; k++) {
+      for (let i = 0; i < 5; i++) {
+        g[i] -= J[i][k] * r[k] * w[k];
+        for (let j = 0; j < 5; j++) H[i][j] += J[i][k] * J[j][k] * w[k];
+      }
+    }
+    let improved = false;
+    for (let attempt = 0; attempt < 6 && !improved; attempt++) {
+      const S = H.map((row, i) => {
+        const q = Float64Array.from(row);
+        q[i] += lambda * Math.max(row[i], 1e-12);
+        return q;
+      });
+      const d = solveLin(S, Float64Array.from(g));
+      if (!d) {
+        lambda *= 10;
+        continue;
+      }
+      const Rn = mm(rodrigues([d[0], d[1], d[2]]), R);
+      const tn = unit([t[0] + d[3] * u1[0] + d[4] * u2[0], t[1] + d[3] * u1[1] + d[4] * u2[1], t[2] + d[3] * u1[2] + d[4] * u2[2]]);
+      const rn = resid(Rn, tn);
+      // compare with the smooth robust cost (the truncated one is flat for outliers and would stall)
+      const sm = (q) => q.reduce((acc, x) => acc + Math.log(1 + (x / tau) ** 2), 0);
+      if (sm(rn) < sm(r)) {
+        R = Rn;
+        t = tn;
+        r = rn;
+        lambda = Math.max(lambda / 3, 1e-6);
+        improved = true;
+      } else lambda *= 4;
+    }
+    if (!improved) break;
+  }
+  cost = robust(r);
+  return { R, t, cost, inl: r.filter((x) => Math.abs(x) < tau).length };
+}
+
 // initial candidate poses for views a, b: [{R, t, planar}] best first
-function initialPoses(va, vb, shared, F, rand, tolPx) {
+function initialPoses(va, vb, shared, F, rand, tolPx, glow = false, fast = false) {
   const x1 = new Map(), x2 = new Map();
   for (const i of shared) {
     x1.set(i, bearing(va.pts.get(i), F));
@@ -403,32 +547,63 @@ function initialPoses(va, vb, shared, F, rand, tolPx) {
   const A = idxs.map((i) => x1.get(i)), B = idxs.map((i) => x2.get(i));
   const thr = (tolPx / (Math.max(va.m, vb.m) * F)) ** 2;
   const out = [];
+  const keep = glow && !fast ? 3 : 1;
   // essential matrix
-  const eBest = N >= 8 ? ransac(rand, N, 8, (s) => essentialFrom(s.map((k) => A[k]), s.map((k) => B[k])), (E, k) => sampson(E, A[k], B[k]), thr, 400) : null;
-  const hBest = N >= 4 ? ransac(rand, N, 4, (s) => homographyFrom(s.map((k) => A[k]), s.map((k) => B[k])), (H, k) => transferErr(H, A[k], B[k]), thr * 1.5, 300) : null;
-  const planar = hBest && hBest.inl.length >= 0.9 * N;
+  const eBest = N >= 8 ? ransac(rand, N, 8, (s) => {
+    const a = s.map((k) => A[k]), b = s.map((k) => B[k]);
+    return spreadOK(a) && spreadOK(b) ? essentialFrom(a, b) : null;
+  }, (E, k) => sampson(E, A[k], B[k]), thr, fast ? 150 : glow ? 500 : 400, { msac: glow, keep }) : null;
+  const hBest = N >= 4 ? ransac(rand, N, 4, (s) => {
+    const a = s.map((k) => A[k]), b = s.map((k) => B[k]);
+    return spreadOK(a, 0.08) && spreadOK(b, 0.08) ? homographyFrom(a, b) : null;
+  }, (H, k) => transferErr(H, A[k], B[k]), thr * 1.5, fast ? 80 : glow ? 300 : 300, { msac: glow, keep: glow && !fast ? 2 : 1 }) : null;
+  // If one plane explains about as many matches as the general model, the general (essential matrix) answer is unreliable: use the plane.
+  // If the plane explains a good share, offer both and let the full solve decide.
+  const eN = eBest ? eBest.inl.length : 0, hN = hBest ? hBest.inl.length : 0;
+  const planar = hN >= 4 && (hN >= 0.9 * N || hN >= 0.88 * eN);
+  const mixed = hN >= 6 && hN >= 0.55 * eN;
+  const dedupe = (c) => !out.some((o) => angleBetween(o.R, c.R) < 1 && norm(sub(o.t, c.t)) < 0.05);
   if (eBest && eBest.inl.length >= 8 && !planar) {
-    const E = essentialFrom(eBest.inl.map((k) => A[k]), eBest.inl.map((k) => B[k]));
-    const cands = decomposeE(E).map((c) => ({ ...c, ...scorePose(c.R, c.t, x1, x2, eBest.inl.map((k) => idxs[k])), planar: false }));
-    cands.sort((p, q) => q.good - p.good || p.err - q.err);
-    if (cands[0].good >= 6) out.push(cands[0]);
+    for (const hyp of eBest.pool || [eBest]) {
+      if (hyp.inl.length < 8) continue;
+      const E = essentialFrom(hyp.inl.map((k) => A[k]), hyp.inl.map((k) => B[k]));
+      const cands = decomposeE(E).map((c) => ({ ...c, ...scorePose(c.R, c.t, x1, x2, hyp.inl.map((k) => idxs[k])), planar: false }));
+      cands.sort((p, q) => q.good - p.good || p.err - q.err);
+      if (cands[0].good >= 6 && dedupe(cands[0])) out.push(cands[0]);
+    }
   }
-  if (hBest && hBest.inl.length >= 4 && (planar || !out.length)) {
-    const H = homographyFrom(hBest.inl.map((k) => A[k]), hBest.inl.map((k) => B[k]));
-    let sign = 0;
-    for (const k of hBest.inl) sign += dot(B[k], mv(H, A[k]));
-    const Hs = sign < 0 ? H.map((x) => -x) : H;
-    const inl = hBest.inl.map((k) => idxs[k]);
-    const cands = decomposeH(Hs).map((c) => ({ ...c, ...scorePose(c.R, c.t, x1, x2, inl), planar: true }));
-    cands.sort((p, q) => q.good - p.good || p.err - q.err);
-    const top = cands[0] ? cands[0].good : 0;
-    for (const c of cands) if (c.good >= Math.max(4, 0.8 * top) && !out.some((o) => angleBetween(o.R, c.R) < 1 && norm(sub(o.t, c.t)) < 0.05)) out.push(c);
+  if (hBest && hBest.inl.length >= 4 && (planar || mixed || !out.length)) {
+    for (const hyp of hBest.pool || [hBest]) {
+      if (hyp.inl.length < 4) continue;
+      const H = homographyFrom(hyp.inl.map((k) => A[k]), hyp.inl.map((k) => B[k]));
+      let sign = 0;
+      for (const k of hyp.inl) sign += dot(B[k], mv(H, A[k]));
+      const Hs = sign < 0 ? H.map((x) => -x) : H;
+      const inl = hyp.inl.map((k) => idxs[k]);
+      const cands = decomposeH(Hs).map((c) => ({ ...c, ...scorePose(c.R, c.t, x1, x2, inl), planar: true }));
+      cands.sort((p, q) => q.good - p.good || p.err - q.err);
+      const top = cands[0] ? cands[0].good : 0;
+      for (const c of cands) if (c.good >= Math.max(4, 0.8 * top) && dedupe(c)) out.push(c);
+    }
   }
-  return out.slice(0, 3);
+  if (glow && out.length) {
+    // polish every hypothesis against all the matches with the same 5-parameter model, rank them by how well they explain the matches
+    const tau = tolPx / (Math.max(va.m, vb.m) * F);
+    const pol = [];
+    for (const c of out) {
+      const q = refinePose(c.R, c.t, A, B, tau);
+      const sc = scorePose(q.R, q.t, x1, x2, idxs);
+      if (sc.good < 5) continue;
+      if (!pol.some((o) => angleBetween(o.R, q.R) < 2 && norm(sub(o.t, q.t)) < 0.1)) pol.push({ ...c, R: q.R, t: q.t, good: sc.good, err: sc.err, cost: q.cost, einl: q.inl });
+    }
+    pol.sort((p, q) => p.cost - q.cost);
+    return pol.slice(0, 6);
+  }
+  return out.slice(0, 4);
 }
 
 // the focal length is only a guess: try a few around it and keep the one that explains the most matches
-function initialPosesF(va, vb, shared, F0, rand, tolPx) {
+function initialPosesF(va, vb, shared, F0, rand, tolPx, glow = false) {
   let best = null;
   const tryF = (F) => {
     const c = initialPoses(va, vb, shared, F, rand, tolPx);
@@ -437,7 +612,8 @@ function initialPosesF(va, vb, shared, F0, rand, tolPx) {
     if (!best || c[0].good > best.score) best = { score: c[0].good, c, F };
   };
   tryF(F0);
-  if (best && best.score >= 0.85 * shared.length) return best.c;
+  if (best && best.score >= (glow ? 0.7 : 0.85) * shared.length) return best.c;
+  if (glow && best) return best.c; // the guess is as good as any: bundle adjustment will find the focal length once there are three views
   for (const k of [0.92, 1.08, 0.84, 1.16, 0.74, 1.3]) tryF(F0 * k);
   if (!best) return [];
   for (const k of [0.97, 1.03, 0.985, 1.015]) tryF(best.F * k); // then narrow in on it
@@ -522,7 +698,9 @@ function registerPnP(P, F, rand, tol, prior) {
     return pr ? (pr[0] - P[k].b[0]) ** 2 + (pr[1] - P[k].b[1]) ** 2 : Infinity;
   };
   const flat = planarity(P) < 0.05;
-  const tries = flat ? [[4, (s) => posePlane(s.map((k) => P[k]))], [6, (s) => poseDLT(s.map((k) => P[k]))]] : [[6, (s) => poseDLT(s.map((k) => P[k]))], [4, (s) => posePlane(s.map((k) => P[k]))]];
+  const dlt = (s) => (lineLike3(s.map((k) => P[k].X)) ? null : poseDLT(s.map((k) => P[k])));
+  const plane = (s) => (lineLike3(s.map((k) => P[k].X)) ? null : posePlane(s.map((k) => P[k])));
+  const tries = flat ? [[4, plane], [6, dlt]] : [[6, dlt], [4, plane]];
   let best = null;
   for (const [minimal, fit] of tries) {
     const r = ransac(rand, N, minimal, (s) => {
@@ -544,13 +722,83 @@ function registerPnP(P, F, rand, tol, prior) {
   return { R: pose.R, t: pose.t, inl: best.inl.length };
 }
 
+// Second way to place a view: its relative pose to one already placed view comes from the matches between those two (essential matrix, or the
+// plane when the matches are flat; many more matches than the few already-triangulated lights it sees), and only the length of the move is
+// left to the known 3D points (a 1-D search). Used when 3D-2D (PnP) has too few points or too many outliers, which is common with sparse glow spots.
+function registerRel(st, views, n, v, rand, tol, glow) {
+  const known = [];
+  for (const [i, p] of views[v].pts) if (st.has[i]) known.push({ X: [st.X[3 * i], st.X[3 * i + 1], st.X[3 * i + 2]], p });
+  const regs = [...st.reg].map((r) => {
+    const shared = [];
+    for (const i of views[v].pts.keys()) if (views[r].pts.has(i)) shared.push(i);
+    return { r, shared };
+  }).filter((q) => q.shared.length >= 8).sort((a, b) => b.shared.length - a.shared.length);
+  if (!regs.length || (known.length < 3 && regs.length < 2)) return null;
+  const thrPx = 2 * tol, mV = views[v].m;
+  // bearings of the matches with every placed view, for the epipolar check of a candidate position (all matches count, not only the
+  // few already triangulated)
+  for (const q of regs) {
+    q.a = q.shared.map((i) => bearing(views[q.r].pts.get(i), st.F));
+    q.b = q.shared.map((i) => bearing(views[v].pts.get(i), st.F));
+    q.thr = (thrPx / (Math.max(views[q.r].m, mV) * st.F)) ** 2;
+  }
+  let best = null;
+  for (const { r, shared } of regs.slice(0, 3)) {
+    const cands = initialPoses(views[r], views[v], shared, st.F, rand, tol * 1.5, glow, true);
+    for (const c of cands) {
+      const Rv = mm(c.R, st.R[r]), t0 = mv(c.R, st.t[r]);
+      const evalL = (lam) => {
+        const tv = [t0[0] + lam * c.t[0], t0[1] + lam * c.t[1], t0[2] + lam * c.t[2]];
+        let sc = 0, inl = 0, einl = 0, esc = 0;
+        for (const k of known) {
+          const pr = project(Rv, tv, st.F, k.X);
+          if (!pr) continue;
+          const e = Math.hypot(pr[0] - k.p[0], pr[1] - k.p[1]) * mV;
+          if (e < thrPx) (sc += 1 - (e / thrPx) ** 2), inl++;
+        }
+        for (const q of regs) {
+          if (q.r === r) continue;
+          const Rr = mm(Rv, mt(st.R[q.r])), tr = mv(Rr, st.t[q.r]);
+          const t = [tv[0] - tr[0], tv[1] - tr[1], tv[2] - tr[2]];
+          // x_v = Rr x_r + t  ->  E = [t]x Rr, and  x_v^T E x_r = 0
+          const E = mm([0, -t[2], t[1], t[2], 0, -t[0], -t[1], t[0], 0], Rr);
+          for (let k = 0; k < q.a.length; k++) {
+            const d = sampson(E, q.a[k], q.b[k]);
+            if (d < q.thr) (esc += 1 - d / q.thr), einl++;
+          }
+        }
+        return { sc: sc + esc, inl, einl, tv };
+      };
+      let bl = null;
+      for (let lam = 0.03; lam < 30; lam *= 1.12) {
+        const q = evalL(lam);
+        if (!bl || q.sc > bl.sc) bl = { ...q, lam };
+      }
+      if (!bl) continue;
+      for (let f = 0.9; f <= 1.1; f += 0.01) {
+        const q = evalL(bl.lam * f);
+        if (q.sc > bl.sc) bl = { ...q, lam: bl.lam * f };
+      }
+      if (!best || bl.sc > best.sc) best = { R: Rv, t: bl.tv, inl: bl.inl, einl: bl.einl, sc: bl.sc, known: known.length, others: regs.length - 1 };
+    }
+  }
+  if (!best) return null;
+  const okKnown = best.inl >= Math.max(3, 0.4 * best.known);
+  const okEpi = best.others >= 1 && best.einl >= Math.max(8, 0.4 * regs.slice(1).reduce((x, q) => x + q.shared.length, 0));
+  if (!(okKnown || okEpi)) return null;
+  best.inl = Math.max(best.inl, 6);
+  return best;
+}
+
 // ---- bundle adjustment ------------------------------------------------------------------------------------------------------------
 // st: {F, R[v], t[v], reg:Set, ref, X (Float64Array 3n), has (Uint8Array n), bad:Set(v*n+i)}; views[v].pts normalised obs.
 function bundleAdjust(st, views, n, o = {}) {
   const freeViews = [...st.reg].filter((v) => v !== st.ref);
   const off = new Map(freeViews.map((v, k) => [v, 6 * k]));
   const freeF = o.freeF !== false && st.reg.size >= 3; // two views cannot tell the focal length from the scene depth
-  const wF = (0.0005 / (0.3 * st.F0)) ** 2; // a weak pull towards the guess (30% sigma) so it can't run away
+  const sigN = st.sigPx ? st.sigPx / st.mRef : 0.0005; // pixel noise in normalised units
+  const wF = (sigN / ((st.fSigma ?? 0.3) * st.F0)) ** 2; // a pull towards the guess so it can't run away (stronger when the pixels are noisy)
+  const Fmin = st.F0 * (st.fRange ? st.fRange[0] : 0.58), Fmax = st.F0 * (st.fRange ? st.fRange[1] : 2.05);
   const P = 6 * freeViews.length + (freeF ? 1 : 0);
   const fcol = freeF ? P - 1 : -1;
   const obs = [];
@@ -561,11 +809,11 @@ function bundleAdjust(st, views, n, o = {}) {
   for (const q of live) if (!slot.has(q.i)) slot.set(q.i, slot.size);
   const NP = slot.size;
   if (!live.length) return { rms: 0, n: 0 };
-  const delta = o.huber ?? 0.0015; // normalised units (about 3 px on a 1920 picture)
+  const delta = o.huber ?? (st.huberPx ?? 2.9) / (st.mRef || 1920); // normalised units (about 3 px on a 1920 picture)
   const eps = 1e-6;
   const dR = [0, 1, 2].map((j) => rodrigues([j === 0 ? eps : 0, j === 1 ? eps : 0, j === 2 ? eps : 0]));
   const cost = (R, t, F, X) => {
-    let c = freeF ? 0.5 * wF * (F - st.F0) ** 2 : 0;
+    let c = (freeF ? 0.5 * wF * (F - st.F0) ** 2 : 0) + priorCost(X) + gravityCost(R);
     for (const q of live) {
       const pr = project(R[q.v], t[q.v], F, [X[3 * q.i], X[3 * q.i + 1], X[3 * q.i + 2]]);
       if (!pr) return Infinity;
@@ -574,14 +822,75 @@ function bundleAdjust(st, views, n, o = {}) {
     }
     return c;
   };
+  // String prior (soft): a light sits near the straight line between its two neighbours on the same run, loosely (a fraction of their
+  // spacing, so corners cost little and a strip that bends is allowed). Neighbours are held while a point moves, then re-read each step.
+  const kappa = o.kappa ?? st.kappa ?? 0.4;
+  const priorOn = !!st.runOf && kappa > 0 && o.prior !== false;
+  let tri = [];
+  const buildTri = () => {
+    tri = [];
+    if (!priorOn) return;
+    const ids = [...slot.keys()].sort((a, b) => a - b);
+    for (let k = 1; k + 1 < ids.length; k++) {
+      const a = ids[k - 1], i = ids[k], c = ids[k + 1];
+      if (st.runOf[a] !== st.runOf[i] || st.runOf[c] !== st.runOf[i] || c - a > (st.maxGap ?? 40)) continue;
+      const f = (i - a) / (c - a);
+      const prd = [0, 1, 2].map((m) => (1 - f) * st.X[3 * a + m] + f * st.X[3 * c + m]);
+      const chord = Math.hypot(st.X[3 * c] - st.X[3 * a], st.X[3 * c + 1] - st.X[3 * a + 1], st.X[3 * c + 2] - st.X[3 * a + 2]);
+      const sg = Math.max(kappa * chord, 1e-6);
+      const d = Math.hypot(st.X[3 * i] - prd[0], st.X[3 * i + 1] - prd[1], st.X[3 * i + 2] - prd[2]);
+      const hub = d > 3 * sg ? (3 * sg) / d : 1; // a corner or a wrong match does not drag its neighbours
+      tri.push({ a, i, c, f, w: (sigN / sg) ** 2 * hub * (st.priorGain ?? 1) });
+    }
+  };
+  const priorCost = (X) => {
+    let c = 0;
+    for (const q of tri) {
+      let d2 = 0;
+      for (let m = 0; m < 3; m++) d2 += (X[3 * q.i + m] - ((1 - q.f) * X[3 * q.a + m] + q.f * X[3 * q.c + m])) ** 2;
+      c += 0.5 * q.w * d2;
+    }
+    return c;
+  };
+  // Gravity prior: with the phones' angles, the same world "up" must come out of every camera. The common up direction (in the first
+  // camera's axes) is re-read each step; the rotation of each free camera is pulled so that it matches the up that camera measured.
+  const gDirs = [];
+  if (st.gravity && o.gravity !== false) for (const v of st.reg) if (st.gravity[v]) gDirs.push(v);
+  const gOn = gDirs.length >= 2;
+  const wG = (sigN / (st.F0 * (st.gravSigma ?? 0.07))) ** 2;
+  let gUp = null;
+  const gravityRead = () => {
+    gUp = null;
+    if (!gOn) return;
+    const sum = [0, 0, 0];
+    for (const v of gDirs) {
+      const u = mtv(st.R[v], st.gravity[v]);
+      for (let m = 0; m < 3; m++) sum[m] += u[m];
+    }
+    if (norm(sum) < 0.3 * gDirs.length) return;
+    gUp = unit(sum);
+  };
+  const gravityCost = (R) => {
+    if (!gUp) return 0;
+    let c = 0;
+    for (const v of gDirs) {
+      const r = sub(mv(R[v], gUp), st.gravity[v]);
+      c += 0.5 * wG * dot(r, r);
+    }
+    return c;
+  };
   let lambda = o.lambda ?? 1e-3;
-  let cur = cost(st.R, st.t, st.F, st.X);
+  let cur = 0;
   for (let it = 0; it < (o.iters ?? 15); it++) {
+    buildTri();
+    gravityRead();
+    cur = cost(st.R, st.t, st.F, st.X);
     const U = Array.from({ length: P }, () => new Float64Array(P)), eC = new Float64Array(P);
     const Vp = new Float64Array(9 * NP), eP = new Float64Array(3 * NP), Wp = new Float64Array(P * 3 * NP);
     for (const q of live) {
       const R = st.R[q.v], t = st.t[q.v], X = [st.X[3 * q.i], st.X[3 * q.i + 1], st.X[3 * q.i + 2]];
       const base = project(R, t, st.F, X);
+      if (!base) continue;
       const e0 = q.u - base[0], e1 = q.w - base[1], r = Math.hypot(e0, e1);
       const sw = Math.sqrt(r <= delta ? 1 : delta / r);
       const o6 = off.get(q.v);
@@ -589,7 +898,7 @@ function bundleAdjust(st, views, n, o = {}) {
       const Jc = [[], []];
       if (o6 !== undefined) {
         for (let j = 0; j < 3; j++) {
-          const p = project(mm(dR[j], R), t, st.F, X);
+          const p = project(mm(dR[j], R), t, st.F, X) || base;
           cc.push(o6 + j);
           Jc[0].push(((p[0] - base[0]) / eps) * sw);
           Jc[1].push(((p[1] - base[1]) / eps) * sw);
@@ -597,14 +906,14 @@ function bundleAdjust(st, views, n, o = {}) {
         for (let j = 0; j < 3; j++) {
           const tp = t.slice();
           tp[j] += eps;
-          const p = project(R, tp, st.F, X);
+          const p = project(R, tp, st.F, X) || base;
           cc.push(o6 + 3 + j);
           Jc[0].push(((p[0] - base[0]) / eps) * sw);
           Jc[1].push(((p[1] - base[1]) / eps) * sw);
         }
       }
       if (freeF) {
-        const p = project(R, t, st.F + eps, X);
+        const p = project(R, t, st.F + eps, X) || base;
         cc.push(fcol);
         Jc[0].push(((p[0] - base[0]) / eps) * sw);
         Jc[1].push(((p[1] - base[1]) / eps) * sw);
@@ -613,7 +922,7 @@ function bundleAdjust(st, views, n, o = {}) {
       for (let j = 0; j < 3; j++) {
         const Xp = X.slice();
         Xp[j] += eps;
-        const p = project(R, t, st.F, Xp);
+        const p = project(R, t, st.F, Xp) || base;
         Jp[0][j] = ((p[0] - base[0]) / eps) * sw;
         Jp[1][j] = ((p[1] - base[1]) / eps) * sw;
       }
@@ -634,6 +943,30 @@ function bundleAdjust(st, views, n, o = {}) {
     if (freeF) {
       U[fcol][fcol] += wF;
       eC[fcol] += wF * (st.F0 - st.F);
+    }
+    for (const q of tri) {
+      const s = slot.get(q.i);
+      for (let m = 0; m < 3; m++) {
+        Vp[9 * s + 4 * m] += q.w;
+        eP[3 * s + m] -= q.w * (st.X[3 * q.i + m] - ((1 - q.f) * st.X[3 * q.a + m] + q.f * st.X[3 * q.c + m]));
+      }
+    }
+    if (gUp) {
+      for (const v of gDirs) {
+        const o6 = off.get(v);
+        if (o6 === undefined) continue;
+        const Rg = mv(st.R[v], gUp), r = sub(st.gravity[v], Rg); // target - predicted
+        // d(Rg)/d(delta) for R' = exp(delta) R: delta x Rg  ->  columns -[Rg]x
+        const Jm = [0, Rg[2], -Rg[1], -Rg[2], 0, Rg[0], Rg[1], -Rg[0], 0]; // 3x3 rows: derivative of Rg_row wrt delta_col (delta x Rg = -[Rg]x delta)
+        for (let a = 0; a < 3; a++) {
+          for (let row = 0; row < 3; row++) eC[o6 + a] += Jm[row * 3 + a] * r[row] * wG;
+          for (let b = 0; b < 3; b++) {
+            let acc = 0;
+            for (let row = 0; row < 3; row++) acc += Jm[row * 3 + a] * Jm[row * 3 + b];
+            U[o6 + a][o6 + b] += acc * wG;
+          }
+        }
+      }
     }
     let improved = false;
     for (let attempt = 0; attempt < 8 && !improved; attempt++) {
@@ -671,7 +1004,7 @@ function bundleAdjust(st, views, n, o = {}) {
         nR[v] = mm(rodrigues([dc[o6], dc[o6 + 1], dc[o6 + 2]]), st.R[v]);
         nt[v] = [st.t[v][0] + dc[o6 + 3], st.t[v][1] + dc[o6 + 4], st.t[v][2] + dc[o6 + 5]];
       }
-      if (freeF) nF = Math.max(0.45, Math.min(1.6, st.F + dc[fcol]));
+      if (freeF) nF = Math.max(Fmin, Math.min(Fmax, st.F + dc[fcol]));
       for (const [i, s] of slot) {
         const Vi = Vinv[s];
         if (!Vi) continue;
@@ -753,10 +1086,16 @@ function triangulateNew(st, views, n, tolPx, minAngle = 1.0) {
   return added;
 }
 
+// noise (pixels, per axis) from the residuals: the median of a 2D Gaussian residual length is 1.18 sigma
+function noiseOf(rep) {
+  const errs = [...rep.per.values()].filter((e) => e < 1e8);
+  return errs.length ? median(errs) / 1.18 : 0;
+}
 function dropOutliers(st, views, n, rep, tolPx) {
   const errs = [...rep.per.values()];
   const med = median(errs);
-  const cut = Math.max(tolPx, 4 * med);
+  const cut = Math.max(tolPx, (st.cutK ?? 4) * med);
+  st.cutNow = cut;
   let dropped = 0;
   for (const [key, e] of rep.per) {
     if (e > cut) {
@@ -776,57 +1115,102 @@ function dropOutliers(st, views, n, rep, tolPx) {
 
 function reconstruct(views, n, a, b, pose, F0, rand, o) {
   const V = views.length;
-  const st = { F: F0, F0, R: new Array(V).fill(null), t: new Array(V).fill(null), reg: new Set([a, b]), ref: a, X: new Float64Array(3 * n), has: new Uint8Array(n), bad: new Set() };
+  const mRef = median(views.map((v) => v.m)) || 1920;
+  const glow = !!o.glow;
+  const it = (k) => Math.max(3, Math.round(k * (o.light ? 0.4 : 1))); // a light pass (to rank hypotheses cheaply) runs fewer iterations
+  const st = {
+    mRef, huberPx: glow ? o.tolPx * 0.5 : o.tolPx * 0.97, sigPx: glow ? o.tolPx / 3 : 0, cutK: glow ? 2.8 : 4, F: F0, F0,
+    R: new Array(V).fill(null), t: new Array(V).fill(null), reg: new Set([a, b]), ref: a, X: new Float64Array(3 * n), has: new Uint8Array(n), bad: new Set(),
+    runOf: o.runOf || null, gravity: o.gravity || null, fRange: glow ? [0.72, 1.4] : null, fSigma: glow ? 0.15 : 0.3,
+    kappa: o.kappa, maxGap: o.maxGap, priorGain: o.priorGain, gravSigma: o.gravSigma,
+  };
   st.R[a] = I3();
   st.t[a] = [0, 0, 0];
   st.R[b] = pose.R;
   st.t[b] = pose.t;
   const tol = o.tolPx;
+  const minAng = glow ? 1.5 : 0.5;
   // the focal length is only a guess at first, so be generous; bundle adjustment then fixes it and the tight check follows
-  triangulateNew(st, views, n, tol * 8, 0.5);
+  triangulateNew(st, views, n, tol * (glow ? 3 : 8), minAng);
   if (st.has.reduce((x, y) => x + y, 0) < 6) return null;
-  let rep = bundleAdjust(st, views, n, { iters: 15, huber: 0.004 });
-  rep = bundleAdjust(st, views, n, { iters: 10 });
+  const retune = (rep) => {
+    // learn the noise level from the residuals so the pixel weights and the rejection limit follow it (glow centres wander by 5-15 px)
+    if (!glow || st.reg.size < 3) return; // two views fit anything along the epipolar lines: their residuals understate the noise
+    const sg = noiseOf(rep);
+    if (sg > 0) {
+      st.sigPx = Math.min(Math.max(sg, tol / 4), tol);
+      st.huberPx = Math.min(Math.max(1.3 * sg, tol / 3), tol);
+    }
+  };
+  let rep = bundleAdjust(st, views, n, { iters: it(15), huber: ((glow ? 1.2 : 2.7) * tol) / st.mRef, prior: false });
+  retune(rep);
+  rep = bundleAdjust(st, views, n, { iters: it(10) });
+  retune(rep);
   dropOutliers(st, views, n, rep, tol * 2);
-  triangulateNew(st, views, n, tol * 2, 0.5);
-  rep = bundleAdjust(st, views, n, { iters: 10 });
+  triangulateNew(st, views, n, tol * 2, minAng);
+  rep = bundleAdjust(st, views, n, { iters: it(10) });
+  retune(rep);
   dropOutliers(st, views, n, rep, tol);
-  rep = bundleAdjust(st, views, n, { iters: 10 });
+  rep = bundleAdjust(st, views, n, { iters: it(10) });
   const failed = new Set();
+  const why = new Map();
   for (;;) {
-    // the unregistered view that sees the most triangulated points
-    let bestV = -1, bestN = 0;
+    // the unregistered view that sees the most triangulated points (or, failing that, shares the most lights with a placed view)
+    let bestV = -1, bestN = 0, bestS = 0;
     for (let v = 0; v < V; v++) {
       if (st.reg.has(v) || failed.has(v)) continue;
-      let c = 0;
+      let c = 0, sh = 0;
       for (const i of views[v].pts.keys()) if (st.has[i]) c++;
-      if (c > bestN) (bestN = c), (bestV = v);
+      for (const r of st.reg) {
+        let q = 0;
+        for (const i of views[v].pts.keys()) if (views[r].pts.has(i)) q++;
+        sh = Math.max(sh, q);
+      }
+      if (c > bestN || (c === bestN && sh > bestS)) (bestN = c), (bestS = sh), (bestV = v);
     }
-    if (bestV < 0 || bestN < 6) break;
-    const P = [];
+    if (bestV < 0) break;
+    let reg = null, P = [];
     for (const [i, p] of views[bestV].pts) if (st.has[i]) P.push({ X: [st.X[3 * i], st.X[3 * i + 1], st.X[3 * i + 2]], b: bearing(p, st.F) });
-    const thr = (tol * 3 / (views[bestV].m * st.F)) ** 2;
-    const reg = registerPnP(P, st.F, rand, thr * 1.0, null);
-    if (!reg || reg.inl < Math.max(6, 0.3 * P.length)) {
+    if (bestN >= 6) {
+      const thr = ((glow ? 2 : 3) * Math.max(tol, glow ? st.cutNow || tol : tol) / (views[bestV].m * st.F)) ** 2;
+      reg = registerPnP(P, st.F, rand, thr * 1.0, null);
+      if (o.trace) o.trace({ pnp: bestV, P: P.length, inl: reg ? reg.inl : -1, reg: st.reg.size });
+      if (reg && reg.inl < Math.max(6, 0.3 * P.length)) reg = null;
+    }
+    if (!reg) {
+      reg = registerRel(st, views, n, bestV, rand, glow ? Math.max(tol, st.cutNow || tol) : tol, glow);
+      if (o.trace) o.trace({ rel: bestV, P: P.length, inl: reg ? reg.inl : -1, reg: st.reg.size });
+    }
+    if (!reg) {
       failed.add(bestV); // cannot place this one: leave it out and try the others
+      why.set(bestV, { seen: P.length, inl: 0 });
       continue;
     }
+    failed.clear();
+    why.delete(bestV);
     st.R[bestV] = reg.R;
     st.t[bestV] = reg.t;
     st.reg.add(bestV);
-    triangulateNew(st, views, n, tol * 2, 1.0);
-    rep = bundleAdjust(st, views, n, { iters: 10 });
+    triangulateNew(st, views, n, tol * 2, glow ? 2 : 1.0);
+    rep = bundleAdjust(st, views, n, { iters: it(10) });
+    retune(rep);
     dropOutliers(st, views, n, rep, tol);
-    rep = bundleAdjust(st, views, n, { iters: 8 });
+    rep = bundleAdjust(st, views, n, { iters: it(8) });
   }
-  triangulateNew(st, views, n, tol * 2, 1.0);
-  rep = bundleAdjust(st, views, n, { iters: 20 });
+  triangulateNew(st, views, n, tol * 2, glow ? 2 : 1.0);
+  rep = bundleAdjust(st, views, n, { iters: it(20) });
+  retune(rep);
   dropOutliers(st, views, n, rep, tol);
-  triangulateNew(st, views, n, tol, 1.0);
-  rep = bundleAdjust(st, views, n, { iters: 25, lambda: 1e-4 });
+  triangulateNew(st, views, n, tol, glow ? 2 : 1.0);
+  rep = bundleAdjust(st, views, n, { iters: it(25), lambda: 1e-4 });
+  retune(rep);
   const dropped = dropOutliers(st, views, n, rep, tol);
-  if (dropped) rep = bundleAdjust(st, views, n, { iters: 10, lambda: 1e-4 });
-  return { st, rep };
+  if (dropped) rep = bundleAdjust(st, views, n, { iters: it(10), lambda: 1e-4 });
+  // a score to compare candidate solutions: registered views first, then how many observations fit (each counts less the worse it fits)
+  const cut = st.cutNow || tol;
+  let score = 0;
+  for (const e of rep.per.values()) if (e < cut) score += 1 - (e / cut) ** 2;
+  return { st, rep, score, why, noisePx: noiseOf(rep) };
 }
 
 // ---- output ---------------------------------------------------------------------------------------------------------------------------------
@@ -837,50 +1221,144 @@ function rotateOnto(a, b) {
   return rodrigues(c.map((q) => (q / s) * Math.atan2(s, d)));
 }
 
-// Solve. views as in the header; opts {n (LED count), fovDeg, tolPx (default 3), seed}.
-// Returns {ok, error?, pos (Float32Array 3n, 0-1 per axis, y up, z towards the first camera), est (Uint8Array n: 1 = placed by string order or
-// a single view), count (Uint8Array n: views that saw each LED), used (Uint8Array n: views that went into the 3D point), views: [{ok, rms, count, center,
-// forward, R}], rms, fovDeg, found (lights triangulated), pruned, n, leveled}
+// Solve. views as in the header; opts:
+//   n (LED count), fovDeg (start guess, 65), tolPx (inlier floor in pixels; 3 for a point scan, 18 for glow views), seed,
+//   glow (default: any view has glow: true) - sparse glow centres: wider tolerances that follow the measured noise, stricter parallax,
+//   runs [[start, count], ...] - the strings; the string prior, the pruning and the filling of unseen lights never cross a run boundary,
+//   stringPrior (default true when runs are given), stringKappa (looseness, a fraction of the neighbours' spacing, 0.4),
+//   gravity (default true when 2+ views have orientation), maxBridge (legacy gap limit when there are no runs, 60), trace (debug callback).
+// Returns {ok, error?, warnings: [string], pos (Float32Array 3n, 0-1 per axis, y up, z towards the first camera), est (Uint8Array n: 1 = placed
+// by string order or a single view), count (Uint8Array n: views that saw each LED), used (Uint8Array n: views that went into the 3D point),
+// err (Float32Array n: pixel rms of the light's observations, 0 if not triangulated), views: [{ok, rms, count, used, shared, center, forward,
+// R, error?}], rms, noisePx, fovDeg, found, pruned, leveled, glow}
 export function solveMultiView(viewsIn, opts = {}) {
   let n = opts.n ?? 0;
   if (!n) for (const v of viewsIn) for (const k of v.points instanceof Map ? v.points.keys() : Object.keys(v.points || {})) n = Math.max(n, Number(k) + 1);
-  const fail = (error) => ({ ok: false, error, n, views: viewsIn.map(() => ({ ok: false })), pos: new Float32Array(3 * n), est: new Uint8Array(n).fill(1), count: coverage(viewsIn, n).seen, found: 0 });
+  const fail = (error, per) => ({ ok: false, error, warnings: [], n, views: viewsIn.map((v, k) => ({ ok: false, error: per?.[k] || error })), pos: new Float32Array(3 * n), est: new Uint8Array(n).fill(1), count: coverage(viewsIn, n).seen, found: 0 });
   if (viewsIn.length < 2) return fail("Need at least two views.");
   const views = viewsIn.map((v) => prepView(v, n));
   const V = views.length;
+  const glow = opts.glow ?? viewsIn.some((v) => v.glow);
   const fov = opts.fovDeg ?? views.find((v) => v.fovDeg)?.fovDeg ?? 65;
   const F0 = fovToF(fov);
-  const tolPx = opts.tolPx ?? 3;
+  const tolPx = opts.tolPx ?? (glow ? 18 : 3);
   const rand = rng(opts.seed ?? 12345);
+  const runs = Array.isArray(opts.runs) ? opts.runs.filter((q) => Array.isArray(q) && q[1] > 0) : [];
+  const runOf = runIndex(n, runs);
+  const useRuns = runs.length > 0;
+  const prior = useRuns && opts.stringPrior !== false;
+  const gravity = views.map((v) => (v.Rcw ? mtv(v.Rcw, [0, 0, 1]) : null));
+  const useGravity = opts.gravity !== false && gravity.filter(Boolean).length >= 2;
+  const warnings = [];
+  const label = (v) => `View ${v + 1}`;
   // pairs by shared points
   const pairs = [];
+  const minShared = opts.minShared ?? 8;
+  const sharedWith = Array.from({ length: V }, () => 0);
   for (let a = 0; a < V; a++) {
     for (let b = a + 1; b < V; b++) {
       const shared = [];
       for (const i of views[a].pts.keys()) if (views[b].pts.has(i)) shared.push(i);
-      if (shared.length >= 8) pairs.push({ a, b, shared });
+      sharedWith[a] = Math.max(sharedWith[a], shared.length);
+      sharedWith[b] = Math.max(sharedWith[b], shared.length);
+      if (shared.length >= minShared) pairs.push({ a, b, shared });
     }
   }
-  if (!pairs.length) return fail("The views share too few lights (need at least 8 seen in two views).");
+  for (let v = 0; v < V; v++) if (views[v].pts.size < 6) warnings.push(`${label(v)} found only ${views[v].pts.size} light${views[v].pts.size === 1 ? "" : "s"}; scan it again closer or with the lights brighter.`);
+  if (!pairs.length) {
+    const mx = Math.max(...sharedWith);
+    return fail(`No two views share enough lights: the best pair has ${mx} in common and at least ${minShared} are needed. Scan again from angles that see the same strips, a little closer together (about 30 to 45 degrees apart).`, viewsIn.map((_, v) => `${label(v)} shares at most ${sharedWith[v]} lights with any other view (needs ${minShared}).`));
+  }
   pairs.sort((p, q) => q.shared.length - p.shared.length);
   let best = null;
-  const better = (r, x) => !x || r.st.reg.size > x.st.reg.size || (r.st.reg.size === x.st.reg.size && (r.rep.rms < x.rep.rms - 1e-9 || false));
-  for (const pr of pairs.slice(0, 3)) {
-    const cands = initialPosesF(views[pr.a], views[pr.b], pr.shared, F0, rand, tolPx * 1.5);
-    for (const c of cands) {
-      const r = reconstruct(views, n, pr.a, pr.b, c, c.F ?? F0, rand, { tolPx });
-      if (!r) continue;
-      // flat scenes have two look-alike answers; the one agreeing with the phone's orientation wins a tie
-      r.prior = 0;
-      if (views[pr.a].Rcw && views[pr.b].Rcw) {
-        const Rrel = mm(mt(views[pr.b].Rcw), views[pr.a].Rcw);
-        r.prior = angleBetween(Rrel, r.st.R[pr.b]);
+  const failures = [];
+  const priorOf = (r, pr) => {
+    if (!(views[pr.a].Rcw && views[pr.b].Rcw)) return 0;
+    return angleBetween(mm(mt(views[pr.b].Rcw), views[pr.a].Rcw), r.st.R[pr.b]);
+  };
+  const better = (r, x) => {
+    if (!x) return true;
+    if (r.st.reg.size !== x.st.reg.size) return r.st.reg.size > x.st.reg.size;
+    // flat scenes have two look-alike answers: when the fits are about as good, the one agreeing with the phone's angles wins
+    if (Math.abs(r.score - x.score) < 0.06 * Math.max(r.score, x.score, 1) && r.prior < x.prior - 10) return true;
+    return r.score > x.score;
+  };
+  const consider = (pr, c, Fuse, light = false) => {
+    const r = reconstruct(views, n, pr.a, pr.b, c, Fuse, rand, { light, trace: opts.trace ? opts.trace : null, tolPx, glow, runOf: prior ? runOf : null, gravity: useGravity ? gravity : null, kappa: opts.stringKappa, maxGap: opts.maxGap, priorGain: opts.priorGain, gravSigma: opts.gravSigma });
+    if (opts.trace) opts.trace({ pair: [pr.a, pr.b], shared: pr.shared.length, F: Fuse, planar: c.planar, good: c.good, reg: r ? r.st.reg.size : 0, rms: r ? r.rep.rms : null, score: r ? r.score : 0, found: r ? r.st.has.reduce((x, y) => x + y, 0) : 0 });
+    if (!r) return null;
+    if (opts.onCandidate) opts.onCandidate(r, Fuse);
+    r.pair = pr;
+    r.prior = priorOf(r, pr);
+    r.cand = c;
+    r.Fuse = Fuse;
+    if (!light && better(r, best)) best = r;
+    return r;
+  };
+  const good = () => best && best.st.reg.size === V && best.rep.rms < (glow ? 0.5 : 1) * tolPx;
+  let collinearPairs = 0;
+  if (opts.forcePose) {
+    const fp = opts.forcePose, pr = pairs.find((q) => q.a === fp.a && q.b === fp.b) || { a: fp.a, b: fp.b, shared: [] };
+    consider(pr, { R: fp.R, t: fp.t, planar: false, good: 0 }, fp.F ?? F0);
+  } else if (!glow) {
+    for (const pr of pairs.slice(0, 3)) {
+      const x = pr.shared.map((i) => views[pr.a].pts.get(i));
+      if (!spreadOK(x, 0.03)) {
+        collinearPairs++;
+        failures.push(`${label(pr.a)} and ${label(pr.b)} share ${pr.shared.length} lights, but they all lie along one line, which cannot fix where the camera moved.`);
+        continue;
       }
-      if (better(r, best) || (best && r.st.reg.size === best.st.reg.size && Math.abs(r.rep.rms - best.rep.rms) < 0.15 * Math.max(r.rep.rms, 0.1) && r.prior < best.prior - 10)) best = r;
+      const cands = initialPosesF(views[pr.a], views[pr.b], pr.shared, F0, rand, tolPx * 1.5, false);
+      for (const c of cands) consider(pr, c, c.F ?? F0);
+      if (!cands.length) failures.push(`${label(pr.a)} and ${label(pr.b)} share ${pr.shared.length} lights but no single camera move explains more than a few of them (the matches may be noisy or mixed up).`);
+      if (good()) break;
     }
-    if (best && best.st.reg.size === V && best.rep.rms < tolPx) break;
+  } else {
+    // Glow views: few, noisy points. The pairs with the most matches often have a tiny baseline (neighbouring angles), which makes the relative
+    // pose shaky, so pairs are ranked by matches times how far the lights move between the two pictures. Several pose hypotheses per pair and
+    // three guesses of the focal length are tried through the whole solve; the best-fitting one wins.
+    for (const pr of pairs) {
+      const d = [];
+      for (const i of pr.shared) {
+        const p = views[pr.a].pts.get(i), q = views[pr.b].pts.get(i);
+        d.push(Math.hypot(p[0] - q[0], p[1] - q[1]));
+      }
+      pr.rank = pr.shared.length * (0.35 + Math.min(1, median(d) / 0.12));
+    }
+    const order = [...pairs].sort((p, q) => q.rank - p.rank).slice(0, 4);
+    // a tournament: every (pair, hypothesis) gets a quick light solve; only the best few get the full one
+    const tournament = (Fg, pairList, perPair, keep) => {
+      const runs = [];
+      for (const pr of pairList) {
+        const x = pr.shared.map((i) => views[pr.a].pts.get(i));
+        if (!spreadOK(x, 0.03)) {
+          if (Fg === F0) {
+            collinearPairs++;
+            failures.push(`${label(pr.a)} and ${label(pr.b)} share ${pr.shared.length} lights, but they all lie along one line, which cannot fix where the camera moved.`);
+          }
+          continue;
+        }
+        const cands = initialPoses(views[pr.a], views[pr.b], pr.shared, Fg, rand, tolPx * 1.5, true);
+        if (!cands.length && Fg === F0) failures.push(`${label(pr.a)} and ${label(pr.b)} share ${pr.shared.length} lights but no single camera move explains more than a few of them (the matches may be noisy or mixed up).`);
+        for (const c of cands.slice(0, perPair)) {
+          const r = consider(pr, c, Fg, true);
+          if (r) runs.push({ pr, c, r });
+        }
+      }
+      runs.sort((p, q) => q.r.st.reg.size - p.r.st.reg.size || q.r.score - p.r.score);
+      for (const q of runs.slice(0, keep)) consider(q.pr, q.c, Fg, false);
+    };
+    tournament(F0, order, 3, 3);
+    if (!good()) {
+      tournament(F0 * 0.87, order.slice(0, 2), 2, 1);
+      tournament(F0 * 1.15, order.slice(0, 2), 2, 1);
+    }
   }
-  if (!best) return fail("Couldn't work out where the camera moved. Scan from angles that see many of the same lights, and keep them well apart.");
+  if (!best) {
+    if (collinearPairs === Math.min(pairs.length, 4)) return fail("The lights the views share all lie along one straight line, which cannot fix the camera positions. Include a second strip at a different height or in a different part of the room, then scan again.");
+    return fail(`Couldn't work out how the camera moved between the views. ${failures[0] ? failures[0] + " " : ""}Scan from angles that see many of the same lights (about 30 to 45 degrees apart), and keep the phone steady while it scans.`);
+  }
+  if (opts.onBest) opts.onBest(best);
   const { st, rep } = best;
   // express everything in the frame of the first view (the first one placed, if view 1 could not be)
   const ref = [...st.reg].sort((p, q) => p - q)[0];
@@ -900,7 +1378,7 @@ export function solveMultiView(viewsIn, opts = {}) {
     st.ref = ref;
   }
   const found0 = st.has.reduce((x, y) => x + y, 0);
-  if (found0 < 8) return fail("Too few lights were seen from two angles.");
+  if (found0 < 8) return fail("Too few lights were seen from two angles. Scan again with more lights visible from each angle.");
 
   // level the scene with gravity when the phones reported it: up in the reference camera frame (y down there)
   let leveled = false, Rl = I3();
@@ -927,61 +1405,143 @@ export function solveMultiView(viewsIn, opts = {}) {
     pts[3 * i + 1] = q[1];
     pts[3 * i + 2] = q[2];
   }
-  // A light seen from only two views can be a wrong match that happens to sit on its epipolar line. Drop solid points that are far from
-  // everything else, or far off the line their string neighbours make (the string is smooth).
   let pruned = 0;
+  const dropPoint = (i) => {
+    st.has[i] = 0;
+    pruned++;
+  };
+  const solidList = () => {
+    const a = [];
+    for (let i = 0; i < n; i++) if (st.has[i]) a.push(i);
+    return a;
+  };
+  // (1) glow: a point seen from nearly the same direction in every camera has a depth that is mostly noise; the string places it better
+  if (glow) {
+    const centres = new Map();
+    for (const v of st.reg) centres.set(v, mtv(st.R[v], [-st.t[v][0], -st.t[v][1], -st.t[v][2]]));
+    const weak = [];
+    let total = 0;
+    for (let i = 0; i < n; i++) {
+      if (!st.has[i]) continue;
+      total++;
+      const X = [st.X[3 * i], st.X[3 * i + 1], st.X[3 * i + 2]];
+      const dirs = [];
+      for (const v of st.reg) if (views[v].pts.has(i) && !st.bad.has(v * n + i)) dirs.push(unit(sub(X, centres.get(v))));
+      let mx = 0;
+      for (let a = 0; a < dirs.length; a++) for (let b = a + 1; b < dirs.length; b++) mx = Math.max(mx, Math.acos(Math.max(-1, Math.min(1, dot(dirs[a], dirs[b])))) * R2D);
+      if (mx < (opts.minAngle ?? 3)) weak.push(i);
+    }
+    if (weak.length <= 0.5 * total) for (const i of weak) dropPoint(i);
+  }
+  // (2) A light seen from only two views can be a wrong match that happens to sit on its epipolar line. Drop solid points that are far from
+  // everything else, or far off the line their string neighbours make (the string is smooth).
   {
-    const idx = [];
-    for (let i = 0; i < n; i++) if (st.has[i]) idx.push(i);
+    const idx = solidList();
     if (idx.length >= 12) {
       const cen = [0, 1, 2].map((c) => median(idx.map((i) => pts[3 * i + c])));
       const dists = idx.map((i) => Math.hypot(pts[3 * i] - cen[0], pts[3 * i + 1] - cen[1], pts[3 * i + 2] - cen[2]));
       const far = 3 * [...dists].sort((p, q) => p - q)[Math.floor(dists.length * 0.9)];
       idx.forEach((i, k) => {
-        if (dists[k] > far) (st.has[i] = 0), pruned++;
+        if (dists[k] > far) dropPoint(i);
       });
-      const live = idx.filter((i) => st.has[i]);
-      const steps = [];
-      for (let k = 0; k + 1 < live.length; k++) if (live[k + 1] - live[k] === 1) steps.push(Math.hypot(pts[3 * live[k + 1]] - pts[3 * live[k]], pts[3 * live[k + 1] + 1] - pts[3 * live[k] + 1], pts[3 * live[k + 1] + 2] - pts[3 * live[k] + 2]));
-      const step = median(steps);
-      if (step > 0) {
-        for (let k = 1; k + 1 < live.length; k++) {
-          const p = live[k - 1], q = live[k + 1], i = live[k];
-          if (q - p > 6) continue;
-          const f = (i - p) / (q - p);
-          let dev = 0;
-          for (let c = 0; c < 3; c++) dev += (pts[3 * i + c] - (pts[3 * p + c] + (pts[3 * q + c] - pts[3 * p + c]) * f)) ** 2;
-          if (Math.sqrt(dev) > 6 * step * (q - p)) (st.has[i] = 0), pruned++;
+      if (!useRuns) {
+        const live = solidList();
+        const steps = [];
+        for (let k = 0; k + 1 < live.length; k++) if (live[k + 1] - live[k] === 1) steps.push(Math.hypot(pts[3 * live[k + 1]] - pts[3 * live[k]], pts[3 * live[k + 1] + 1] - pts[3 * live[k] + 1], pts[3 * live[k + 1] + 2] - pts[3 * live[k] + 2]));
+        const step = median(steps);
+        if (step > 0) {
+          for (let k = 1; k + 1 < live.length; k++) {
+            const p = live[k - 1], q = live[k + 1], i = live[k];
+            if (q - p > 6) continue;
+            const f = (i - p) / (q - p);
+            let dev = 0;
+            for (let c = 0; c < 3; c++) dev += (pts[3 * i + c] - (pts[3 * p + c] + (pts[3 * q + c] - pts[3 * p + c]) * f)) ** 2;
+            if (Math.sqrt(dev) > 6 * step * (q - p)) dropPoint(i);
+          }
+        }
+      } else {
+        // Runs. Two physical facts about a string: two lights k steps apart on it are at most k pitches apart (the string cannot be shorter than
+        // the straight line), and a light sits near the line between its two neighbours unless it is at a corner. The worst offender is dropped,
+        // then the neighbours are judged again without it. Nothing crosses a run boundary.
+        const P3 = (i) => [pts[3 * i], pts[3 * i + 1], pts[3 * i + 2]];
+        const gapMax = opts.maxGap ?? 40;
+        const limit = opts.chordLimit ?? 1.2, speedLimit = opts.speedLimit ?? 2.5;
+        for (let round = 0; round < 300; round++) {
+          const live = solidList();
+          // pitch: distance per index step along the strings (an upper-middle quantile of adjacent pairs, so corners and gaps do not shrink it)
+          const speeds = [];
+          for (let k = 0; k + 1 < live.length; k++) if (runOf[live[k]] === runOf[live[k + 1]] && live[k + 1] - live[k] <= 12) speeds.push(norm(sub(P3(live[k + 1]), P3(live[k]))) / (live[k + 1] - live[k]));
+          if (speeds.length < 4) break;
+          speeds.sort((p, q) => p - q);
+          const pitch = speeds[Math.floor(speeds.length * 0.7)];
+          let worst = -1, wr = -1e9;
+          for (let k = 0; k < live.length; k++) {
+            const i = live[k], p = live[k - 1], q = live[k + 1];
+            const sameP = p !== undefined && runOf[p] === runOf[i], sameQ = q !== undefined && runOf[q] === runOf[i];
+            const hasP = sameP && i - p <= gapMax, hasQ = sameQ && q - i <= gapMax;
+            let score = 0, top = 0, agree = 0;
+            for (const [has, o] of [[sameP, p], [sameQ, q]]) {
+              if (!has) continue;
+              const ratio = norm(sub(P3(i), P3(o))) / Math.abs(i - o) / (speedLimit * pitch);
+              if (ratio > 1) (score += ratio), (top = Math.max(top, ratio));
+              else agree++;
+            }
+            if (hasP && hasQ) {
+              const f = (i - p) / (q - p), A = P3(p), B = P3(q), X = P3(i);
+              const chord = norm(sub(B, A)) + 1e-9;
+              const dev = norm(sub(X, [A[0] + (B[0] - A[0]) * f, A[1] + (B[1] - A[1]) * f, A[2] + (B[2] - A[2]) * f]));
+              const ratio = dev / (limit * Math.max(chord, pitch * (q - p) * 0.5));
+              if (ratio > 1) (score += ratio), (top = Math.max(top, ratio));
+            }
+            if (top > 1 && score - 1.5 * agree > wr - 1) (wr = score - 1.5 * agree + 1), (worst = i); // blame the end with no agreeing neighbour
+          }
+          if (worst < 0) break;
+          dropPoint(worst);
         }
       }
     }
   }
   // lights seen once, or never, or pruned: a light seen in some view keeps its place in the picture and takes its depth from its string
-  // neighbours (or the view's middle depth); one seen nowhere is put on the line between its string neighbours
+  // neighbours (or the view's middle depth); one seen nowhere is put on the line between its string neighbours (the same run only)
   const est = new Uint8Array(n);
-  const solid = [];
-  for (let i = 0; i < n; i++) if (st.has[i]) solid.push(i);
+  const solid = solidList();
+  for (const i of solid) {
+    const q = mv(T, [st.X[3 * i], st.X[3 * i + 1], st.X[3 * i + 2]]);
+    pts[3 * i] = q[0];
+    pts[3 * i + 1] = q[1];
+    pts[3 * i + 2] = q[2];
+  }
+  if (solid.length < 8) return fail("Too few lights could be placed reliably in 3D. Scan again from angles that see more of the same lights, and make sure the strips are in view.");
   const camZ = (v, i) => {
     const p = mv(st.R[v], [st.X[3 * i], st.X[3 * i + 1], st.X[3 * i + 2]]);
     return p[2] + st.t[v][2];
   };
   const midDepth = new Map();
   const depthIn = (v) => {
-    if (!midDepth.has(v)) midDepth.set(v, median(solid.filter((i) => views[v].pts.has(i)).map((i) => camZ(v, i))) || 1);
+    if (!midDepth.has(v)) midDepth.set(v, median(solid.filter((i) => views[v].pts.has(i)).map((i) => camZ(v, i))) || median(solid.map((i) => camZ(v, i))) || 1);
     return midDepth.get(v);
   };
-  let k = 0;
+  // nearest solid light on each side within the same run (-1 if none)
+  const prevS = new Int32Array(n).fill(-1), nextS = new Int32Array(n).fill(-1);
+  for (let i = 0, last = -1; i < n; i++) {
+    if (i > 0 && runOf[i] !== runOf[i - 1]) last = -1;
+    prevS[i] = st.has[i] ? i : last;
+    if (st.has[i]) last = i;
+  }
+  for (let i = n - 1, nxt = -1; i >= 0; i--) {
+    if (i < n - 1 && runOf[i] !== runOf[i + 1]) nxt = -1;
+    nextS[i] = st.has[i] ? i : nxt;
+    if (st.has[i]) nxt = i;
+  }
+  const maxBridge = opts.maxBridge ?? (useRuns ? Infinity : 60);
   for (let i = 0; i < n; i++) {
     if (st.has[i]) continue;
     est[i] = 1;
-    while (k + 1 < solid.length && solid[k + 1] < i) k++;
-    const lo = solid.length && solid[k] < i ? solid[k] : -1;
-    let hi = -1;
-    for (let q = Math.max(k, 0); q < solid.length; q++) if (solid[q] > i) (hi = solid[q]), (q = solid.length);
+    const lo = prevS[i], hi = nextS[i];
     const seenIn = [...st.reg].filter((v) => views[v].pts.has(i));
     if (seenIn.length) {
       const v = seenIn[0];
-      const dl = lo >= 0 && views[v].pts.has(lo) ? camZ(v, lo) : null, dh = hi >= 0 && views[v].pts.has(hi) ? camZ(v, hi) : null;
+      const dl = lo >= 0 && (useRuns || views[v].pts.has(lo)) ? camZ(v, lo) : null, dh = hi >= 0 && (useRuns || views[v].pts.has(hi)) ? camZ(v, hi) : null;
       let d;
       if (dl !== null && dh !== null && hi - lo <= 200) d = dl + (dh - dl) * ((i - lo) / (hi - lo));
       else d = dl ?? dh ?? depthIn(v);
@@ -990,11 +1550,17 @@ export function solveMultiView(viewsIn, opts = {}) {
       pts[3 * i] = q[0];
       pts[3 * i + 1] = q[1];
       pts[3 * i + 2] = q[2];
-    } else if (lo >= 0 && hi >= 0 && hi - lo <= (opts.maxBridge ?? 60)) {
+    } else if (lo >= 0 && hi >= 0 && hi - lo <= maxBridge) {
       const f = (i - lo) / (hi - lo);
       for (let c = 0; c < 3; c++) pts[3 * i + c] = pts[3 * lo + c] + (pts[3 * hi + c] - pts[3 * lo + c]) * f;
     } else {
-      const near = lo >= 0 && (hi < 0 || i - lo <= hi - i) ? lo : hi; // beyond the ends: the nearest solid light's place
+      let near = lo >= 0 && (hi < 0 || i - lo <= hi - i) ? lo : hi; // beyond the ends: the nearest solid light's place
+      if (near < 0 && !useRuns) near = -1;
+      if (near < 0) {
+        // a run with nothing solid in it (or no runs): the closest solid light by index, if any
+        let bd = Infinity;
+        for (const j of solid) if (Math.abs(j - i) < bd) (bd = Math.abs(j - i)), (near = j);
+      }
       for (let c = 0; c < 3; c++) pts[3 * i + c] = near >= 0 ? pts[3 * near + c] : 0;
     }
   }
@@ -1004,27 +1570,64 @@ export function solveMultiView(viewsIn, opts = {}) {
   const ext = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-9), kk = 0.9 / ext, ctr = [0, 1, 2].map((c) => (lo[c] + hi[c]) / 2);
   const pos = new Float32Array(3 * n);
   for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) pos[3 * i + c] = 0.5 + (pts[3 * i + c] - ctr[c]) * kk;
-  const used = new Uint8Array(n);
+  const used = new Uint8Array(n), errPx = new Float32Array(n);
   for (const v of st.reg) for (const i of views[v].pts.keys()) if (st.has[i] && !st.bad.has(v * n + i)) used[i]++;
+  {
+    const sq = new Float64Array(n);
+    for (const [key, e] of rep.per) {
+      const i = key % n;
+      if (st.has[i]) sq[i] += e * e;
+    }
+    for (let i = 0; i < n; i++) if (used[i]) errPx[i] = Math.sqrt(sq[i] / used[i]);
+  }
+  // per-view diagnostics
+  const placedNames = [...st.reg].map((v) => v + 1).join(", ");
   const outViews = views.map((vw, v) => {
-    if (!st.reg.has(v)) return { ok: false, count: vw.pts.size };
+    if (!st.reg.has(v)) {
+      const w = best.why.get(v);
+      let shared = 0;
+      for (const i of vw.pts.keys()) if (st.has[i]) shared++;
+      let error;
+      if (sharedWith[v] < minShared) error = `${label(v)} shares at most ${sharedWith[v]} lights with any other view (it needs ${minShared}). Scan it again from an angle that sees the same strips, closer to another angle.`;
+      else if (w && w.seen < 6) error = `${label(v)} sees only ${w.seen} of the lights placed from views ${placedNames} (it needs 6). Scan again from an angle closer to those, with the same strips in view.`;
+      else if (w) error = `${label(v)} could not be joined: only ${w.inl} of the ${w.seen} lights it shares with views ${placedNames} fit one camera position. Its angle is probably too different, or the matches are too noisy; try an angle closer to the others.`;
+      else error = `${label(v)} could not be joined to the others.`;
+      warnings.push(error);
+      return { ok: false, count: vw.pts.size, shared, error };
+    }
     const Rout = mm(st.R[v], mt(T)); // output frame -> camera
     const c0 = mtv(st.R[v], [-st.t[v][0], -st.t[v][1], -st.t[v][2]]);
     const cOut = mv(T, c0);
     const fwd = mv(T, mtv(st.R[v], [0, 0, 1]));
     const pv = rep.perView.get(v);
-    return {
+    let inl = 0, shared = 0, tot = 0;
+    for (const i of vw.pts.keys()) {
+      if (st.has[i]) shared++;
+      if (st.has[i] && !st.bad.has(v * n + i)) inl++;
+    }
+    tot = vw.pts.size;
+    const vr = pv && pv.n ? Math.sqrt(pv.sq / pv.n) : 0;
+    const out = {
       ok: true,
-      rms: pv && pv.n ? Math.sqrt(pv.sq / pv.n) : 0,
-      count: vw.pts.size,
+      rms: vr,
+      count: tot,
       used: pv ? pv.n : 0,
+      inliers: inl,
+      shared,
       center: [0.5 + (cOut[0] - ctr[0]) * kk, 0.5 + (cOut[1] - ctr[1]) * kk, 0.5 + (cOut[2] - ctr[2]) * kk],
       forward: fwd,
       R: Rout,
       priorDeg: views[v].Rcw && views[best.st.ref].Rcw ? angleBetween(mm(mt(views[v].Rcw), views[best.st.ref].Rcw), st.R[v]) : null,
     };
+    if (glow && tot > 0 && inl < 0.4 * tot) {
+      out.warning = `${label(v)}: only ${inl} of its ${tot} glow spots fit the 3D model; many spots may be mis-detected.`;
+      warnings.push(out.warning);
+    }
+    return out;
   });
-  return { ok: true, n, pos, est, count: coverage(viewsIn, n).seen, used, views: outViews, rms: rep.rms, fovDeg: fToFov(st.F), found: solid.length, pruned, leveled, ref: st.ref };
+  const noisePx = best.noisePx;
+  if (glow && noisePx > 0.7 * tolPx) warnings.push(`The glow centres are noisy (about ${noisePx.toFixed(0)} px); the 3D result is approximate. A darker room and a steadier phone help.`);
+  return { ok: true, n, pos, est, count: coverage(viewsIn, n).seen, used, err: errPx, views: outViews, rms: rep.rms, noisePx, fovDeg: fToFov(st.F), found: solid.length, pruned, leveled, ref: st.ref, glow, warnings };
 }
 
 // ---- similarity alignment (tests, and for comparing two results) -----------------------------------------------------------------------------
@@ -1049,3 +1652,6 @@ export function alignSimilarity(src, dst) {
   const t = sub(md, mv(R, ms).map((q) => q * s));
   return { s, R, t, apply: (p) => mv(R, p).map((q, c) => q * s + t[c]) };
 }
+
+// internals exposed for tests and debugging only (not part of the API)
+export const _internals = { initialPoses, prepView, fovToF, rng, angleBetween };

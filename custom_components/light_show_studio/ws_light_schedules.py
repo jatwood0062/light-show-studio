@@ -13,11 +13,13 @@ from .light_schedules import LightScheduler
 
 P = "light_show_studio/light_schedules"
 ID = vol.All(str, vol.Length(min=1, max=64))
-_FIELDS = ("name", "enabled", "days", "start", "end", "date_from", "date_to", "targets", "look", "fade_in_s", "fade_out_s")
+_FIELDS = ("name", "enabled", "days", "start", "end", "date_from", "date_to", "targets", "look", "looks", "rotate", "holiday_looks",
+           "random_offset_min", "only_when", "fade_in_s", "fade_out_s")
 
 
 def async_register(hass: HomeAssistant) -> None:
-    for command in (ws_list, ws_save, ws_delete, ws_toggle, ws_run_now, ws_stop, ws_subscribe):
+    for command in (ws_list, ws_save, ws_delete, ws_toggle, ws_run_now, ws_stop, ws_subscribe,
+                    ws_holidays, ws_holiday_set, ws_holiday_reset):
         websocket_api.async_register_command(hass, command)
 
 
@@ -143,3 +145,56 @@ def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection
     connection.subscriptions[msg["id"]] = scheduler.add_listener(send)
     connection.send_result(msg["id"])
     send()
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{P}/holidays",
+    vol.Optional("days", default=120): vol.All(int, vol.Range(min=1, max=366)),
+})
+@callback
+def ws_holidays(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    """The holiday calendar: every holiday with its next date, window, look and overrides; the upcoming windows."""
+    if (scheduler := _scheduler(hass, connection, msg)) is None:
+        return
+    connection.send_result(msg["id"], scheduler.holidays_view(msg["days"]))
+
+
+# strict: only these keys; the values are checked in depth by light_schedules.validate_holiday_override
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{P}/holiday_set",
+    vol.Required("holiday_id"): ID,
+    vol.Optional("look"): vol.Any(None, dict),
+    vol.Optional("before"): vol.Any(None, vol.All(int, vol.Range(min=0, max=60))),
+    vol.Optional("after"): vol.Any(None, vol.All(int, vol.Range(min=0, max=60))),
+    vol.Optional("enabled"): vol.Any(None, bool),
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_holiday_set(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    if (scheduler := _scheduler(hass, connection, msg)) is None:
+        return
+    changes = {k: v for k, v in msg.items() if k not in ("id", "type", "holiday_id")}
+    try:
+        await scheduler.async_set_holiday(msg["holiday_id"], changes)
+    except (KeyError, ValueError, vol.Invalid) as err:
+        _error(connection, msg, err)
+        return
+    connection.send_result(msg["id"], _holiday(scheduler, msg["holiday_id"]))
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{P}/holiday_reset", vol.Required("holiday_id"): ID})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_holiday_reset(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    if (scheduler := _scheduler(hass, connection, msg)) is None:
+        return
+    try:
+        await scheduler.async_reset_holiday(msg["holiday_id"])
+    except KeyError as err:
+        _error(connection, msg, err)
+        return
+    connection.send_result(msg["id"], _holiday(scheduler, msg["holiday_id"]))
+
+
+def _holiday(scheduler: LightScheduler, holiday_id: str) -> dict[str, Any]:
+    return {"holiday": next(h for h in scheduler.holidays_view(1)["holidays"] if h["id"] == holiday_id)}

@@ -7,6 +7,7 @@ from datetime import datetime
 
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
@@ -34,6 +35,8 @@ def _position(state: State, offset: float) -> float | None:
 async def play_with_speaker(hass: HomeAssistant, player: SequencePlayer, seq: FseqFile,
                             entity_id: str, audio: str, offset: float) -> None:
     """Play `audio` on `entity_id`, then run `seq` on the speaker's clock until it stops."""
+    if not entity_id.startswith("media_player.") or hass.states.get(entity_id) is None:
+        raise ServiceValidationError(f"{entity_id} is not a media player that exists")
     player.stop(blank=False)
     asked = dt_util.utcnow()
     ready: asyncio.Future[State] = hass.loop.create_future()

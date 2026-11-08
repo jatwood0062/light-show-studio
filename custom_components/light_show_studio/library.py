@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO
@@ -22,6 +23,9 @@ STAGING = ".uploading"  # temp files for uploads, hidden from scans
 EXTRA_NAME_CHARS = " -_.,'()&!"
 MAX_NAME_LEN = 120  # of a file or folder name
 STALE_STAGING = 24 * 3600  # seconds before a leftover temp upload is swept away
+RESERVED_NAMES = frozenset({PLAYLIST.casefold(), STAGING.casefold()})  # can't be show ids (any case)
+SCAN_CACHE_KEY = "light_show_studio_scan_cache"
+SCAN_TTL = 3.0  # seconds a library scan is reused by shows/list
 
 
 @dataclass
@@ -43,9 +47,32 @@ def sanitize_name(name: str) -> str:
     if name.startswith("."):
         raise ValueError(f"invalid name {name!r}")
     name = "".join(c for c in name if c.isalnum() or c in EXTRA_NAME_CHARS).strip()
-    if not name or name.startswith(".") or len(name) > MAX_NAME_LEN:
+    if not name or name.startswith(".") or len(name) > MAX_NAME_LEN or name.casefold() in RESERVED_NAMES:
         raise ValueError("invalid name")
     return name
+
+
+def show_id_for(filename: str, show: str | None = None) -> str:
+    """The show id an upload of `filename` (into `show`, if given) lands in. ValueError for bad names."""
+    return sanitize_name(show) if show else sanitize_name(os.path.splitext(sanitize_name(filename))[0])
+
+
+async def async_scan(hass: HomeAssistant, ttl: float = SCAN_TTL) -> list[Show]:
+    """The library scan, reused for `ttl` seconds (shows/list is called often); changes drop it at once."""
+    state = hass.data.setdefault(SCAN_CACHE_KEY, {"at": 0.0, "shows": None, "gen": 0})
+    if state["shows"] is not None and time.monotonic() - state["at"] < ttl:
+        return state["shows"]
+    gen = state["gen"]
+    shows = await hass.async_add_executor_job(library_for(hass).scan)
+    if state["gen"] == gen:
+        state["shows"], state["at"] = shows, time.monotonic()
+    return shows
+
+
+def invalidate_scan(hass: HomeAssistant) -> None:
+    if state := hass.data.get(SCAN_CACHE_KEY):
+        state["shows"] = None
+        state["gen"] += 1
 
 
 def media_root(hass: HomeAssistant) -> tuple[str, str]:
@@ -73,10 +100,12 @@ class ShowLibrary:
         self.media_dir = media_dir or os.path.dirname(root)
         self.source_id = source_id
         self._meta: dict[str, tuple[float, int, float, int]] = {}  # fseq path -> mtime, size, secs, frames
+        self._lock = threading.RLock()  # one change to the library (upload, delete, reorder, playlist write) at a time
 
     # --- paths ------------------------------------------------------------
     def _real_root(self) -> str:
-        os.makedirs(self.root, exist_ok=True)
+        if not os.path.isdir(self.root):
+            os.makedirs(self.root, exist_ok=True)
         return os.path.realpath(self.root)
 
     def _inside(self, path: str) -> str:
@@ -158,28 +187,34 @@ class ShowLibrary:
 
     # --- changing ---------------------------------------------------------
     def _write_order(self, ids: list[str]) -> None:
-        root = self._real_root()
-        fd, tmp = tempfile.mkstemp(dir=root, prefix=".playlist-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump({"order": ids}, f)
-            os.replace(tmp, os.path.join(root, PLAYLIST))
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        with self._lock:
+            root = self._real_root()
+            fd, tmp = tempfile.mkstemp(dir=root, prefix=".playlist-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump({"order": ids}, f)
+                os.replace(tmp, os.path.join(root, PLAYLIST))
+            except BaseException:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+                raise
 
     def reorder(self, ids: list[str]) -> None:
         """Save the order; unknown ids are dropped and shows not listed go after, A to Z."""
-        known = {s.id for s in self.scan()}
-        seen: list[str] = []
-        for i in ids:
-            if i in known and i not in seen:
-                seen.append(i)
-        self._write_order(seen)
+        with self._lock:
+            known = {s.id for s in self.scan()}
+            seen: list[str] = []
+            for i in ids:
+                if i in known and i not in seen:
+                    seen.append(i)
+            self._write_order(seen)
 
     def delete(self, id_: str) -> bool:
         """Remove a show's folder, or its loose files. False if there is no such show."""
+        with self._lock:
+            return self._delete(id_)
+
+    def _delete(self, id_: str) -> bool:
         show = self.get(id_)
         if show is None:
             return False
@@ -223,8 +258,15 @@ class ShowLibrary:
         ext = ext.lower()
         if ext != FSEQ_EXT and ext not in AUDIO_EXTS:
             raise ValueError(f"{ext or 'files without an extension'} is not allowed")
-        show_id = sanitize_name(show) if show else sanitize_name(stem)
+        with self._lock:
+            return self._commit(tmp, stem, ext, sanitize_name(show) if show else sanitize_name(stem))
+
+    def _commit(self, tmp: str, stem: str, ext: str, show_id: str) -> str:
         folder = self._inside(os.path.join(self._real_root(), show_id))
+        if os.path.islink(os.path.join(self._real_root(), show_id)):
+            raise ValueError("refusing to write through a symbolic link")
+        if not os.path.isfile(tmp) or os.path.islink(tmp):
+            raise ValueError("the upload is missing")
         os.makedirs(folder, exist_ok=True)
         kinds = (FSEQ_EXT,) if ext == FSEQ_EXT else AUDIO_EXTS
         dest_path = os.path.join(folder, stem + ext)

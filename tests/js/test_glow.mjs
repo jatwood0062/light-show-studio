@@ -20,11 +20,12 @@ const W = 960, H = 540;
 // the curved run: pixel i of n sits at path(i / (n - 1)) in the picture (y down)
 const path = (t) => [70 + 820 * t, 270 + 150 * Math.sin(2 * Math.PI * t * 1.2 + 0.4) - 40 * t];
 
-function splat(img, cx, cy, amp, sx, sy) {
-  const Rx = Math.ceil(sx * 3.2), Ry = Math.ceil(sy * 3.2);
-  for (let y = Math.max(0, Math.floor(cy) - Ry); y <= Math.min(H - 1, Math.floor(cy) + Ry); y++) {
-    for (let x = Math.max(0, Math.floor(cx) - Rx); x <= Math.min(W - 1, Math.floor(cx) + Rx); x++) {
-      img[y * W + x] += amp * Math.exp(-((x - cx) ** 2 / (2 * sx * sx) + (y - cy) ** 2 / (2 * sy * sy)));
+function splat(img, cx, cy, amp, sx, sy, th = 0) {
+  const R = Math.ceil(Math.max(sx, sy) * 3.2), c = Math.cos(th), s = Math.sin(th);
+  for (let y = Math.max(0, Math.floor(cy) - R); y <= Math.min(H - 1, Math.floor(cy) + R); y++) {
+    for (let x = Math.max(0, Math.floor(cx) - R); x <= Math.min(W - 1, Math.floor(cx) + R); x++) {
+      const u = (x - cx) * c + (y - cy) * s, v = -(x - cx) * s + (y - cy) * c; // rotated by th (y down)
+      img[y * W + x] += amp * Math.exp(-(u * u / (2 * sx * sx) + v * v / (2 * sy * sy)));
     }
   }
 }
@@ -34,10 +35,11 @@ function frame(puddles, rand, o = {}) {
   const img = new Float32Array(W * H);
   splat(img, W * 0.93, H * 0.5, 80, 2, 2); // reflections that are in every frame
   splat(img, W * 0.06, H * 0.9, 60, 3, 3);
+  for (const p of o.bg || []) splat(img, ...p); // static light: in every frame, scaled by the gain with everything else
   for (const p of puddles) splat(img, ...p);
-  const gain = 1 + (o.drift ?? 0.1) * (rand() - 0.5);
+  const gain = o.gain ?? 1 + (o.drift ?? 0.1) * (rand() - 0.5);
   const out = new Uint8ClampedArray(W * H);
-  for (let i = 0; i < out.length; i++) out[i] = Math.round(10 + gain * img[i] + gauss(rand) * (o.noise ?? 4));
+  for (let i = 0; i < out.length; i++) out[i] = Math.round(10 + (o.ramp ?? 0) + gain * img[i] + gauss(rand) * (o.noise ?? 4));
   return out;
 }
 
@@ -66,7 +68,7 @@ function scan(n, seed, o = {}) {
     if (o.speck) puddles.push([40 + 800 * rand(), 40 + 400 * rand(), 255, 1.2, 1.2]); // a glint
     const lit = S.downscaleLuma(frame(puddles, rand, o), W, H);
     const g = S.findGlow(dark.data, lit.data, lit.w, lit.h, { f: lit.f });
-    found.push({ c: a.c, x: g.x, y: g.y, conf: g.conf, reason: g.reason, a });
+    found.push({ c: a.c, x: g.x, y: g.y, conf: g.conf, reason: g.reason, a, g });
   }
   const sol = S.solveGlow(n, found);
   return { n, plan, truth, found, sol };
@@ -92,7 +94,7 @@ function errors(r, skip = new Set()) {
     const sorted = starts.every((s, k) => k === 0 || s > starts[k - 1]);
     const inside = p.anchors.every((a) => a.start >= 0 && a.start + a.width <= n);
     ok(sorted && inside && p.anchors.length >= 1, `plan ${n}: ${p.anchors.length} anchors of ${p.width} px, ordered and inside the run`);
-    if (n >= 100) ok(p.anchors.length >= 16 && p.anchors.length <= 24 && p.width >= 6 && p.width <= 10, `plan ${n}: 16-24 anchors, 6-10 px wide (${p.anchors.length} x ${p.width})`);
+    if (n >= 100) ok(p.anchors.length >= 16 && p.anchors.length <= 24 && p.width >= 3 && p.width <= 6, `plan ${n}: 16-24 anchors, small spots of 3-6 px (${p.anchors.length} x ${p.width})`);
   }
   const p = S.glowPlan(279);
   ok(p.anchors[0].start === 0 && p.anchors.at(-1).start + p.width === 279, "plan: the first and last stretches sit at the run's ends");
@@ -247,6 +249,195 @@ for (const [n, seed] of [[279, 1], [145, 2], [192, 3], [288, 4]]) {
 
 
 // ======================================================================================================================
+// Hard cases: indirect light on surfaces seen at an angle (kitchen toe-kick / crown molding).
+// ======================================================================================================================
+const mkdark = (rand, o) => S.downscaleLuma(frame([], rand, o), W, H);
+const glowOf = (puddles, seed, o = {}, g = {}) => {
+  const rand = rng(seed), dark = mkdark(rand, o.darkOpts || o), lit = S.downscaleLuma(frame(puddles, rand, o), W, H);
+  const dark2 = o.darkAfter ? mkdark(rand, o.darkAfter) : null;
+  return S.findGlow(dark.data, lit.data, lit.w, lit.h, { f: lit.f, ...(dark2 ? { darkAfter: dark2.data } : {}), ...g });
+};
+const dist = (g, x, y) => Math.hypot(g.x - x, g.y - y);
+
+// ---- a floor patch seen at a steep angle: long, soft, rotated, with a tail running away from the strip ----
+{
+  // core near the strip, a long faint tail further along the floor (the far part of the light cone)
+  const patch = (cx, cy, th, k = 1) => [[cx, cy, 30 * k, 40, 11, th], [cx + 70 * Math.cos(th), cy + 70 * Math.sin(th), 9 * k, 90, 26, th]];
+  const th = 0.35;
+  const g = glowOf(patch(420, 380, th), 101);
+  // the brightest part is the answer; the tail pulls a plain centroid out by ~25 px
+  ok(!g.reason && dist(g, 420, 380) < 18 && g.conf >= S.GLOW.minConf, `oblique floor patch: centre within ${dist(g, 420, 380).toFixed(1)} px of its bright core (conf ${g.conf.toFixed(2)})`);
+  ok(g.elong > 1.8, `oblique floor patch: reports it is elongated (${g.elong.toFixed(1)}:1)`);
+  ok(Math.abs(Math.atan(Math.tan(g.angle - th))) < 0.35, `oblique floor patch: major axis angle ${g.angle.toFixed(2)} vs ${th}`);
+  // dimmer, with noise
+  const g2 = glowOf(patch(600, 200, -0.5, 0.35), 102, { noise: 5 });
+  ok(!g2.reason && dist(g2, 600, 200) < 22, `dim oblique patch: found (${g2.reason}), ${g2.x ? dist(g2, 600, 200).toFixed(1) : "-"} px off`);
+  // a wide ceiling wash (crown molding): very large, soft; centre still near the brightest
+  const g3 = glowOf([[480, 120, 14, 150, 25, 0.0], [480, 110, 8, 260, 50, 0]], 103);
+  ok(!g3.reason && Math.abs(g3.x - 480) < 20 && Math.abs(g3.y - 118) < 14, `wide ceiling wash: centre (${g3.x?.toFixed(0)}, ${g3.y?.toFixed(0)})`);
+}
+
+// ---- a glossy floor: the patch plus a sharper, weaker mirror image below it ----
+{
+  const real = [400, 260, 30, 34, 22, 0], refl = [400, 410, 14, 14, 9, 0], streak = [405, 340, 6, 4, 70, 0];
+  const g = glowOf([real, refl, streak], 111);
+  ok(!g.reason && dist(g, 400, 260) < 8, `glossy floor: the patch wins over its reflection (${dist(g, 400, 260).toFixed(1)} px off, conf ${g.conf.toFixed(2)})`);
+  // a reflection as strong as the patch: the call is flagged as unsure, and the alternative is offered
+  const g2 = glowOf([[300, 240, 28, 26, 20, 0], [620, 330, 26, 26, 20, 0]], 112);
+  ok(g2.conf < S.GLOW.minConf && g2.alt.length >= 1, `equal reflection: low confidence (${g2.conf.toFixed(2)}) and the other candidate is listed (${g2.alt.length})`);
+  const alt = g2.alt[0];
+  ok(Math.min(dist(g2, 300, 240), dist(g2, 620, 330)) < 8 && Math.min(dist(alt, 300, 240), dist(alt, 620, 330)) < 8, "equal reflection: both candidates sit on the real patches");
+  // the prior (previous spot) resolves it
+  const g3 = glowOf([[300, 240, 28, 26, 20, 0], [620, 330, 26, 26, 20, 0]], 112, {}, { expect: { x: 640, y: 320, r: 120 } });
+  ok(!g3.reason && dist(g3, 620, 330) < 8 && g3.conf >= S.GLOW.minConf, `equal reflection + expected position: picks the expected one (conf ${g3.conf.toFixed(2)})`);
+  // a gate hides the other completely
+  const g4 = glowOf([[300, 240, 28, 26, 20, 0], [620, 330, 26, 26, 20, 0]], 112, {}, { gate: { x: 300, y: 240, r: 150 } });
+  ok(!g4.reason && dist(g4, 300, 240) < 8 && g4.conf >= S.GLOW.minConf, "equal reflection + gate: only the gated one counts");
+}
+
+// ---- two patches at once, touching (the toe-kick lights two faces of the island) ----
+{
+  const two = [[360, 300, 26, 30, 18, 0.2], [470, 330, 22, 30, 18, 0.2]]; // a valley between them, one connected region
+  const g = glowOf(two, 121);
+  const nearA = dist(g, 360, 300) < 12, nearB = dist(g, 470, 330) < 12;
+  ok(g.reason || nearA || nearB, `touching double patch: not reported as one blob in the middle (${g.x?.toFixed(0)}, ${g.y?.toFixed(0)})`);
+  ok(g.conf < 0.75 && g.alt.length >= 1, `touching double patch: unsure (conf ${g.conf.toFixed(2)}), other face offered (${g.alt.length})`);
+  const gB = glowOf(two, 121, {}, { expect: { x: 480, y: 335, r: 70 } });
+  ok(!gB.reason && dist(gB, 470, 330) < 12 && gB.conf > g.conf, `touching double patch + expected: the right face (${gB.conf.toFixed(2)} > ${g.conf.toFixed(2)})`);
+  // an elongated single patch with a noisy ridge must NOT be split in two
+  const one = glowOf([[420, 300, 30, 70, 14, 0.3]], 122, { noise: 6 });
+  ok(!one.reason && one.alt.length === 0 && one.conf > 0.6, `one long patch is not split (alt ${one.alt.length}, conf ${one.conf.toFixed(2)})`);
+}
+
+// ---- along a run: each spot lights its patch and a second one; prediction + reconsideration keep the path straight ----
+{
+  const run = (usePredict, seed) => {
+    const rand = rng(seed), n = 288, plan = S.glowPlan(n);
+    const truth = Array.from({ length: n }, (_, i) => path(i / (n - 1)));
+    const dark = mkdark(rand, {});
+    const found = [];
+    for (const a of plan.anchors) {
+      const [mx, my] = truth[Math.round(a.c)];
+      const big = rand() < 0.5; // the decoy is sometimes stronger
+      const pu = [[mx, my, 26 * (big ? 0.8 : 1), 28, 18, 0.3], [mx + (a.i % 2 ? 200 : -200), my - 110 + 40 * rand(), 26 * (big ? 1.1 : 0.7), 28, 18, 0.3]];
+      const lit = S.downscaleLuma(frame(pu, rand, {}), W, H);
+      const ex = usePredict ? S.glowPredict(found, a.c, { minR: 90 }) : null;
+      const g = S.findGlow(dark.data, lit.data, lit.w, lit.h, { f: lit.f, ...(ex ? { expect: ex } : {}) });
+      found.push({ c: a.c, x: g.x, y: g.y, conf: g.conf, alt: g.alt, reason: g.reason, status: g.reason ? "missing" : "ok" });
+    }
+    const fixed = S.glowReconsider(found);
+    let wrong = 0;
+    fixed.forEach((f, k) => {
+      const [tx, ty] = truth[Math.round(plan.anchors[k].c)];
+      if (f.x == null || Math.hypot(f.x - tx, f.y - ty) > 25) wrong++;
+    });
+    return { wrong, total: found.length, fixed };
+  };
+  let w0 = 0, w1 = 0, tot = 0;
+  for (const seed of [201, 202, 203]) {
+    w0 += run(false, seed).wrong;
+    const r = run(true, seed);
+    w1 += r.wrong;
+    tot += r.total;
+  }
+  ok(w1 <= 0.12 * tot, `decoy patches: with prediction + reconsideration ${w1}/${tot} spots wrong`);
+  ok(w1 <= w0, `decoy patches: prediction is no worse than none (${w1} vs ${w0})`);
+  // predictions
+  const a = [{ c: 10, x: 100, y: 100, conf: 1 }, { c: 30, x: 200, y: 140, conf: 1 }];
+  const p = S.glowPredict(a, 50, { minR: 10 });
+  ok(Math.abs(p.x - 300) < 1e-6 && Math.abs(p.y - 180) < 1e-6 && p.r > 100, `glowPredict extrapolates in a line (${p.x}, ${p.y}, r ${p.r.toFixed(0)})`);
+  ok(S.glowPredict([], 5) === null && S.glowPredict([a[0]], 20).r >= 200, "glowPredict: nothing found yet = no prediction; one spot = wide window");
+  ok(S.glowPredict([a[0], { c: 30, x: 5, y: 5, conf: 0.1 }], 50).known === 1, "glowPredict ignores low-confidence spots");
+}
+
+// ---- very dim patches, lots of noise ----
+{
+  let hits = 0, worst = 0;
+  const N = 12;
+  for (let k = 0; k < N; k++) {
+    const cx = 200 + 55 * k, cy = 150 + 20 * (k % 5);
+    const g = glowOf([[cx, cy, 2.6, 38, 26, 0.2]], 130 + k, { noise: 5 });
+    if (!g.reason && g.conf >= S.GLOW.minConf) {
+      hits++;
+      worst = Math.max(worst, dist(g, cx, cy));
+    }
+  }
+  ok(hits >= N - 2 && worst < 22, `very dim (peak ~2.6 of 255, noise 5): found ${hits}/${N}, worst ${worst.toFixed(1)} px`);
+  const none = glowOf([], 150, { noise: 5 });
+  ok(none.x === null, `very dim: an unlit picture still finds nothing (${none.reason})`);
+  const g = glowOf([[480, 270, 1.4, 40, 30, 0]], 151, { noise: 5 });
+  ok(g.reason === "weak" || g.reason === "none" || g.conf < S.GLOW.minConf, `too dim to be real: not trusted (${g.reason}, ${g.conf.toFixed(2)})`);
+  ok(g.hint === "wider", `too dim: the hint says to light more pixels (${g.hint})`);
+}
+
+// ---- exposure / white balance / ambient drift ----
+{
+  const lamp = [[300, 160, 70, 190, 120, 0], [700, 400, 40, 160, 90, 0]]; // static broad light, strongly structured
+  const base = { bg: lamp, noise: 4 };
+  // lit frame 25% brighter overall (auto exposure): without the fit, 25% of the lamp (about 17) would be a big false glow
+  const g = glowOf([[520, 300, 20, 26, 20, 0]], 161, { ...base, gain: 1 }, {});
+  const lit = (gain) => {
+    const rand = rng(162), dark = mkdark(rand, { ...base, gain: 1 }), l = S.downscaleLuma(frame([[520, 300, 20, 26, 20, 0]], rand, { ...base, gain }), W, H);
+    return S.findGlow(dark.data, l.data, l.w, l.h, { f: l.f });
+  };
+  ok(!g.reason && dist(g, 520, 300) < 4, "drift: no gain change, patch found");
+  for (const gain of [1.25, 0.8]) {
+    const r = lit(gain);
+    ok(!r.reason && dist(r, 520, 300) < 6 && r.conf >= S.GLOW.minConf, `drift: exposure x${gain} between dark and lit: patch found ${r.x ? dist(r, 520, 300).toFixed(1) : "-"} px off (conf ${r.conf?.toFixed(2)}, fitted gain ${r.gain?.toFixed(2)})`);
+  }
+  // an ambient ramp (daylight / a lamp warming): dark frames before and after bracket the lit one
+  const rampTest = (useAfter) => {
+    const rand = rng(163), d0 = mkdark(rand, { ...base, gain: 1, ramp: 0 }), l = S.downscaleLuma(frame([[520, 300, 8, 30, 22, 0]], rand, { ...base, gain: 1, ramp: 0 }), W, H);
+    // ambient grows from left to right between the frames: add a ramp image
+    const add = (img, amt) => { for (let y = 0; y < img.h; y++) for (let x = 0; x < img.w; x++) img.data[y * img.w + x] += amt * (x / img.w); };
+    add(l, 5); // by lit time +5 (right edge)
+    const d1 = { ...d0, data: Float32Array.from(d0.data) };
+    add(d1, 10);
+    return S.findGlow(d0.data, l.data, l.w, l.h, { f: l.f, ...(useAfter ? { darkAfter: d1.data } : {}) });
+  };
+  const r0 = rampTest(false), r1 = rampTest(true);
+  ok(!r1.reason && dist(r1, 520, 300) < 8, `ambient ramp: with a dark frame after as well, patch found (${r1.x ? dist(r1, 520, 300).toFixed(1) : "-"} px off)`);
+  ok(!r0.reason ? dist(r0, 520, 300) < 20 : true, `ambient ramp: even without it nothing absurd happens (${r0.reason || dist(r0, 520, 300).toFixed(0) + " px off"})`);
+}
+
+// ---- saturation ----
+{
+  const g = glowOf([[480, 270, 1000, 45, 40, 0]], 171);
+  ok(!g.reason && g.saturated > 0.02 && g.hint === "narrower", `saturated patch: reported (${(g.saturated * 100).toFixed(1)}% of pixels), hint ${g.hint}`);
+  ok(dist(g, 480, 270) < 6, `saturated patch: centre still right (${dist(g, 480, 270).toFixed(1)} px)`);
+  const clean = glowOf([[480, 270, 40, 45, 40, 0]], 172);
+  ok(clean.saturated === 0 && clean.hint === null && g.conf <= clean.conf, `unsaturated patch: nothing flagged (conf ${clean.conf.toFixed(2)} vs ${g.conf.toFixed(2)})`);
+}
+
+// ---- overlapping neighbours: big patches, spots only ~30 px apart ----
+{
+  const rand = rng(181), n = 192, plan = S.glowPlan(n, { anchors: 24 });
+  const truth = Array.from({ length: n }, (_, i) => [90 + 780 * (i / (n - 1)), 300 + 30 * Math.sin(i / 25)]);
+  const dark = mkdark(rand, {});
+  const found = [];
+  for (const a of plan.anchors) {
+    const [mx, my] = truth[Math.round(a.c)];
+    const lit = S.downscaleLuma(frame([[mx, my, 20, 55, 35, 0.1]], rand, {}), W, H);
+    const g = S.findGlow(dark.data, lit.data, lit.w, lit.h, { f: lit.f });
+    found.push({ c: a.c, x: g.x, y: g.y, conf: g.conf, reason: g.reason });
+  }
+  const sol = S.solveGlow(n, found);
+  let worst = 0;
+  for (let i = 0; i < n; i++) if (!sol.est[i]) worst = Math.max(worst, Math.hypot(sol.x[i] - truth[i][0], sol.y[i] - truth[i][1]));
+  ok(sol.found >= 22 && worst < 10, `overlapping glows (spots ${(780 / 23).toFixed(0)} px apart, glow 55 px): ${sol.found}/24 used, worst ${worst.toFixed(1)} px`);
+}
+
+// ---- adapting the spot width ----
+{
+  ok(S.glowAdaptWidth(4, "wider") > 4 && S.glowAdaptWidth(4, "wider") <= 12, `glowAdaptWidth: wider (${S.glowAdaptWidth(4, "wider")})`);
+  ok(S.glowAdaptWidth(8, "narrower") < 8 && S.glowAdaptWidth(8, "narrower") >= S.GLOW.minWidth, `glowAdaptWidth: narrower (${S.glowAdaptWidth(8, "narrower")})`);
+  ok(S.glowAdaptWidth(5, null) === 5 && S.glowAdaptWidth(S.GLOW.minWidth, "narrower") === S.GLOW.minWidth, "glowAdaptWidth: no hint = no change; never below the minimum");
+  const k = S.glowPlan(904);
+  ok(k.width <= 6 && k.anchors.length <= 24, `default plan for the kitchen strip: ${k.anchors.length} spots of ${k.width} px`);
+}
+
+
+// ======================================================================================================================
 // Colour glow scan: up to three stretches glow at once (red, green, blue) and are told apart by colour.
 // ======================================================================================================================
 const RESP = [[1, 0.12, 0.06], [0.14, 1, 0.12], [0.05, 0.2, 1]]; // how the surfaces + camera show red / green / blue light
@@ -393,6 +584,18 @@ for (const [n, seed, wb] of [[279, 1, [1.3, 1, 0.65]], [145, 2, [1.7, 1, 0.4]], 
   const st = q.sol.anchors.map((a) => a.status);
   ok(occ.every((k) => st[k] !== "ok") && st.filter((x) => x === "ok").length >= q.plan.anchors.length - occ.length - 1, `colour: occluded anchors ${occ} are flagged (${occ.map((k) => st[k]).join(", ")}) and the rest are used`);
   ok(errors(q).max < 14, `colour: pixels near found anchors stay accurate (${errors(q).max.toFixed(1)} px)`);
+}
+
+// ---- several angles: a run placed in 3D between its triangulated spots ----
+{
+  const n = 100, known = [10, 30, 50, 70, 90].map((c) => ({ c, p: [c / 100, 0.2, c < 50 ? 0 : (c - 50) / 100] }));
+  const r = S.glowRun3D(n, known);
+  ok(r && Math.abs(r.pos[3 * 20] - 0.2) < 1e-6 && Math.abs(r.pos[3 * 60 + 2] - 0.1) < 1e-6, "glowRun3D: pixels between spots lie on the line between them");
+  ok(Math.abs(r.pos[0] - 0) < 1e-6 && Math.abs(r.pos[3 * 99] - 0.99) < 1e-6, "glowRun3D: straight on beyond the first and last spot");
+  ok(r.est[50] === 0 && r.est[0] === 0 && r.found === 5, "glowRun3D: pixels near a spot count as found");
+  const far = S.glowRun3D(100, [40, 50, 60].map((c) => ({ c, p: [c / 100, 0, 0] })));
+  ok(far.est[0] === 1 && far.est[99] === 1 && far.est[45] === 0, "glowRun3D: pixels far from any spot are flagged as guessed");
+  ok(S.glowRun3D(50, [{ c: 3, p: [0, 0, 0] }]) === null && S.glowRun3D(50, [{ c: 3, p: [0, NaN, 0] }, { c: 9, p: [1, 1, 1] }]) === null, "glowRun3D: needs two good spots");
 }
 
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");

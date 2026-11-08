@@ -131,8 +131,8 @@ The solver is `frontend/light-show-studio-multiview.js` (pure, no DOM; `tests/js
 |---|---|---|
 | `light_show_studio/map/get` | – | adds `areas: [{id, name, ha_area_id?}]` and per-run `area`, `positions?` |
 | `light_show_studio/map/set` | `{map}` v2 | `{map}` |
-| `light_show_studio/map/scan/start` | `{entry_id, first?, count?, mode?}` | `{bulbs, frames, first, level, mode}` |
-| `light_show_studio/map/scan/frame` | `{entry_id, frame}` | `{}` |
+| `light_show_studio/map/scan/start` | `{entry_id, first?, count?, mode?}` | `{bulbs, frames, first, level, mode, hold_ms}` |
+| `light_show_studio/map/scan/frame` | `{entry_id, frame, seq?}` | `{seq?}` |
 | `light_show_studio/map/scan/stop` | `{entry_id}` | `{}` |
 | `light_show_studio/map/zone/start` | adds optional `area` instead of `zone_id` (ad-hoc zone) | `{}` |
 
@@ -170,15 +170,33 @@ As built in 2.3.0. Deviations and details the frontend needs:
 - **Spatial u is per area**: each area's pixels are projected on the direction (or distance from the centre) and
   scaled to 0-1 within that area, so a zone over several areas sweeps through all of them at once.
 - **Scan** (all admin only; errors are `failed`):
-  - `map/scan/start {entry_id, first?, count?, mode?}` -> `{bulbs, frames, first, level, mode}`. `first`/`count` code only
+  - `map/scan/start {entry_id, first?, count?, mode?}` -> `{bulbs, frames, first, level, mode, hold_ms}`. `first`/`count` code only
     that stretch of the light (pixel `first + i` is code index `i`; the rest stay dark); the whole light by default.
     `mode` is `"colour"` (default) or `"white"`; `frames` and `level` (the lit channel value: 140 or 128) follow the
     mode, and an older light that does not know `mode` answers without it (always white). Lights without
     per-segment control are refused. The light goes dark at once. Closing the websocket ends the scan.
-  - `map/scan/frame {entry_id, frame}` -> `{}`; works for both modes. Colour: frame 0 dark, 1/2/3 all red/green/blue,
+  - `map/scan/frame {entry_id, frame, seq?}` -> `{seq?}`; works for both modes. Colour: frame 0 dark, 1/2/3 all red/green/blue,
     then digit frames and the check frame. White: frame 0 = all dark, 1 = all lit, then bit pairs (see `scan_codes.py`,
     least significant bit first), lit pixels `(128,128,128)`. Never dimmed by the light's brightness setting. Errors
     if the light is no longer being scanned (a person took it) or the frame is past this scan's `frames`.
+  - **`hold_ms`** (int, 250-1500): how long the phone should wait between the `scan/frame` / `scan/segment` reply and
+    taking the camera picture. 350 by default; WLED 450; raised by the light's measured Wi-Fi latency (the health check
+    records a smoothed and a recent-worst round trip; each adds its excess over 50 ms), so a WLED that sometimes takes
+    0.7 s gets about 1.1 s. A light with no measurement yet gets the default for its kind. Treat it as the minimum wait;
+    it is a recommendation, fixed for the scan (read it from `scan/start`).
+  - **`seq`** (optional int, 0 to 2^53-1) on `scan/frame` and `scan/segment`: echoed back in the result as `{seq}`
+    (`{}` when none was sent). The panel numbers its requests and drops a reply whose `seq` is not the latest one it
+    sent. Errors carry no `seq`; they come as the usual `failed` error for that request id.
+  - Delivery: the reply comes as soon as the frame is sent. Frames go out over UDP (Govee, Twinkly, WLED DDP), so each
+    scan frame is sent again 50 and 150 ms later (identical, harmless) in case a packet is lost. A WLED held by a scan
+    resends its last frame every 0.4 s (1 s normally) so it never drops out of realtime mode and back to its effect.
+    The panel should still wait `hold_ms` after the reply before the picture.
+  - Ownership and rate: the connection that sent `scan/start` owns the scan; `scan/frame`, `scan/segment` and `scan/stop`
+    from another connection fail with `failed` ("started by another connection"). A scan accepts about 30 frame/segment
+    commands a second (`failed`, "Too many scan commands"); the scan is not stopped by it.
+  - Robustness: if the socket that started a scan closes, or `scan/stop` arrives, while the light is still turning on,
+    the light is let go (restored) once it has. A new `scan/start` for a light replaces the old scan; the old
+    connection's later close does not end it. `map/get.scanning` lists only lights actually held by a scan.
   - `map/scan/stop {entry_id}` -> `{}`; restores what the light showed (off if the scan turned it on). Safe to repeat.
   - 120 s without a frame (or start) also stops it. Frames can be sent as fast as the light takes them.
   - `map/get` also returns `scanning: [entry_id]`.
@@ -190,7 +208,7 @@ As built in 2.3.0. Deviations and details the frontend needs:
 
 ### Glow scan (2.4.0)
 
-For hidden strips. `map/scan/segment {entry_id, start, count, colour?}` (admin only) -> `{}` lights pixels
+For hidden strips. `map/scan/segment {entry_id, start, count, colour?, seq?}` (admin only) -> `{seq?}` lights pixels
 `start..start+count-1` of the light, all others dark; `colour` is `[r, g, b]` (0-255), white at 128 by default.
 `start` is a pixel of the light and the stretch must lie inside the range given to `scan/start` (else `failed`).
 Instead of `start`/`count` a call may give `segments: [{start, count, colour?}]` (1-3 stretches, must not overlap) to

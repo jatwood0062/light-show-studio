@@ -1,13 +1,15 @@
 """Websocket API for music sync: a phone listens with its microphone and sends audio features; the lights follow.
 
-Any signed-in user may use it (it only drives lights they could already switch). Frames are rate limited per connection
-(40 a second) and every field is checked strictly. A session ends on music/stop or when the connection closes."""
+Any signed-in user may use it, but only on lights they may control (checked per light entity; admins may use any).
+Frames are rate limited per user (40 a second) and every field is checked strictly. A session ends on music/stop or when the connection closes."""
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
@@ -21,8 +23,44 @@ TARGETS = vol.Schema({
     vol.Optional("lights", default=list): vol.All([REF], vol.Length(max=64)),
     vol.Optional("areas", default=list): vol.All([REF], vol.Length(max=64)),
 })
-RATE = 40.0  # frames a second per connection
-_limits: dict[int, music_engine.RateLimiter] = {}  # by connection (a connection can't be weak-referenced or tagged)
+RATE = 40.0  # frames a second per user
+QUIET = 1.0  # seconds after a rate_limited error during which further over-limit frames are dropped without a reply
+
+
+class _Limit:
+    def __init__(self) -> None:
+        self.limiter = music_engine.RateLimiter(RATE)
+        self.quiet_until = 0.0
+
+
+_limits: dict[str, _Limit] = {}  # by user id (many connections of one user share the allowance)
+_clock = time.monotonic
+
+
+def light_entities(hass: Any, entry_id: str) -> list[str]:
+    """The light entity ids of a config entry (its whole string and its bulbs)."""
+    from homeassistant.helpers import entity_registry as er  # noqa: PLC0415  (kept out of import time for tests)
+    return [e.entity_id for e in er.async_entries_for_config_entry(er.async_get(hass), entry_id) if e.domain == "light"]
+
+
+def may_control(hass: Any, connection: Any, mgr: Any, lights: list[str], areas: list[str]) -> bool:
+    """True when this connection's user may control every light entity the targets touch. Areas are resolved to
+    the lights that have runs in them first. Admins may control anything; a light with no entities is refused."""
+    user = getattr(connection, "user", None)
+    if user is None:
+        return False
+    if user.is_admin:
+        return True
+    entries = set(lights)
+    if areas:
+        model = mgr.model
+        ids = {a.id for ref in areas if (a := model.area(ref)) is not None}
+        entries |= {r.entry_id for r in model.runs if r.area in ids}
+    for entry_id in entries:
+        entities = light_entities(hass, entry_id)
+        if not entities or not all(user.permissions.check_entity(e, POLICY_CONTROL) for e in entities):
+            return False
+    return True
 
 
 def _whole(value: Any) -> int:
@@ -43,13 +81,20 @@ def _manager(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> Music
     return manager
 
 
-def _allowed(connection: Any) -> bool:
-    key = id(connection)
-    limiter = _limits.get(key)
-    if limiter is None:
-        limiter = _limits[key] = music_engine.RateLimiter(RATE)
-        connection.subscriptions[("music_rate", key)] = lambda: _limits.pop(key, None)  # forgotten when it closes
-    return limiter.allow()
+def _allowed(connection: Any) -> tuple[bool, bool]:
+    """(allowed, send an error): over the limit, one error goes out and the rest are dropped for QUIET seconds."""
+    user = getattr(connection, "user", None)
+    key = getattr(user, "id", None) or f"conn{id(connection)}"
+    limit = _limits.get(key)
+    if limit is None:
+        limit = _limits[key] = _Limit()
+    if limit.limiter.allow():
+        return True, False
+    now = _clock()
+    if now < limit.quiet_until:
+        return False, False
+    limit.quiet_until = now + QUIET
+    return False, True
 
 
 @websocket_api.websocket_command({
@@ -70,6 +115,9 @@ async def ws_start(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) ->
     targets = msg["targets"]
     if not targets["lights"] and not targets["areas"]:
         connection.send_error(msg["id"], "invalid_format", "Pick at least one light or area")
+        return
+    if not may_control(hass, connection, manager.mgr, targets["lights"], targets["areas"]):
+        connection.send_error(msg["id"], "unauthorized", "You may not control those lights")
         return
     connection.subscriptions[msg["id"]] = lambda: manager.stop(connection)  # runs when the socket closes
     try:
@@ -95,11 +143,13 @@ async def ws_start(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) ->
 })
 @callback
 def ws_frame(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
-    """One frame of audio features. Over 40 a second per connection is refused (rate_limited)."""
+    """One frame of audio features. Over 40 a second per user is refused (one rate_limited error, then frames are dropped silently for a second)."""
     if (manager := _manager(hass, connection, msg)) is None:
         return
-    if not _allowed(connection):
-        connection.send_error(msg["id"], "rate_limited", "Too many music frames; send at most 40 a second")
+    ok, tell = _allowed(connection)
+    if not ok:
+        if tell:  # one error, then silence for a moment
+            connection.send_error(msg["id"], "rate_limited", "Too many music frames; send at most 40 a second")
         return
     try:
         features = music_engine.parse_features(msg)

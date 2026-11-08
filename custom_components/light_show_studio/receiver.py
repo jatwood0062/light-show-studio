@@ -75,6 +75,7 @@ class PixelReceiver:
         self._verdicts: dict[str, bool] = {}  # source ip -> accepted by address (bounded)
         self._limiter = RateLimiter()
         self._warned: set[str] = set()
+        self._noted_open = False
         self._last_push = 0.0
         self._push_timer: asyncio.TimerHandle | None = None
         self._subs: dict[object, tuple[int, int, Callable[[bytes], None]]] = {}
@@ -90,6 +91,13 @@ class PixelReceiver:
             _LOGGER.warning("Ignoring the allowed senders setting: %s", err)
             self._allowed = ()
         self._verdicts.clear()
+        if not self._allowed:
+            self._note_open()
+
+    def _note_open(self) -> None:
+        if not self._noted_open:
+            self._noted_open = True
+            _LOGGER.info("No allowed senders set: light show data is accepted from any private LAN address")
 
     def accept(self, ip: str) -> bool:
         """Is a packet from this source address to be processed at all? Counts towards the rate limit."""
@@ -104,6 +112,8 @@ class PixelReceiver:
                                 "not on the allowed senders list" if is_lan_ipv4(ip) else "not a private LAN address")
         if not ok:
             return False
+        if not self._allowed:
+            self._note_open()
         return self._limiter.allow(ip, asyncio.get_running_loop().time())
 
     def push(self) -> None:
@@ -121,7 +131,10 @@ class PixelReceiver:
     def _push_now(self) -> None:
         self._push_timer = None
         self._last_push = asyncio.get_running_loop().time()
-        self.show(self.buf)
+        try:
+            self.show(self.buf)
+        except Exception:  # noqa: BLE001  a timer callback must not raise
+            _LOGGER.debug("Showing a frame failed", exc_info=True)
 
     def subscriptions(self) -> list[tuple[int, int, Callable[[bytes], None]]]:
         """Each string's (start byte, byte size, callback)."""
@@ -131,7 +144,10 @@ class PixelReceiver:
         """Give every string its slice of a full channel buffer (channel 1 = byte 0)."""
         for start, size, cb in list(self._subs.values()):
             chunk = bytes(data[start : start + size])
-            cb(chunk if len(chunk) == size else chunk.ljust(size, b"\0"))
+            try:
+                cb(chunk if len(chunk) == size else chunk.ljust(size, b"\0"))
+            except Exception:  # noqa: BLE001  one broken string must not starve the others
+                _LOGGER.debug("A light show subscriber failed", exc_info=True)
 
     async def subscribe(self, key: object, start_pixel: int, bulbs: int, cb: Callable[[bytes], None]) -> None:
         self._subs[key] = ((start_pixel - 1) * 3, bulbs * 3, cb)

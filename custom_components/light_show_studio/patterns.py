@@ -8,42 +8,69 @@ from __future__ import annotations
 
 import colorsys
 import math
+import zlib
 
 from . import user_patterns
+from . import effects as fx
+from .effects import (CLASSIC, GOLD_WHITE_C9, HALLOWEEN_C9, PASTELS, WARM, WARM_WHITE, event_window, sparkle_level,
+                      twinkle_level)
 from .protocol import Colour
 
 PATTERN = "Pattern"  # the light's effect name while a pattern + pattern effect is showing
 
-# Classic C9 multicolour: same colours as the "Classic Multicolour" effect (red, green, blue, orange, pink).
+# Classic C9 multicolour: the same colours as the "Classic Multicolour" effect (effects.CLASSIC, one list for both).
+# Colour sets that both this file and effects.py use come from effects.py (CLASSIC, PASTELS, HALLOWEEN_C9,
+# GOLD_WHITE_C9), so each is defined once. Newer palettes that need a warm white use effects.WARM_WHITE.
 PATTERNS: dict[str, tuple[list[Colour], int]] = {  # name -> (colours, bulbs per colour)
-    "Classic Multicolor": ([(255, 0, 0), (0, 255, 0), (0, 60, 255), (255, 80, 0), (255, 0, 120)], 1),
-    "Warm White": ([(255, 150, 40)], 1),
+    "Classic Multicolor": (CLASSIC, 1),
+    "Warm White": ([WARM], 1),
     "Cool White": ([(200, 220, 255)], 1),
     "Red & Green": ([(255, 0, 0), (0, 200, 0)], 1),
     "Red, Green & White": ([(255, 0, 0), (0, 200, 0), (255, 200, 140)], 1),
     "Candy Cane": ([(255, 0, 0), (255, 255, 255)], 2),
     "Blue & White": ([(0, 40, 255), (200, 220, 255)], 1),
-    "Gold & White": ([(255, 140, 0), (255, 200, 140)], 1),
-    "Pastel": ([(255, 120, 170), (120, 200, 255), (255, 220, 90), (150, 255, 140), (190, 130, 255)], 1),
-    "Halloween": ([(255, 70, 0), (140, 0, 255), (40, 255, 0)], 1),
+    "Gold & White": (GOLD_WHITE_C9, 1),
+    "Pastel": (PASTELS, 1),
+    "Halloween": (HALLOWEEN_C9, 1),
     "Red, White & Blue": ([(255, 0, 0), (255, 255, 255), (0, 40, 255)], 1),
     "Valentine": ([(255, 0, 0), (255, 20, 110), (255, 200, 200)], 1),
     "Rainbow": ([], 1),  # special: a smooth rainbow along the string
+    # holidays and seasons
+    "Diya Lamps": ([(255, 110, 0), (255, 30, 80), (255, 170, 20), (255, 60, 0)], 1),  # Diwali
+    "Lunar Red & Gold": ([(230, 0, 0), (255, 120, 0), (255, 200, 30)], 1),  # Lunar New Year
+    "Menorah Lights": ([(0, 70, 255), (120, 190, 255), (255, 170, 40)], 1),  # Hanukkah
+    "Autumn Harvest": ([(190, 50, 0), (255, 110, 0), (255, 170, 0), (120, 30, 0)], 1),
+    "Cranberry & Gold": ([(150, 0, 20), (255, 140, 0), (255, 200, 60)], 1),  # Thanksgiving
+    "Evergreen & Gold": ([(0, 150, 50), (255, 170, 30), (0, 90, 35)], 1),
+    "Winter Frost": ([(0, 30, 140), (40, 110, 255), (150, 210, 255), (230, 240, 255)], 1),
+    "Romance Wine": ([(120, 0, 40), (200, 0, 60), (255, 60, 120), (90, 0, 90)], 1),  # Valentine's, darker
+    "Lucky Green": ([(0, 200, 40), (0, 120, 30), WARM_WHITE, (255, 170, 30)], 1),  # St Patrick's Day
+    "Easter Egg": ([(255, 150, 190), (160, 215, 255), (255, 230, 130), (170, 240, 170), (205, 160, 255)], 1),
+    "Spring Blossom": ([(255, 100, 150), (255, 190, 90), (120, 220, 120), (120, 170, 255)], 1),
+    "Pride Six": ([(228, 3, 3), (255, 140, 0), (255, 237, 0), (0, 128, 38), (0, 77, 255), (117, 7, 135)], 1),
+    # moods and scenes
+    "Cosy Amber": ([(255, 120, 20), (255, 170, 60), (200, 50, 0)], 1),
+    "Deep Ocean": ([(0, 60, 160), (0, 140, 200), (0, 200, 190), (20, 90, 130)], 1),
+    "Aurora Borealis": ([(0, 220, 120), (0, 160, 200), (80, 60, 255), (0, 255, 160)], 1),
+    "Sunset Blaze": ([(255, 60, 0), (255, 120, 20), (255, 30, 90), (120, 20, 140)], 1),
 }
 PATTERN_LIST = list(PATTERNS)
 DEFAULT_PATTERN = "Classic Multicolor"
 
 STEADY, TWINKLE, CHASE = "Steady", "Twinkle", "Chase"
-PATTERN_EFFECTS = [STEADY, TWINKLE, CHASE, "Twinkle Swap", "Marquee", "Fade", "Sparkle", "Alternate", "Wave"]
+PATTERN_EFFECTS = [STEADY, TWINKLE, CHASE, "Twinkle Swap", "Marquee", "Fade", "Sparkle", "Alternate", "Wave",
+                   "Gradient Flow", "Plasma", "Noise Drift", "Storm Flash", "Confetti", "Dissolve", "Sunrise Ramp"]
 DEFAULT_EFFECT = TWINKLE
 DEFAULT_SPEED = 50
 
 # Effects that need positions (an area's 3D map): zones and area schedules only. On one light they become the
 # nearest string effect.
-MAP_EFFECTS = ["Sweep", "Ripple", "Snowfall", "Rise", "Rainbow Wash", "Fireworks", "Breathe Outward"]
+MAP_EFFECTS = ["Sweep", "Ripple", "Snowfall", "Rise", "Rainbow Wash", "Fireworks", "Breathe Outward",
+               "Gradient Axis", "Plasma Field", "Candy Helix"]  # the last three live in map_effects_extra.py
 ALL_EFFECTS = PATTERN_EFFECTS + MAP_EFFECTS
 STRING_EQUIVALENT = {"Sweep": CHASE, "Ripple": "Wave", "Snowfall": TWINKLE, "Rise": CHASE, "Rainbow Wash": CHASE,
-                     "Fireworks": "Sparkle", "Breathe Outward": "Fade"}
+                     "Fireworks": "Sparkle", "Breathe Outward": "Fade", "Gradient Axis": "Gradient Flow",
+                     "Plasma Field": "Plasma", "Candy Helix": CHASE}
 
 
 def light_effect(effect: str | None) -> str:
@@ -175,6 +202,12 @@ def _scale(c: Colour, f: float) -> Colour:
     return int(c[0] * f), int(c[1] * f), int(c[2] * f)
 
 
+def _swap_colour(cols: list[Colour], i: int, seed: int, k: int) -> Colour:
+    """The colour bulb i takes on after its dip in slot k (a stable pick from the pattern, or a rainbow hue)."""
+    h = _hash(i + seed * 7919, (k & 0xFFFF) + 77)
+    return cols[int(h * len(cols)) % len(cols)] if cols else _rainbow_colour(h)
+
+
 def _mix(a: Colour, b: Colour, f: float) -> Colour:
     f = max(0.0, min(1.0, f))
     return tuple(int(x + (y - x) * f) for x, y in zip(a, b))
@@ -244,26 +277,23 @@ def render(pattern: str, effect: str, t: float, n: int, light: str | None = None
         if painted and base:
             return [_list_at(base, i - t * 3.0) for i in range(n)]
         return [_colour_at(pattern, i - t * 3.0, n) for i in range(n)]
-    if effect == TWINKLE:  # classic twinkle: each bulb fades down and back up at its own pace
-        out = []
-        for i, c in enumerate(base):
-            rate, phase = 0.5 + _hash(i, 1) * 0.9, _hash(i, 2) * 6.283
-            w = t * rate * 2.2 + phase  # a slow swell with a little wobble so no two bulbs repeat alike
-            v = 0.5 + 0.38 * math.sin(w) + 0.12 * math.sin(w * 2.3 + phase * 3)
-            out.append(_scale(c, 0.1 + 0.9 * max(0.0, min(1.0, v)) ** 2))
-        return out
-    if effect == "Twinkle Swap":  # each bulb dims out, comes back as another colour from the pattern
+    # Twinkle, Twinkle Swap and Sparkle are random, not periodic: every bulb has its own random event times
+    # (see effects.event_at), a pure function of t, so a late or dropped frame is never a visible stutter. The
+    # seed follows the light so two lights of the same length don't twinkle in step.
+    seed = zlib.crc32(light.encode()) & 0xFFFF if light else 0
+    if effect == TWINKLE:  # classic twinkle: bulbs rest dim, a few at a time swell up at random moments
+        return [_scale(c, 0.3 + 0.7 * twinkle_level(t, i, seed)) for i, c in enumerate(base)]
+    if effect == "Twinkle Swap":  # now and then a bulb dims out and comes back as another colour from the pattern
         cols = _spec(pattern)[0]
         out = []
         for i in range(n):
-            period = 2.5 + _hash(i, 3) * 2.5
-            x = t / period + _hash(i, 4)
-            cycle, f = int(math.floor(x)), x - math.floor(x)
-            if cols:
-                c = cols[int(_hash(i, cycle) * len(cols)) % len(cols)]
-            else:
-                c = _rainbow_colour(_hash(i, cycle))
-            out.append(_scale(c, min(1.0, math.sin(f * math.pi) * 1.6)))
+            # one dip per 6 s slot at a random moment; the colour changes at the bottom of the dip, where it is dark
+            x = t / 6.0 + _hash(i, seed + 3)
+            k = math.floor(x)
+            start, dur, _, _ = event_window(i, k, seed + 3, 6.0, 1.0, 0.8, 1.6)  # prob 1: every slot has a dip
+            s = (x - k) * 6.0 - start
+            c = _swap_colour(cols, i, seed, k if s >= dur / 2 else k - 1)
+            out.append(_scale(c, 1.0 - 0.95 * math.sin(math.pi * s / dur) ** 2 if 0.0 <= s < dur else 1.0))
         return out
     if effect == "Marquee":  # every third bulb lit, stepping along like a theatre sign
         step = int(t * 4) % 3
@@ -271,16 +301,37 @@ def render(pattern: str, effect: str, t: float, n: int, light: str | None = None
     if effect == "Fade":  # the whole string breathes
         v = 0.5 + 0.5 * math.sin(t * 1.6)
         return [_scale(c, 0.1 + 0.9 * v) for c in base]
-    if effect == "Sparkle":  # the pattern with quick white glints
-        x = t * 5  # a few glints a second, each fading out over its slot so it never flickers
-        slot, f = int(math.floor(x)), x - math.floor(x)
-        return [_mix((255, 255, 255), c, f * f) if _hash(i, slot) < 0.05 else c for i, c in enumerate(base)]
+    if effect == "Sparkle":  # the pattern with quick white glints at random bulbs and moments
+        return [_mix(c, (255, 255, 255), m) if (m := sparkle_level(t, i, seed)) > 0 else c
+                for i, c in enumerate(base)]
     if effect == "Alternate":  # odd and even bulbs take turns
         on_even = int(t * 1.5) % 2 == 0
         return [c if (i % 2 == 0) == on_even else _scale(c, 0.08) for i, c in enumerate(base)]
     if effect == "Wave":  # a slow wave of brightness travels along the string
         return [_scale(c, 0.15 + 0.85 * (0.5 + 0.5 * math.sin(i * 0.45 - t * 2.5)) ** 2) for i, c in enumerate(base)]
+    # The effects below are all pure functions of t too (see effects.py): they colour the string from the pattern's
+    # own colours (as a gradient through them, or a backdrop and the colours that pop over it).
+    if effect in _PALETTE_EFFECTS:
+        cols = palette_of(pattern)
+        pal = fx.palette_for(tuple(cols))
+        if effect == "Gradient Flow":  # the pattern's colours as a smooth gradient scrolling along the string
+            return fx.gradient_flow(t, n, pal)
+        if effect == "Plasma":  # soft blobs of the pattern's colours that swell and slide
+            return fx.plasma(t, n, pal)
+        if effect == "Noise Drift":  # the colours drift through each other on smooth noise
+            return fx.noise_drift(t, n, pal)
+        if effect == "Storm Flash":  # a dark sky tinted by the pattern, with lightning that flickers and spreads
+            dark, flash = fx.storm_colours(cols)
+            return fx.storm_flash(t, n, dark, flash, seed)
+        if effect == "Confetti":  # the pattern's colours pop at random over a dim copy of the pattern
+            return fx.confetti(t, n, cols, [_scale(c, 0.1) for c in base], seed)
+        if effect == "Dissolve":  # bulbs fill in at random until the string is full, then drain away
+            return fx.dissolve(t, n, base, seed)
+        return fx.sunrise_ramp(t, n, base)  # Sunrise Ramp: a slow warm-up from an ember glow to the pattern
     return list(base)  # Steady
+
+
+_PALETTE_EFFECTS = frozenset(PATTERN_EFFECTS[9:])
 
 
 def is_animated(effect: str) -> bool:

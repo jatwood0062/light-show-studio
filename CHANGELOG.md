@@ -4,6 +4,37 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.6.1]
+
+### Added
+- Light schedules: look rotation (`looks` + `rotate`: a new look every N minutes, or a different one each night, the same
+  after a restart), a built-in holiday calendar (`holiday_looks`; Easter, Thanksgiving, Mother's / Father's Day, Memorial /
+  Labor Day, fixed dates, and Hanukkah / Diwali / Lunar New Year for 2026-2030) whose looks, windows and enabled flags can be
+  overridden (`light_schedules/holidays`, `holiday_set`, `holiday_reset`), a vacation-style `random_offset_min` (0-60) that
+  moves the on and off times by a steady per-day amount, and `only_when` home / away / any (checked when the window opens).
+  Schedules saved before this load unchanged. See `docs/LIGHT_SCHEDULES.md`.
+- New pattern effects (also in the light effect list), all pure functions of the clock so late frames just jump: Gradient Flow,
+  Plasma, Noise Drift, Storm Flash, Confetti, Dissolve and Sunrise Ramp. They colour the string from the pattern's own colours.
+- New map effects for areas (`map_effects_extra.py`): Gradient Axis (a gradient along the axis or by height), Plasma Field (3D
+  plasma) and Candy Helix (stripes that spiral up a tree; red and white unless the pattern has more colours).
+- New music effects: Beat Scatter (a random handful of bulbs flashes on each beat), Gravity Drop (a band drops on each beat and
+  bounces) and Beat Shell (a ring opens from the centre of the area on each beat).
+- 16 new built-in patterns: Diya Lamps, Lunar Red & Gold, Menorah Lights, Autumn Harvest, Cranberry & Gold, Evergreen & Gold, Winter
+  Frost, Romance Wine, Lucky Green, Easter Egg, Spring Blossom, Pride Six, Cosy Amber, Deep Ocean, Aurora Borealis, Sunset Blaze.
+- `effects.Palette` (gradient stops, OKLab or linear blending) and `effects.WARM_WHITE` (255, 176, 100) for RGB-only bulbs.
+
+### Changed
+- Twinkle, Rainbow / Vintage / Christmas Twinkle, Sparkle and the Twinkle, Twinkle Swap and Sparkle pattern effects are now truly
+  random instead of every bulb swelling on its own regular cycle. Each bulb pops at random moments for a random time and peak,
+  with only a few bulbs changing at once, so a late or dropped Wi-Fi frame no longer reads as a stutter. They depend only on the
+  clock (not on how many frames were drawn), bulbs rest at the same base look as before, and each light twinkles differently.
+- Fire no longer uses a fresh random number per bulb per frame: the same orange-red flicker, but stable (smooth noise in time).
+- The colour sets shared by `patterns.py` and `effects.py` (Classic, Pastel, Halloween, Gold & White) are defined once; no colours change.
+
+### Fixed
+- A running zone no longer starts its chase / sweep over from the beginning when its map, pattern or look is edited: the new run
+  carries on from the old one's clock.
+
 ## [2.6.0] - 2026-11-07
 
 ### Added

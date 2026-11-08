@@ -467,15 +467,23 @@ class LightShowStudioPlayerCard extends HTMLElement {
 
   _tick() {
     const r = this.shadowRoot;
-    if (!r || !this._state || this._seeking) return;
+    if (!r || !this._state || this._seeking || document.hidden) return;
+    let q = this._tq;
+    if (!q || !q.fill.isConnected) {
+      const fill = r.querySelector(".fill");
+      q = this._tq = fill ? { fill, time: r.querySelector(".time"), bar: r.querySelector(".bar"), w: null, t: null, max: null, now: null, vt: null } : null;
+    }
+    if (!q) return;
     const pos = this._position();
     const dur = this._state.duration || 0;
-    r.querySelector(".fill").style.width = dur ? `${Math.min(100, (pos / dur) * 100)}%` : "0%";
-    r.querySelector(".time").textContent = `${fmt(pos)} / ${fmt(dur)}`;
-    const bar = r.querySelector(".bar");
-    bar.setAttribute("aria-valuemax", String(Math.round(dur)));
-    bar.setAttribute("aria-valuenow", String(Math.round(pos)));
-    bar.setAttribute("aria-valuetext", `${fmt(pos)} of ${fmt(dur)}`);
+    const w = dur ? `${Math.min(100, (pos / dur) * 100)}%` : "0%";
+    if (w !== q.w) q.fill.style.width = q.w = w;
+    const t = `${fmt(pos)} / ${fmt(dur)}`;
+    if (t !== q.t) q.time.textContent = q.t = t;
+    const max = String(Math.round(dur)), now = String(Math.round(pos)), vt = `${fmt(pos)} of ${fmt(dur)}`;
+    if (max !== q.max) q.bar.setAttribute("aria-valuemax", q.max = max);
+    if (now !== q.now) q.bar.setAttribute("aria-valuenow", q.now = now);
+    if (vt !== q.vt) q.bar.setAttribute("aria-valuetext", q.vt = vt);
   }
 
   // which parts show: mode, admin rights, and whether there is a player at all
@@ -1108,7 +1116,7 @@ class LightShowStudioPlayerCard extends HTMLElement {
   }
 }
 
-customElements.define("light-show-studio-player-card", LightShowStudioPlayerCard);
+if (!customElements.get("light-show-studio-player-card")) customElements.define("light-show-studio-player-card", LightShowStudioPlayerCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "light-show-studio-player-card",

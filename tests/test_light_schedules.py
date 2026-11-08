@@ -79,7 +79,7 @@ def _load():
     pkg = sys.modules.setdefault("light_show_studio_ls", types.ModuleType("light_show_studio_ls"))
     pkg.__path__ = [str(PKG)]
     names = ("const", "effects", "protocol", "hosts", "user_patterns", "patterns", "fade", "controller", "mapping", "schedule_math", "fseq",
-             "library", "scheduler", "light_schedules")
+             "library", "scheduler", "holiday_calendar", "light_schedules")
     for name in names:
         full = f"light_show_studio_ls.{name}"
         if full not in sys.modules:
@@ -92,6 +92,7 @@ def _load():
 
 M = _load()
 controller, mapping, patterns, ls, const = M["controller"], M["mapping"], M["patterns"], M["light_schedules"], M["const"]
+sm, hc = M["schedule_math"], M["holiday_calendar"]
 ALL = [0, 1, 2, 3, 4, 5, 6]
 
 
@@ -108,12 +109,21 @@ class FakeBus:
         self.events.append((name, data))
 
 
+class FakeStates:
+    def __init__(self):
+        self.values: dict[str, str] = {}
+
+    def get(self, entity_id):
+        return types.SimpleNamespace(state=self.values[entity_id]) if entity_id in self.values else None
+
+
 class FakeHass:
     def __init__(self):
         self.loop = asyncio.get_running_loop()
         self.tasks = []
         self.data = {}
         self.bus = FakeBus()
+        self.states = FakeStates()
 
     def async_create_background_task(self, coro, name=None):
         t = asyncio.ensure_future(coro)
@@ -948,3 +958,582 @@ async def test_look_can_use_one_of_your_own_patterns_by_name_or_id_and_follows_a
         assert s.get_schedule(sched["id"])["look"]["pattern"] == patterns.DEFAULT_PATTERN
     finally:
         patterns.set_user_patterns([])
+
+
+# === 2.6.1 scheduling features: look rotation, holidays, random offset, presence ===========================
+def look(pattern, effect="Steady"):
+    return {"pattern": pattern, "effect": effect, "speed": 50, "brightness": 100}
+
+
+THREE = [look("Warm White"), look("Cool White"), look("Candy Cane")]
+
+
+# --- back-compat ----------------------------------------------------------------------------------
+@aio
+async def test_old_saved_schedules_load_with_the_new_options_off(hass):
+    old = {"id": "a1b2c3d4", "name": "Porch", "enabled": True, "days": ALL, "start": {"type": "time", "time": "18:00",
+           "offset_min": 0}, "end": {"type": "time", "time": "22:00", "offset_min": 0}, "date_from": None,
+           "date_to": None, "targets": {"areas": ["Porch"], "lights": []},
+           "look": {"pattern": "Warm White", "effect": "Steady", "speed": 30, "brightness": 50},
+           "fade_in_s": 2, "fade_out_s": 2}
+    STORAGE[const.LIGHT_SCHEDULE_STORE_KEY] = {"schedules": [old], "windows": {}, "manual": {}}  # no "holidays" key
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await s.async_load()
+    [got] = s.schedules
+    assert got["look"] == old["look"] and got["looks"] == [] and got["rotate"] is None
+    assert got["holiday_looks"] is False and got["random_offset_min"] == 0 and got["only_when"] == "any"
+    assert s.holiday_overrides == {}
+    await advance(s, at(19))
+    assert mgr.ctls["e1"].pattern == "Warm White"  # behaves exactly as before
+    view = s.views()[0]
+    assert view["look_now"]["pattern"] == "Warm White" and view["holiday_now"] is None and view["skipped_now"] is False
+    await s.async_flush()
+    assert STORAGE[const.LIGHT_SCHEDULE_STORE_KEY]["holidays"] == {}
+
+
+@aio
+async def test_a_single_look_stays_valid_and_looks_is_optional_extra(hass):
+    out = ls.validate_light_schedule(data())
+    assert out["look"]["pattern"] == "Warm White" and out["looks"] == [] and out["rotate"] is None
+    d = data()
+    del d["look"]
+    d["looks"] = THREE
+    out = ls.validate_light_schedule(d)
+    assert out["look"] == out["looks"][0] and out["rotate"] == {"type": "night"}  # look = first; default rotation
+
+
+def test_saved_view_round_trips_through_save():
+    d = data(looks=THREE, rotate={"type": "interval", "minutes": 30}, holiday_looks=True, random_offset_min=15,
+             only_when="away")
+    del d["look"]
+    first = ls.validate_light_schedule(d)
+    again = ls.validate_light_schedule({k: v for k, v in first.items()})  # look AND looks together (equal) is fine
+    assert again == first
+
+
+# --- validation of the new fields ---------------------------------------------------------------------
+@pytest.mark.parametrize("bad", [
+    {"looks": THREE[:1], "rotate": {"type": "night"}},  # one look cannot rotate
+    {"rotate": {"type": "night"}},  # no looks
+    {"looks": THREE, "look": look("Rainbow")},  # look must equal looks[0]
+    {"looks": THREE * 5},  # more than 12
+    {"looks": [look("Nope")]},
+    {"looks": THREE, "rotate": {"type": "interval", "minutes": 0}},
+    {"looks": THREE, "rotate": {"type": "interval", "minutes": 1441}},
+    {"looks": THREE, "rotate": {"type": "interval", "minutes": True}},
+    {"looks": THREE, "rotate": {"type": "interval", "minutes": 5.5}},
+    {"looks": THREE, "rotate": {"type": "night", "minutes": 5}},
+    {"looks": THREE, "rotate": {"type": "random"}},
+    {"looks": THREE, "rotate": "night"},
+    {"holiday_looks": "yes"},
+    {"holiday_looks": 1},
+    {"random_offset_min": 61},
+    {"random_offset_min": -1},
+    {"random_offset_min": True},
+    {"random_offset_min": 5.0},
+    {"random_offset_min": "5"},
+    {"only_when": "sometimes"},
+    {"only_when": None},
+    {"bogus": 1},
+])
+def test_new_fields_are_strict(bad):
+    d = data(**bad)
+    if bad.get("looks") and "look" not in bad:
+        del d["look"]
+    with pytest.raises(vol.Invalid):
+        ls.validate_light_schedule(d)
+
+
+def test_a_schedule_needs_a_look_or_looks():
+    d = data()
+    del d["look"]
+    with pytest.raises(vol.Invalid):
+        ls.validate_light_schedule(d)
+
+
+def test_valid_new_fields():
+    d = data(random_offset_min=60, only_when="home", holiday_looks=True)
+    out = ls.validate_light_schedule(d)
+    assert out["random_offset_min"] == 60 and out["only_when"] == "home" and out["holiday_looks"] is True
+    d = data(looks=THREE[:2], rotate={"type": "interval", "minutes": 1440})
+    del d["look"]
+    assert ls.validate_light_schedule(d)["rotate"] == {"type": "interval", "minutes": 1440}
+    d = data(looks=[look("Rainbow")] * 12)
+    del d["look"]
+    assert len(ls.validate_light_schedule(d)["looks"]) == 12
+
+
+# --- look rotation -----------------------------------------------------------------------------------
+def test_rotation_index_is_deterministic_and_steps_each_night():
+    start = at(18)
+    seen = []
+    for i in range(12):
+        day = date(2026, 12, 1) + timedelta(days=i)
+        a = sm.rotation_index(3, {"type": "night"}, "sched1", day, start, start)
+        assert a == sm.rotation_index(3, {"type": "night"}, "sched1", day, start, start + timedelta(hours=3))  # same night
+        seen.append(a)
+    assert all((b - a) % 3 == 1 for a, b in zip(seen, seen[1:]))  # a different look every night, cycling in order
+    assert sorted(set(seen)) == [0, 1, 2]
+    # other schedules start at other places in the cycle, but the same schedule always agrees with itself
+    firsts = {sm.rotation_index(3, {"type": "night"}, f"s{i}", date(2026, 12, 1), start, start) for i in range(20)}
+    assert len(firsts) > 1
+    assert sm.rotation_index(1, {"type": "night"}, "x", date(2026, 12, 1), start, start) == 0
+    assert sm.rotation_index(3, None, "x", date(2026, 12, 1), start, start) == 0
+
+
+def test_interval_rotation_steps_and_wraps():
+    start = at(18)
+    rot = {"type": "interval", "minutes": 30}
+    base = sm.rotation_index(3, rot, "s", date(2026, 12, 7), start, start)
+    got = [sm.rotation_index(3, rot, "s", date(2026, 12, 7), start, start + timedelta(minutes=m))
+           for m in (0, 29, 30, 59, 60, 90, 120)]
+    assert got == [(base + k) % 3 for k in (0, 0, 1, 1, 2, 3, 4)]
+    assert sm.next_rotation(rot, start, start + timedelta(minutes=29)) == start + timedelta(minutes=30)
+    assert sm.next_rotation(rot, start, start + timedelta(minutes=30)) == start + timedelta(minutes=60)
+    assert sm.next_rotation({"type": "night"}, start, start) is None and sm.next_rotation(None, start, start) is None
+
+
+@aio
+async def test_each_night_shows_a_different_look(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    d = data(looks=THREE, rotate={"type": "night"})
+    del d["look"]
+    sched = await s.async_save_schedule(None, d)
+    shown = []
+    for n in range(4):
+        day = 7 + n
+        await advance(s, at(19, day=day))
+        shown.append(mgr.ctls["e1"].pattern)
+        want = THREE[sm.rotation_index(3, {"type": "night"}, sched["id"], date(2026, 12, day), at(18, day=day), at(19, day=day))]
+        assert shown[-1] == want["pattern"]
+        await advance(s, at(22, 1, day=day))
+    assert all(a != b for a, b in zip(shown, shown[1:]))  # neighbouring nights differ
+    assert len(set(shown[:3])) == 3
+
+
+@aio
+async def test_interval_rotation_swaps_the_look_inside_one_window(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    d = data(looks=THREE, rotate={"type": "interval", "minutes": 60})
+    del d["look"]
+    sched = await s.async_save_schedule(None, d)
+    order = [THREE[(sm.rotation_index(3, sched["rotate"], sched["id"], date(2026, 12, 7), at(18), at(18)) + k) % 3]["pattern"]
+             for k in range(4)]
+    await advance(s, at(18, 1))
+    assert mgr.ctls["e1"].pattern == order[0]
+    assert len(events(hass, const.EVENT_LIGHT_SCHEDULE_STARTED)) == 1
+    TIMERS.clear()
+    await advance(s, at(18, 30))
+    assert mgr.ctls["e1"].pattern == order[0]
+    assert at(19) in TIMERS or min(TIMERS) <= at(19)  # a timer wakes the scheduler for the next step
+    await advance(s, at(19, 0))
+    assert mgr.ctls["e1"].pattern == order[1]
+    await advance(s, at(20, 1))
+    assert mgr.ctls["e1"].pattern == order[2]
+    assert len(events(hass, const.EVENT_LIGHT_SCHEDULE_STARTED)) == 1  # still the same window
+    await advance(s, at(22, 1))
+    assert not mgr.ctls["e1"].is_on  # and it still turns off at the end
+
+
+@aio
+async def test_a_rotation_step_leaves_a_light_a_person_changed(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    d = data(looks=THREE, rotate={"type": "interval", "minutes": 60})
+    del d["look"]
+    await s.async_save_schedule(None, d)
+    await advance(s, at(18, 1))
+    mgr.ctls["e1"].speed = 99  # a person tweaked it
+    mine = mgr.ctls["e1"].pattern
+    await advance(s, at(19, 1))
+    assert mgr.ctls["e1"].pattern == mine and mgr.ctls["e1"].speed == 99
+
+
+@aio
+async def test_pattern_rename_follows_into_looks_and_holiday_overrides(hass):
+    world(hass)
+    s = new_scheduler(hass)
+    up = M["user_patterns"].UserPattern({"name": "Mine", "kind": "palette", "colours": [[1, 2, 3]], "bulbs_per_colour": 1,
+                                        "default_effect": "Twinkle", "default_speed": 50}, "ab12cd34")
+    patterns.set_user_patterns([up])
+    try:
+        d = data(looks=[look("Mine"), look("Cool White")], rotate={"type": "night"})
+        del d["look"]
+        sched = await s.async_save_schedule(None, d)
+        await s.async_set_holiday("halloween", {"look": look("Mine")})
+        await s.async_pattern_changed("Mine", "Renamed")
+        got = s.get_schedule(sched["id"])
+        assert got["looks"][0]["pattern"] == "Renamed" and got["look"]["pattern"] == "Renamed"
+        assert s.holiday_overrides["halloween"]["look"]["pattern"] == "Renamed"
+    finally:
+        patterns.set_user_patterns([])
+
+
+# --- holidays ------------------------------------------------------------------------------------------
+@aio
+async def test_holiday_look_replaces_the_normal_look_inside_a_holiday_window(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s, holiday_looks=True)
+    await advance(s, at(19, day=20))  # Dec 20 2026: Christmas window (Dec 1-26); Hanukkah ended on the 11th
+    assert mgr.ctls["e1"].pattern == "Red & Green" and mgr.ctls["e1"].pattern_effect == "Twinkle"
+    assert s.views()[0]["holiday_now"] == "christmas"
+    await advance(s, at(22, 1, day=20))
+    await advance(s, at(19, day=7))  # Dec 7: Hanukkah (Dec 4-11) opened after Christmas, so it wins
+    assert mgr.ctls["e1"].pattern == "Blue & White"
+    await advance(s, at(22, 1, day=7))
+    await advance(s, at(19, day=29))  # Dec 29: no holiday
+    assert mgr.ctls["e1"].pattern == "Warm White" and s.views()[0]["holiday_now"] is None
+
+
+@aio
+async def test_holiday_looks_off_ignores_the_calendar(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s)
+    await advance(s, at(19, day=20))
+    assert mgr.ctls["e1"].pattern == "Warm White"
+
+
+@aio
+async def test_holiday_override_look_window_and_enabled(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s, holiday_looks=True)
+    await s.async_set_holiday("christmas", {"look": look("Candy Cane", "Chase")})
+    await advance(s, at(19, day=20))
+    assert (mgr.ctls["e1"].pattern, mgr.ctls["e1"].pattern_effect) == ("Candy Cane", "Chase")
+    # changing the holiday while the window is open swaps the look in place
+    await s.async_set_holiday("christmas", {"enabled": False})
+    assert mgr.ctls["e1"].pattern == "Warm White"
+    await s.async_set_holiday("christmas", {"enabled": None, "look": None, "before": 2, "after": 0})  # clears two, sets window
+    assert s.holiday_overrides["christmas"] == {"before": 2, "after": 0}
+    assert mgr.ctls["e1"].pattern == "Warm White"  # Dec 20 is outside Dec 23-25 now
+    await s.async_set_holiday("christmas", {"before": None, "after": None})
+    assert "christmas" not in s.holiday_overrides  # an empty override is not kept
+    assert mgr.ctls["e1"].pattern == "Red & Green"
+    await s.async_set_holiday("christmas", {"enabled": False})
+    await s.async_reset_holiday("christmas")
+    assert s.holiday_overrides == {} and mgr.ctls["e1"].pattern == "Red & Green"
+
+
+@aio
+async def test_holiday_overrides_are_stored_and_reloaded_strictly(hass):
+    world(hass)
+    s = new_scheduler(hass)
+    await s.async_set_holiday("july_4", {"look": look("Rainbow", "Wave"), "after": 5})
+    await s.async_flush()
+    saved = STORAGE[const.LIGHT_SCHEDULE_STORE_KEY]["holidays"]
+    assert saved["july_4"]["after"] == 5 and saved["july_4"]["look"]["pattern"] == "Rainbow"
+    saved["nonsense"] = {"enabled": False}  # unknown holiday
+    saved["easter"] = {"before": 61}  # out of range
+    saved["labor_day"] = {"enabled": "yes"}
+    saved["christmas"] = "x"
+    saved["halloween"] = {"look": {"pattern": "Halloween", "effect": "Nope"}}
+    saved["diwali"] = {"surprise": True}
+    s2 = new_scheduler(hass)
+    await s2.async_load()
+    assert list(s2.holiday_overrides) == ["july_4"]
+    for hid, bad in (("nonsense", {"enabled": True}), ):
+        with pytest.raises(KeyError):
+            await s2.async_set_holiday(hid, bad)
+    for bad in ({"before": 61}, {"before": -1}, {"before": True}, {"enabled": "no"}, {"look": {"pattern": "Nope", "effect": "Steady"}},
+                {"look": {"pattern": "Halloween"}}, {"surprise": 1}):
+        with pytest.raises(vol.Invalid):
+            await s2.async_set_holiday("easter", bad)
+    with pytest.raises(KeyError):
+        await s2.async_reset_holiday("nonsense")
+
+
+@aio
+async def test_holidays_view_lists_the_calendar_and_upcoming(hass):
+    world(hass)
+    s = new_scheduler(hass)
+    v = s.holidays_view(30, today=date(2026, 12, 7))
+    by = {h["id"]: h for h in v["holidays"]}
+    assert len(by) == len(hc.HOLIDAYS) and v["active"] == "hanukkah" and v["today"] == "2026-12-07"
+    assert by["christmas"]["date"] == "2026-12-25" and by["christmas"]["window_start"] == "2026-12-01"
+    assert by["christmas"]["active"] is True and by["easter"]["date"] == "2027-03-28"
+    assert by["thanksgiving"]["date"] == "2027-11-25"  # this year's has gone by
+    assert by["christmas"]["default_look"] == by["christmas"]["look"] and by["christmas"]["overridden"] is False
+    up = [u["id"] for u in v["upcoming"]]
+    assert up[:3] == ["christmas", "hanukkah", "new_year"] or "hanukkah" in up
+    assert "easter" not in up and "new_year" in up
+    await s.async_set_holiday("christmas", {"enabled": False})
+    v = s.holidays_view(30, today=date(2026, 12, 7))
+    assert {h["id"]: h for h in v["holidays"]}["christmas"]["overridden"] is True
+    assert {u["id"]: u for u in v["upcoming"]}["christmas"]["enabled"] is False
+
+
+def test_every_default_look_uses_an_existing_pattern_and_valid_effect():
+    for h in hc.HOLIDAYS:
+        assert h.look["pattern"] in patterns.PATTERNS, h.id
+        assert h.look["effect"] in patterns.ALL_EFFECTS, h.id
+        ls._LOOK(h.look)  # passes the same schema a person's override would
+        assert 0 <= h.before <= hc.MAX_WINDOW_DAYS and 0 <= h.after <= hc.MAX_WINDOW_DAYS
+
+
+# --- random offset -----------------------------------------------------------------------------------
+def _sun_fn(day, event):
+    return datetime(day.year, day.month, day.day, 7 if event == "sunrise" else 17, tzinfo=TZ).astimezone(UTC)
+
+
+def test_random_offset_is_deterministic_and_bounded():
+    seen = set()
+    for i in range(400):
+        day = date(2026, 1, 1) + timedelta(days=i)
+        for kind in ("start", "end"):
+            a = sm.random_offset("abc", day, kind, 30)
+            assert a == sm.random_offset("abc", day, kind, 30) and -30 <= a <= 30
+            seen.add(a)
+    assert len(seen) > 40 and min(seen) < -20 and max(seen) > 20  # it does spread across the range
+    assert all(sm.random_offset("abc", date(2026, 1, 1), "start", 0) == 0 for _ in range(3))
+    assert {sm.random_offset("abc", date(2026, 3, d), "start", 1) for d in range(1, 29)} <= {-1, 0, 1}
+    # start and end and different schedules are shaken independently
+    assert [sm.random_offset("abc", date(2026, 1, d), "start", 60) for d in range(1, 15)] != \
+           [sm.random_offset("abc", date(2026, 1, d), "end", 60) for d in range(1, 15)]
+    assert [sm.random_offset("abc", date(2026, 1, d), "start", 60) for d in range(1, 15)] != \
+           [sm.random_offset("xyz", date(2026, 1, d), "start", 60) for d in range(1, 15)]
+
+
+def test_random_offset_shifts_window_edges_within_bounds_and_is_stable():
+    plain = {"id": "s1", "days": ALL, "start": {"type": "time", "time": "18:00"}, "end": {"type": "time", "time": "23:00"}}
+    shaken = {**plain, "random_offset_min": 45}
+    moved = 0
+    for i in range(120):
+        day = date(2026, 9, 1) + timedelta(days=i)
+        base = sm.window_for_day(plain, day, TZ, _sun_fn)
+        w = sm.window_for_day(shaken, day, TZ, _sun_fn)
+        assert w == sm.window_for_day(shaken, day, TZ, _sun_fn)  # same answer every time
+        assert abs((w.start - base.start).total_seconds()) <= 45 * 60 and abs((w.end - base.end).total_seconds()) <= 45 * 60
+        assert w.end > w.start and w.day == day
+        moved += w.start != base.start
+    assert moved > 80  # most days really moved
+    # offset 0 / missing is exactly the old behaviour
+    assert sm.window_for_day({**plain, "random_offset_min": 0}, date(2026, 9, 1), TZ, _sun_fn) == \
+           sm.window_for_day(plain, date(2026, 9, 1), TZ, _sun_fn)
+    # a "leave on" start moves too, and sunset edges are shaken after the offset
+    one = {"id": "s1", "days": ALL, "start": {"type": "sunset", "offset_min": 0}, "end": None, "random_offset_min": 20}
+    w = sm.window_for_day(one, date(2026, 9, 1), TZ, _sun_fn)
+    assert abs((w.start - _sun_fn(date(2026, 9, 1), "sunset")).total_seconds()) <= 20 * 60 and w.end is None
+
+
+def test_a_short_window_never_turns_inside_out():
+    s = {"id": "s", "days": ALL, "start": {"type": "time", "time": "18:00"}, "end": {"type": "time", "time": "18:05"},
+         "random_offset_min": 60}
+    for i in range(200):
+        w = sm.window_for_day(s, date(2026, 1, 1) + timedelta(days=i), TZ, _sun_fn)
+        assert w.end > w.start
+
+
+@aio
+async def test_scheduler_opens_the_window_at_the_shifted_time(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    sched = await save(s, random_offset_min=40)
+    w = sm.window_for_day(sched, date(2026, 12, 7), TZ, s._sun)
+    assert w.start != at(18) or w.end != at(22)  # (this day's draw moves at least one edge for this id)
+    await advance(s, w.start - timedelta(minutes=1))
+    assert not mgr.ctls["e1"].is_on
+    await advance(s, w.start + timedelta(seconds=30))
+    assert mgr.ctls["e1"].is_on
+    await advance(s, w.end + timedelta(seconds=30))
+    assert not mgr.ctls["e1"].is_on
+    assert s.views()[0]["next_on"] == sm.window_for_day(sched, date(2026, 12, 8), TZ, s._sun).start.isoformat()
+
+
+# --- presence ----------------------------------------------------------------------------------------
+@aio
+async def test_only_when_home_skips_the_start_when_nobody_is_home(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    hass.states.values["zone.home"] = "0"
+    await save(s, only_when="home")
+    await advance(s, at(18, 1))
+    assert not mgr.ctls["e1"].is_on
+    assert events(hass, const.EVENT_LIGHT_SCHEDULE_STARTED) == []
+    assert s.views()[0]["skipped_now"] is True and s.views()[0]["active"] is False
+    hass.states.values["zone.home"] = "2"  # someone comes home mid-window: checked at window start only
+    await advance(s, at(19))
+    assert not mgr.ctls["e1"].is_on
+    await advance(s, at(18, 1, day=8))  # the next day's window is checked afresh
+    assert mgr.ctls["e1"].is_on
+
+
+@aio
+async def test_only_when_home_runs_when_someone_is_home_and_is_not_rechecked(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    hass.states.values["zone.home"] = "1"
+    await save(s, only_when="home")
+    await advance(s, at(18, 1))
+    assert mgr.ctls["e1"].is_on
+    hass.states.values["zone.home"] = "0"  # everyone leaves: the open window carries on
+    await advance(s, at(20))
+    assert mgr.ctls["e1"].is_on
+    await advance(s, at(22, 1))
+    assert not mgr.ctls["e1"].is_on
+
+
+@aio
+async def test_only_when_away(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    hass.states.values["zone.home"] = "3"
+    await save(s, only_when="away")
+    await advance(s, at(18, 1))
+    assert not mgr.ctls["e1"].is_on
+    hass.states.values["zone.home"] = "0"
+    await advance(s, at(18, 1, day=8))
+    assert mgr.ctls["e1"].is_on
+
+
+@aio
+async def test_only_when_with_unknown_state_runs_and_any_never_looks(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    await save(s, only_when="home")  # no zone.home state at all
+    await advance(s, at(18, 1))
+    assert mgr.ctls["e1"].is_on
+    await advance(s, at(22, 1))
+    hass.states.values["zone.home"] = "unavailable"
+    await advance(s, at(18, 1, day=8))
+    assert mgr.ctls["e1"].is_on
+    # "any" never reads the state
+    s2 = new_scheduler(hass)
+    hass.states = None
+    assert s2._presence_ok({"only_when": "any"}) is True
+
+
+@aio
+async def test_only_when_applies_to_leave_on_starts_and_run_now_ignores_it(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    s._last = at(12)
+    hass.states.values["zone.home"] = "0"
+    sched = await save(s, only_when="home", end=None, start={"type": "time", "time": "18:00"})
+    await advance(s, at(18, 1))
+    assert not mgr.ctls["e1"].is_on
+    await advance(s, at(18, 2))
+    assert not mgr.ctls["e1"].is_on  # not retried
+    await s.async_run_now(sched["id"])  # a person asked: it runs
+    assert mgr.ctls["e1"].is_on
+
+
+@aio
+async def test_skipped_window_survives_a_restart(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    hass.states.values["zone.home"] = "0"
+    await save(s, only_when="home")
+    await advance(s, at(18, 1))
+    await s.async_flush()
+    hass.states.values["zone.home"] = "2"
+    s2 = new_scheduler(hass)
+    await s2.async_load()
+    await advance(s2, at(19))
+    assert not mgr.ctls["e1"].is_on  # the window was already judged
+
+
+# --- websocket ---------------------------------------------------------------------------------------
+def _ws():
+    wsmod = _stub("homeassistant.components.websocket_api")
+    comp = _stub("homeassistant.components")
+    comp.websocket_api = wsmod
+
+    def websocket_command(schema):
+        def deco(f):
+            f._ws_schema = schema
+            return f
+        return deco
+
+    def require_admin(f):
+        f._admin = True
+        return f
+
+    wsmod.websocket_command, wsmod.require_admin = websocket_command, require_admin
+    wsmod.async_response = lambda f: f
+    wsmod.ActiveConnection = object
+    wsmod.event_message = lambda i, d: {"id": i, "event": d}
+    full = "light_show_studio_ls.ws_light_schedules"
+    if full not in sys.modules:
+        spec = importlib.util.spec_from_file_location(full, PKG / "ws_light_schedules.py")
+        m = importlib.util.module_from_spec(spec)
+        sys.modules[full] = m
+        spec.loader.exec_module(m)
+    return sys.modules[full]
+
+
+class Conn:
+    def __init__(self):
+        self.results, self.errors = [], []
+
+    def send_result(self, i, result=None):
+        self.results.append(result)
+
+    def send_error(self, i, code, message):
+        self.errors.append((code, message))
+
+
+async def _call(handler, hass, msg):
+    conn = Conn()
+    data = vol.Schema({**handler._ws_schema, vol.Required("id"): int})({"id": 1, **msg})
+    res = handler(hass, conn, data)
+    if asyncio.iscoroutine(res):
+        await res
+    return conn
+
+
+@aio
+async def test_ws_holiday_commands_and_admin_flags(hass):
+    ws = _ws()
+    world(hass)
+    s = new_scheduler(hass)
+    hass.data[const.LIGHT_SCHEDULER_KEY] = s
+    P = "light_show_studio/light_schedules"
+    for h in (ws.ws_holiday_set, ws.ws_holiday_reset):
+        assert getattr(h, "_admin", False) is True  # writes are admin only
+    assert not getattr(ws.ws_holidays, "_admin", False)  # reading is not
+    c = await _call(ws.ws_holidays, hass, {"type": f"{P}/holidays"})
+    res = c.results[0]
+    assert len(res["holidays"]) == len(hc.HOLIDAYS) and "upcoming" in res and res["table_years"] == [2026, 2030]
+    c = await _call(ws.ws_holiday_set, hass, {"type": f"{P}/holiday_set", "holiday_id": "christmas", "enabled": False,
+                                               "before": 10, "look": look("Candy Cane", "Chase")})
+    assert c.errors == [] and c.results[0]["holiday"]["enabled"] is False and c.results[0]["holiday"]["before"] == 10
+    assert c.results[0]["holiday"]["look"]["pattern"] == "Candy Cane"
+    c = await _call(ws.ws_holiday_set, hass, {"type": f"{P}/holiday_set", "holiday_id": "nope", "enabled": True})
+    assert c.errors[0][0] == "not_found"
+    c = await _call(ws.ws_holiday_set, hass, {"type": f"{P}/holiday_set", "holiday_id": "easter",
+                                               "look": {"pattern": "Nope", "effect": "Steady"}})
+    assert c.errors[0][0] == "invalid_format"
+    c = await _call(ws.ws_holiday_reset, hass, {"type": f"{P}/holiday_reset", "holiday_id": "christmas"})
+    assert c.results[0]["holiday"]["overridden"] is False
+    # strict schemas: unknown keys, wrong types and sizes are refused by the command schema itself
+    for bad in ({"holiday_id": "easter", "color": 1}, {"holiday_id": "x" * 65}, {"holiday_id": "easter", "before": 99},
+                {"holiday_id": "easter", "before": "3"}, {"holiday_id": "easter", "enabled": "yes"}, {"holiday_id": "easter", "look": "red"}):
+        with pytest.raises(vol.Invalid):
+            await _call(ws.ws_holiday_set, hass, {"type": f"{P}/holiday_set", **bad})
+    for bad in ({"days": 0}, {"days": 367}, {"days": "5"}, {"extra": 1}):
+        with pytest.raises(vol.Invalid):
+            await _call(ws.ws_holidays, hass, {"type": f"{P}/holidays", **bad})
+
+
+@aio
+async def test_ws_save_accepts_the_new_fields_and_view_reports_them(hass):
+    ws = _ws()
+    world(hass)
+    s = new_scheduler(hass)
+    hass.data[const.LIGHT_SCHEDULER_KEY] = s
+    msg = {"type": "light_show_studio/light_schedules/save", **data(looks=THREE, rotate={"type": "night"},
+           holiday_looks=True, random_offset_min=20, only_when="away")}
+    del msg["look"]
+    c = await _call(ws.ws_save, hass, msg)
+    assert c.errors == []
+    v = c.results[0]["schedule"]
+    assert v["looks"] == THREE and v["rotate"] == {"type": "night"} and v["holiday_looks"] is True
+    assert v["random_offset_min"] == 20 and v["only_when"] == "away" and v["look"] == THREE[0]
+    c = await _call(ws.ws_save, hass, {"type": "light_show_studio/light_schedules/save", **data(random_offset_min=99)})
+    assert c.errors[0][0] == "invalid_format"

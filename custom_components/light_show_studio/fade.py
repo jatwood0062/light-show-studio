@@ -7,6 +7,7 @@ never restarts). Nothing here needs Home Assistant.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 
 from .protocol import Colour
 
@@ -46,13 +47,29 @@ def _pad(frame: list[Colour], n: int) -> list[Colour]:
     return list(frame[:n]) + [(0, 0, 0)] * (n - len(frame))
 
 
+@lru_cache(maxsize=64)
+def scale_table(g: float) -> bytes:
+    """What each byte value becomes at brightness g (0-1): int(v * g), for bytes.translate or indexing."""
+    return bytes(int(v * g) for v in range(256))
+
+
+def scale_bytes(data: bytes | bytearray, g: float) -> bytes:
+    """Channel bytes at brightness g (0 = black, 1 = unchanged); the same as int(v * g) for every byte."""
+    if g >= 1:
+        return bytes(data)
+    if g <= 0:
+        return bytes(len(data))
+    return bytes(data).translate(scale_table(g))
+
+
 def scale_frame(frame: list[Colour], g: float) -> list[Colour]:
     """The frame at brightness g (0 = black, 1 = unchanged)."""
     if g >= 1:
         return frame
     if g <= 0:
         return [(0, 0, 0)] * len(frame)
-    return [(int(r * g), int(gr * g), int(b * g)) for r, gr, b in frame]
+    table = scale_table(g)
+    return [(table[r], table[gr], table[b]) for r, gr, b in frame]
 
 
 class Ramp:

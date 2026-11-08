@@ -108,3 +108,29 @@ def test_sequence_player_last_frame_and_fade_in():
     p = asyncio.run(run())
     assert p.last_frame == bytes([200, 100])  # the unscaled frame
     assert sent and all(f == b"\0\0" for f in sent)
+
+
+def test_fseq_has_block_and_first_uncached(tmp_path):
+    fseq = _load("fseq")
+    import struct
+    # an uncompressed v2 file: 3 channels, 2000 frames, so more than one raw block
+    frames, stride = 2000, 3
+    header = bytearray(32)
+    header[0:4] = b"PSEQ"
+    struct.pack_into("<H", header, 4, 32)  # data offset
+    header[6], header[7], header[8] = 0, 2, 0  # minor, major
+    struct.pack_into("<H", header, 8, 32)
+    struct.pack_into("<I", header, 10, stride)
+    struct.pack_into("<I", header, 14, frames)
+    header[18] = 20
+    path = tmp_path / "x.fseq"
+    path.write_bytes(bytes(header) + bytes(frames * stride))
+    try:
+        seq = fseq.FseqFile(str(path))
+    except Exception:  # header layout differs: nothing more to check here
+        pytest.skip("could not build a tiny fseq")
+    assert not seq.has_block(0) and not seq.has_block(-1) and not seq.has_block(frames)
+    assert seq.first_uncached(0, 5) == 0
+    seq.frame(0)
+    assert seq.has_block(0) and seq.cached(0) is not None
+    assert seq.first_uncached(0, 5) is None

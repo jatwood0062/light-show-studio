@@ -369,5 +369,25 @@ if (process.env.SCAN_DEBUG) {
     console.log("missing", i, "nearest visible neighbour px", d.toFixed(2));
   }
 }
+// ---- ambient light / auto exposure shifting the whole picture between frames (both modes) ----
+{
+  const n = 150, shifts = [0, 5, -6, 7, -4, 6, -7, 4, 5, -5, 6, -6, 4, 7, -5, 5, -4, 6, 7, -6, 5, 4, -7, 6];
+  const shiftFrames = (frames, ch) => frames.map((f, k) => {
+    if (!k) return f;
+    const g = new Uint8ClampedArray(f.length);
+    for (let i = 0; i < f.length; i++) g[i] = f[i] + 12 + 2 * shifts[k % shifts.length] + (ch > 1 ? 3 * ((i % ch) - 1) : 0);
+    return g;
+  });
+  const sc = scene(n, "front", 71);
+  sc.frames = shiftFrames(sc.frames, 1).map((f, k) => (k ? Uint8ClampedArray.from(f, (v) => Math.max(v, 3)) : f));
+  const res = S.decodeScan(sc.frames, n, sc.W, sc.H);
+  let wrong = 0;
+  res.points.forEach((p, i) => { if (p && Math.hypot(p[0] - sc.pts[i][0], p[1] - sc.pts[i][1]) > 1.5) wrong++; });
+  ok(res.found >= (n - sc.hidden.size) * 0.95 && wrong === 0, `white: frame-wide level shifts between frames are tolerated (found ${res.found}, wrong ${wrong})`);
+  const cs = colourScene(n, "front", 72);
+  cs.frames = shiftFrames(cs.frames, 3);
+  checkColour("colour: per-frame, per-channel level shifts", cs, n, 0.95);
+}
+
 console.log(fails ? `${fails} FAILED` : "all passed");
 process.exit(fails ? 1 : 0);

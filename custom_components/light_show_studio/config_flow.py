@@ -136,6 +136,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(host)
         self._abort_if_unique_id_configured()
         model = _model(sku)
+        sku, device = str(sku)[:64], str(device)[:64]
         self._light = {CONF_HOST: host, CONF_SKU: sku}
         if device:
             self._light[CONF_DEVICE_ID] = device
@@ -206,17 +207,20 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         try:
             host = valid_ipv4(host)
             info = await async_gestalt(async_get_clientsession(self.hass), host)
-            mac = str(info["mac"]).lower()
+            mac = str(info["mac"]).lower()[:64]
+            leds = int(info.get("number_of_led") or 1)
         except Exception:  # unreachable, or not a Twinkly
             return None
         await self.async_set_unique_id(mac)
-        self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+        await self._abort_or_follow(host, lambda old: async_gestalt(async_get_clientsession(self.hass), old))
         profile = info.get("led_profile", "RGB")
-        self._light = {CONF_HOST: host, CONF_TYPE: TYPE_TWINKLY, CONF_SKU: info.get("product_code", ""),
+        if profile not in ("RGB", "RGBW"):
+            profile = "RGB"
+        self._light = {CONF_HOST: host, CONF_TYPE: TYPE_TWINKLY, CONF_SKU: str(info.get("product_code", ""))[:64],
                        CONF_DEVICE_ID: mac, CONF_LED_PROFILE: profile}
         self._defaults = {
             CONF_NAME: str(info.get("device_name") or "Twinkly")[:100],
-            CONF_BULBS: max(1, min(int(info.get("number_of_led") or 1), 1020)),
+            CONF_BULBS: max(1, min(leds, 1020)),
             CONF_BULB_ENTITIES: False,
             CONF_START_PIXEL: self._next_pixel(),
         }
@@ -274,13 +278,13 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         try:
             host = valid_ipv4(host)
             info = await async_info(async_get_clientsession(self.hass), host)
-            mac = format_mac(info["mac"])
+            mac = format_mac(info["mac"])[:64]
             count = int(info["leds"]["count"])
         except Exception:  # unreachable, or not a WLED
             return None
         await self.async_set_unique_id(mac)
-        self._abort_if_unique_id_configured(updates={CONF_HOST: host})
-        self._light = {CONF_HOST: host, CONF_TYPE: TYPE_WLED, CONF_SKU: info.get("arch") or "WLED",
+        await self._abort_or_follow(host, lambda old: async_info(async_get_clientsession(self.hass), old))
+        self._light = {CONF_HOST: host, CONF_TYPE: TYPE_WLED, CONF_SKU: str(info.get("arch") or "WLED")[:64],
                        CONF_DEVICE_ID: mac}
         self._defaults = {
             CONF_NAME: str(info.get("name") or "WLED")[:100],
@@ -298,6 +302,26 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
                                     data_schema=_light_schema(self._defaults, True, True, "WLED"),
                                     description_placeholders={"host": self._light[CONF_HOST],
                                                               "sku": self._light[CONF_SKU]})
+
+    async def _abort_or_follow(self, host: str, probe) -> None:
+        """Abort when this device (unique id) is already set up. Its stored host is only replaced when the
+        new one is free and the old one no longer answers, so a rogue device claiming a known id (or mac)
+        can't take over an entry whose light is still there."""
+        entry = self.hass.config_entries.async_entry_for_domain_unique_id(self.handler, self.unique_id)
+        if entry is None:
+            return
+        old = entry.data.get(CONF_HOST)
+        if old == host:
+            self._abort_if_unique_id_configured()
+        taken = any(e.entry_id != entry.entry_id and e.data.get(CONF_HOST) == host
+                    for e in self._async_current_entries())
+        if taken:
+            self._abort_if_unique_id_configured()
+        try:
+            await probe(old)
+        except Exception:  # noqa: BLE001  the old address is gone: follow the device
+            self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+        self._abort_if_unique_id_configured()
 
     def _next_pixel(self) -> int:
         """First pixel after the lights already set up, so each gets its own slice."""

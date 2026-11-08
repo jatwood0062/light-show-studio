@@ -60,6 +60,9 @@ set_pattern:
             - "Rainbow Wash"
             - "Fireworks"
             - "Breathe Outward"
+            - "Gradient Axis"
+            - "Plasma Field"
+            - "Candy Helix"
     speed:
       example: 50
       selector:
@@ -156,6 +159,9 @@ start_zone:
             - "Rainbow Wash"
             - "Fireworks"
             - "Breathe Outward"
+            - "Gradient Axis"
+            - "Plasma Field"
+            - "Candy Helix"
     speed:
       example: 50
       selector:

@@ -108,14 +108,18 @@ async def async_scan(timeout: float = 2.5) -> dict[str, dict] | None:
                 break
             if not is_lan_ipv4(src) or len(found) >= 64:
                 continue
-            try:
+            try:  # any hostile payload (deep nesting raises RecursionError) skips just this packet
                 msg = json.loads(data)["msg"]
-                if msg.get("cmd") == "scan":
-                    d = msg["data"]
-                    ip = d["ip"]
-                    if is_lan_ipv4(ip):  # the reply names the address: it must be a LAN one too
-                        found[ip] = {"sku": str(d.get("sku", ""))[:32], "device": str(d.get("device", ""))[:64]}
-            except (ValueError, KeyError, TypeError, AttributeError):
+                if not isinstance(msg, dict) or msg.get("cmd") != "scan":
+                    continue
+                d = msg["data"]
+                if not isinstance(d, dict):
+                    continue
+                ip = d["ip"]
+                # the reply may only speak for the address it came from, never redirect to another
+                if ip == src and is_lan_ipv4(ip):
+                    found[ip] = {"sku": str(d.get("sku", ""))[:32], "device": str(d.get("device", ""))[:64]}
+            except Exception:  # noqa: BLE001
                 continue
     except OSError:
         return None

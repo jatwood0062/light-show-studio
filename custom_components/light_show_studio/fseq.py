@@ -162,6 +162,21 @@ class FseqFile:
             pos += count
         return bytes(out)
 
+    def has_block(self, i: int) -> bool:
+        """Whether frame i's block is already decoded (cheap: builds no frame)."""
+        return 0 <= i < self.frames and self._block_index(i) in self._cache
+
+    def first_uncached(self, start: int, end: int) -> int | None:
+        """A frame in the first block not yet decoded among those holding frames start..end, else None."""
+        if not self._blocks or end < 0 or start >= self.frames:
+            return None
+        lo = self._block_index(max(0, start))
+        hi = self._block_index(min(self.frames - 1, end))
+        for bi in range(lo, hi + 1):
+            if bi not in self._cache:
+                return max(self._blocks[bi].first, max(0, start))
+        return None
+
     def cached(self, i: int) -> bytes | None:
         """Frame i if its block is already decoded, else None (never blocks on I/O)."""
         bi = self._block_index(i)

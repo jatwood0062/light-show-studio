@@ -13,6 +13,7 @@ from collections.abc import Callable, Coroutine
 from datetime import datetime
 from typing import Any
 
+from . import fade
 from .fseq import FseqFile
 
 _LOGGER = logging.getLogger(__name__)
@@ -135,7 +136,7 @@ class SequencePlayer:
             self._fade = 0.0
             return data
         k = max(0.0, k)
-        return bytes(int(v * k) for v in data)
+        return fade.scale_bytes(data, k)
 
     async def _run(self, seq: FseqFile, loop: bool, tl: Timeline, hold: bool) -> None:
         if not seq.frames:
@@ -179,9 +180,10 @@ class SequencePlayer:
                 if last >= 0 and i > last + 1:
                     self.frames_skipped += i - last - 1
                 last = i
-                j = min(i + ahead, seq.frames - 1)
-                if (prefetch is None or prefetch.done()) and seq.cached(j) is None:
-                    prefetch = ev.run_in_executor(None, seq.frame, j)
+                if prefetch is None or prefetch.done():  # decode the next block not ready yet, early
+                    j = seq.first_uncached(i + 1, min(i + ahead, seq.frames - 1))
+                    if j is not None:
+                        prefetch = ev.run_in_executor(None, seq.frame, j)
             if tl.paused or pos >= seq.duration:
                 await asyncio.sleep(step)
             else:  # wake at the next frame boundary, allowing for the timeline running fast

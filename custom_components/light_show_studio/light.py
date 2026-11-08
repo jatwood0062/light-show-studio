@@ -98,10 +98,15 @@ class _Base(LightEntity):
         return self.ctl.online is not False
 
     async def async_added_to_hass(self) -> None:
-        self.async_on_remove(self.ctl.add_listener(self.async_write_ha_state))
+        self.async_on_remove(self.ctl.add_listener(self._ctl_changed))
+
+    def _ctl_changed(self) -> None:
+        self.async_write_ha_state()
 
 
 class C9StringLight(_Base, RestoreEntity):
+    # long lists and constants that never change from one state to the next: keep them out of the database
+    _unrecorded_attributes = frozenset({"pattern_list", "pattern_effect_list", "pixels", "channels", "ip_address"})
     _attr_name = None
     _attr_supported_features = LightEntityFeature.EFFECT | LightEntityFeature.TRANSITION
     _attr_effect_list = [SHOW, PATTERN, *EFFECT_LIST]
@@ -184,6 +189,14 @@ class C9BulbLight(_Base):
         self.index = index
         self._attr_unique_id = f"{uid}_bulb_{index + 1}"
         self._attr_name = f"Bulb {index + 1}"
+        self._shown: tuple | None = None  # what the state was last written as
+
+    def _ctl_changed(self) -> None:
+        """Every bulb hears about every change of the string: write only when this bulb's own state moved."""
+        now = (self.available, self.is_on, self.brightness, self.rgb_color)
+        if now != self._shown:
+            self._shown = now
+            self.async_write_ha_state()
 
     @property
     def is_on(self) -> bool:

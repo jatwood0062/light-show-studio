@@ -225,7 +225,7 @@ def lum(frame):
 def test_unknown_effect_is_refused():
     with pytest.raises(ValueError):
         make_plan("Disco")
-    assert me.EFFECTS == ("Pulse", "Beat Chase", "Spectrum", "Flash")
+    assert me.EFFECTS == ("Pulse", "Beat Chase", "Spectrum", "Flash", "Beat Scatter", "Gravity Drop", "Beat Shell")
 
 
 def test_pulse_brightness_follows_the_level_and_kicks_on_the_beat():
@@ -514,27 +514,28 @@ async def test_frame_validation_errors_are_reported_and_nothing_is_fed(hass):
 
 
 @aio
-async def test_frames_over_40_a_second_are_refused_per_connection(hass):
+async def test_frames_over_40_a_second_are_refused_per_user_with_one_error(hass):
     mgr, music = music_world(hass)
     a, b = FakeConn(), FakeConn()
     await start(hass, a)
-    await start(hass, b, targets={"lights": ["e2"]}) if False else None
-    ok = limited = 0
+    ok = 0
     for _ in range(60):
         n = len(a.results)
         await frame(hass, a)
-        if len(a.results) > n:
-            ok += 1
-        elif a.errors[-1][1] == "rate_limited":
-            limited += 1
-    assert 8 <= ok <= 12 and limited == 60 - ok  # the burst only; the rest wait their turn
+        ok += len(a.results) > n
+    assert 8 <= ok <= 12  # the burst only
+    assert [e[1] for e in a.errors] == ["rate_limited"]  # one error, the rest dropped silently
     await asyncio.sleep(0.3)
     await frame(hass, a)
     assert a.results[-1][1] == {"fed": 1}
-    assert ws_music._allowed(b)  # a second connection has its own allowance
-    b.subscriptions.clear()
+    assert ws_music._allowed(b) == (True, False)  # another user has their own allowance
+    # the same user on a second connection shares the allowance
+    twin = FakeConn(a.user)
+    for _ in range(30):
+        await frame(hass, twin)
+    assert ws_music._allowed(twin)[0] is False
+    b.close()
     a.close()
-    assert id(a) not in ws_music._limits  # forgotten when the connection closes
 
 
 @aio

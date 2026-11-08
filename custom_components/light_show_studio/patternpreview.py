@@ -73,7 +73,7 @@ class PreviewManager:
             self._drop(up)
             raise PreviewError("There are no pixels to light")
         session = PreviewSession(owner, up, name, zone, runs, entries)
-        old = self.sessions.pop(id(owner), None)
+        old = self.sessions.get(id(owner))
         runner = ZoneRunner(plan, speed, self.mgr.controller, self.hass.async_create_background_task,
                             lambda r: self._ended(session, r), 0.0 if old else FADE_IN, FADE_OUT)
         session.runner = runner
@@ -84,7 +84,10 @@ class PreviewManager:
         try:
             await runner.async_start()
         except BaseException:
-            self.stop(owner, fade_out=0)
+            if self.sessions.get(id(owner)) is session:  # not a newer preview of this owner's
+                self.stop(owner, fade_out=0)
+            else:
+                self._release(session, fade_out=0)
             raise
         self._arm(session, owner)
         return {"lights": sorted(runner._claimed), "pattern": name, "idle_seconds": self.idle}  # noqa: SLF001
@@ -133,11 +136,13 @@ class PreviewManager:
         return len(items)
 
     # --- stop -----------------------------------------------------------------------------------
-    def stop(self, owner: object, fade_out: float | None = None) -> bool:
-        session = self.sessions.pop(id(owner), None)
-        self._owners.pop(id(owner), None)
-        if session is None:
+    def stop(self, owner: object, fade_out: float | None = None, only: PreviewSession | None = None) -> bool:
+        """End the owner's preview (only if it is `only`, when given)."""
+        session = self.sessions.get(id(owner))
+        if session is None or (only is not None and session is not only):
             return False
+        del self.sessions[id(owner)]
+        self._owners.pop(id(owner), None)
         self._release(session, fade_out=fade_out)
         return True
 
@@ -160,7 +165,7 @@ class PreviewManager:
         session.handle = None
         if self.sessions.get(id(owner)) is session:
             _LOGGER.debug("Pattern preview timed out; putting the lights back")
-            self.stop(owner)
+            self.stop(owner, only=session)
 
     def _ended(self, session: PreviewSession, runner: ZoneRunner) -> None:
         for key, s in list(self.sessions.items()):

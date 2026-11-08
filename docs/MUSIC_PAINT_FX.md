@@ -59,7 +59,7 @@ older one (starting the same targets again swaps in place without the lights fla
 |---|---|
 | `targets.lights` / `targets.areas` | each 0-64 strings of 1-64 characters; at least one entry in total. Lights are config entry ids (`map/get` `lights[].entry_id`); areas by id, name (any case) or Home Assistant area id. A light that has runs in a listed area is driven through them, not twice |
 | `pattern` | optional; a built-in pattern or one of your own (by name; default `Classic Multicolor`) |
-| `effect` | `"Pulse"` (default), `"Beat Chase"`, `"Spectrum"`, `"Flash"` |
+| `effect` | `"Pulse"` (default), `"Beat Chase"`, `"Spectrum"`, `"Flash"`, `"Beat Scatter"`, `"Gravity Drop"`, `"Beat Shell"` |
 | `sensitivity` | whole number 1-100, default 50 (a gain from 0.2x to 5x on the incoming levels; 50 = as sent) |
 | `mode`, `axis` | areas only, as for `map/zone/start`: `"string"` (default) or `"spatial"`. Spectrum in spatial mode maps by height (see below); the others use the pattern as laid out |
 | `idle_effect` | optional; the look while no music arrives (any effect incl. map effects). Default: a pattern of yours uses its own `default_effect`, a built-in one `Steady` |
@@ -98,6 +98,9 @@ so nothing flickers.
 | Beat Chase | the pattern steps along the string / axis by a stride on **every beat** (glides over ~70 ms); between beats it holds, brightness follows `level`. Stride = max(bulbs per colour, pixels / 30) |
 | Spectrum | `bass`, `mid`, `treble` light the first, middle and last third of the string (soft edges). In spatial area mode: bottom / middle / top by the pixels' **height** (y) in the area |
 | Flash | each beat flashes (whitened) and decays in ~150 ms; dim glow between |
+| Beat Scatter | on every beat a fresh random 30 % of the bulbs flash to full (whitened) and fade over ~0.3 s; which bulbs is a hash of (bulb, beat number), so it is never the same set twice running. The previous beat's bulbs are still fading, so quick beats overlap. Dim glow (follows `level`) between |
+| Gravity Drop | on every beat a bright band drops from the top (the end of the string) under gravity, lands in ~0.45 s with a flash at the bottom, bounces twice or three times with less height each time, then settles and fades after ~2.5 s. A trail follows it down. In spatial area mode it falls by the pixels' **height** (y) |
+| Beat Shell | on every beat a ring of light opens from the centre of the area (the axis' `centre` point if it has one, else the middle of the area's mapped pixels; each area is its own space) out to the edge in ~0.7 s, thinning and fading. On a string (or in string mode) it opens from the middle of the string. Only works as a 3D shell in `mode: "spatial"` |
 
 Beats closer than 120 ms count as one. **No frame for 3 s** (`timeout`): the music eases (about 1 s) into the pattern's normal look
 (`idle_effect`) at 70 % brightness and the session stays alive; frames returning ease back into the music (about 0.2 s).
@@ -153,7 +156,8 @@ not apply them by itself (a service call with just a pattern keeps the current e
   Twinkle Swap picks from the used colours, **Chase slides the painted colours along** (in spatial zones, in order along
   the axis). Map effects (Sweep ...) use the painted colours as their base.
 * A map effect given to a single light shows as its nearest string effect (Sweep/Rise/Rainbow Wash -> Chase, Ripple -> Wave,
-  Snowfall -> Twinkle, Fireworks -> Sparkle, Breathe Outward -> Fade).
+  Snowfall -> Twinkle, Fireworks -> Sparkle, Breathe Outward -> Fade, Gradient Axis -> Gradient Flow, Plasma Field -> Plasma,
+  Candy Helix -> Chase).
 
 ### `patterns/list`
 `{type}` -> `{"patterns": [pattern, ...], "builtin": [names], "effects": [string effects], "map_effects": [map effects],
@@ -217,11 +221,53 @@ They read the zone's **axis** like the spatial string effects: `{"dir": [x,y,z]}
 | Fireworks | random bursts: a shell expanding in 3D from a random point, in a colour of the pattern, fading | nothing (random points inside each area) |
 | Breathe Outward | brightness waves travel out from the centre | centre (default: middle of the area) |
 
+The next three live in `map_effects_extra.py` (same interface as the others; `map_effects.py` registers them with
+`_EFFECTS.update(EXTRA_EFFECTS)`). All three are pure functions of `t`.
+
+| effect | what it does | uses |
+|---|---|---|
+| Gradient Axis | the pattern's colours as a smooth (OKLab) gradient along the direction, first colour at one end and last at the other, scrolling slowly. Set the axis to `rise` for a gradient by height | direction, or distance from centre |
+| Plasma Field | a plasma in 3D: sine waves along x, y, z and out from the middle of the area, coloured through the pattern's gradient; scaled to each area | nothing (3D positions) |
+| Candy Helix | stripes that spiral up a vertical axis (a tree): the colour depends on the angle around the area's middle plus the height, 3 stripes round, climbing 1.5 turns, turning slowly. The pattern's colours are the stripes; a pattern with fewer than two colours gives red and white (use `Candy Cane` for the classic look) | nothing (y is up) |
+
 `speed` scales time as for any effect. Performance: geometry is worked out once per start / map change (about 3 ms for 1500
 pixels); a frame takes about 0.1-1.6 ms on a laptop for 1500 pixels (a few times that on a Pi 4).
 With a pixels pattern the painted colours are the base the effects light.
 On a **single light** (service `set_pattern`, light schedule on a light) a map effect becomes its nearest string effect (table in
 section 3).
+
+---
+
+## More pattern effects, palettes and the Palette type
+
+New pattern effects (string effects: `PATTERN_EFFECTS`, usable on lights, zones, area zones, schedules, music idle looks). All are
+pure functions of the clock (hashed event slots, smooth value noise; no per-frame randomness and no remembered state), so a late
+frame just jumps to the right picture. They colour the string from the **pattern's colours**:
+
+| effect | what it does |
+|---|---|
+| Gradient Flow | the pattern's colours as a smooth gradient scrolling along the string (~36 bulbs per loop on 50 bulbs, longer on long strips) |
+| Plasma | a sine-sum plasma coloured through the pattern's gradient |
+| Noise Drift | slow smooth value noise drifting the pattern's colours through each other |
+| Storm Flash | a dark sky (the pattern's average at 6 %) with lightning: roughly every 3-4 s a strike of 2-3 flickers that spreads out from a point, in the pattern's lightest colour pulled towards white |
+| Confetti | random bulbs pop in a random colour of the pattern and fade over about a second, over a dim copy of the pattern |
+| Dissolve | bulbs fill in at random until the string is full, hold, then drain away in another random order; 12 s round, a new order each round |
+| Sunrise Ramp | a slow warm-up over 60 s from an ember glow through orange to the pattern's colours, spreading in from the start of the string, holding 15 s, then dipping and starting over |
+
+The light effect list (`effects.EFFECT_LIST`) gets the same seven names with built-in colours (Gradient Flow = dusk gradient, Plasma =
+party gradient, Noise Drift = ocean-aurora gradient, Confetti = bright mixed colours; Storm Flash, Dissolve and Sunrise Ramp use the light's
+colour), and **Fire** no longer calls `random` per frame: the same orange-red flicker, but smooth noise in time and along the string.
+
+`effects.Palette` is a list of `(position 0-1, RGB)` gradient stops with `at(x)` (looping or clamped) and `mode` `"oklab"`
+(default, even brightness) or `"linear"` (RGB); `Palette.even(colours)` spaces colours evenly and `effects.palette_for(tuple)`
+is a cached looping palette. `effects.WARM_WHITE = (255, 176, 100)` is a warm white for RGB-only bulbs (a real white channel
+should still use (255, 255, 255)).
+
+New built-in patterns (`patterns/list` `builtin`): Diya Lamps, Lunar Red & Gold, Menorah Lights, Autumn Harvest, Cranberry & Gold,
+Evergreen & Gold, Winter Frost, Romance Wine, Lucky Green, Easter Egg, Spring Blossom, Pride Six, Cosy Amber, Deep Ocean, Aurora
+Borealis, Sunset Blaze. Existing patterns keep their colours; the colour sets that `patterns.py` and `effects.py` both used are
+defined once in `effects.py` (`CLASSIC`, `PASTELS`, `HALLOWEEN_C9`, `GOLD_WHITE_C9`; the string effects' own two-colour Halloween and
+soft Gold & White keep their looks).
 
 ---
 

@@ -16,9 +16,11 @@ const INTEGRATION_PATH = "/config/integrations/integration/light_show_studio";
 const STORE_KEY = "light_show_studio_panel_tab";
 const SUB_KEY = "light_show_studio_panel_shows";
 const FADE_KEY = "light_show_studio_panel_fade"; // seconds an area pattern fades in / out (default 0.7)
-const MAP_FX = ["Sweep", "Ripple", "Snowfall", "Rise", "Rainbow Wash", "Fireworks", "Breathe Outward"];
+const MAP_FX = ["Sweep", "Ripple", "Snowfall", "Rise", "Rainbow Wash", "Fireworks", "Breathe Outward", "Gradient Axis", "Plasma Field", "Candy Helix"];
 const CENTRE_FX = new Set(["Ripple", "Fireworks", "Breathe Outward"]);
-const MUSIC_FX = ["Pulse", "Beat Chase", "Spectrum", "Flash"];
+const MUSIC_FX = ["Pulse", "Beat Chase", "Spectrum", "Flash", "Beat Scatter", "Gravity Drop", "Beat Shell"];
+// map effects that ignore the direction (they fill the area, or wind round its vertical axis)
+const NO_DIR_FX = new Set(["Plasma Field", "Candy Helix"]);
 const THEME_KEY = "light_show_studio_panel_theme"; // auto | light | dark
 const SEL_KEY = "light_show_studio_panel_light";
 const BANNER_KEY = "light_show_studio_panel_banner"; // the first-run banner was dismissed for this set of missing steps
@@ -58,6 +60,9 @@ const MAP_FX_INFO = {
   Sweep: "A soft band crosses the area", Ripple: "Rings spread out from a centre point", Snowfall: "Flakes drift down",
   Rise: "A glow fills the area along a direction", "Rainbow Wash": "Hue drifts along a direction", Fireworks: "Random bursts in 3D",
   "Breathe Outward": "Brightness waves travel out from the centre",
+  "Gradient Axis": "The pattern's colours as a slow gradient along a direction",
+  "Plasma Field": "Soft blobs of colour drift through the whole area",
+  "Candy Helix": "Stripes spiral up round the area, like a candy cane",
 };
 const STILL = new Set(["Steady"]);
 const IPV4 = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
@@ -66,6 +71,7 @@ const PANEL_ICON = {
   map: "M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z",
   bulb: "M12 2a7 7 0 0 0-4 12.7V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.3A7 7 0 0 0 12 2zM9 20h6v1a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1z",
   add: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z",
+  cal: "M19 4h-1V2h-2v2H8V2H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 16H5V10h14v10zM5 8V6h14v2H5z",
   trash: "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z",
   up: "M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z",
   down: "M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z",
@@ -119,6 +125,8 @@ const storedTheme = store(THEME_KEY);
 const storedFade = store(FADE_KEY);
 const storedLight = store(SEL_KEY);
 
+const MUSIC_KEYS = ["level", "bass", "mid", "treble"];
+
 class LightShowStudioPanel extends HTMLElement {
   constructor() {
     super();
@@ -146,6 +154,8 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   connectedCallback() {
+    this._dead = false;
+    this._lifeTok = {};
     this._onVis = () => {
       if (document.hidden && this._musicRunning) this._musicStop(); // the page is hidden: the microphone stops, so music mode does too
     };
@@ -157,7 +167,14 @@ class LightShowStudioPanel extends HTMLElement {
 
   disconnectedCallback() {
     document.removeEventListener("visibilitychange", this._onVis);
+    this._dead = true;
+    this._lifeTok = {}; // a music start still in flight sees this after each await and tears itself down
     if (this._musicRunning) this._musicStop(true);
+    else this._musicTeardown(); // also covers a start that is still waiting for the microphone, the audio context or the session
+    if (this._updRaf) cancelAnimationFrame(this._updRaf);
+    this._updRaf = 0;
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._raf = 0;
     this._ptCleanup();
     clearInterval(this._poll);
     this._poll = null;
@@ -170,12 +187,50 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   set hass(hass) {
+    const prev = this._hass;
     this._hass = hass;
     this._themeDark = hass?.themes?.darkMode;
     if (!this._built) this._build();
     else this._applyTheme();
-    this._update();
+    // every state change makes a new hass object; only repaint when something this panel shows actually changed
+    if (this._tab === null || this._hassChanged(prev, hass)) this._update();
     this._startPolling();
+  }
+
+  _hassChanged(prev, hass) {
+    if (!prev || !hass || prev === hass) return true;
+    if (prev.user !== hass.user || prev.connection !== hass.connection || prev.callWS !== hass.callWS || prev.callService !== hass.callService) return true;
+    if (prev.themes?.darkMode !== hass.themes?.darkMode || prev.language !== hass.language || prev.locale !== hass.locale) return true;
+    if (prev.states === hass.states) return false;
+    const before = this._ids;
+    const now = this._entIds();
+    if (before !== now) return true; // the entity set (or the strands list) changed
+    const a = prev.states, b = hass.states;
+    if (a["sun.sun"] !== b["sun.sun"]) return true;
+    if (now.player && a[now.player] !== b[now.player]) return true;
+    for (const id of now.lights) if (a[id] !== b[id]) return true;
+    return false;
+  }
+
+  // the lights and the player, found by scanning every state; cached until the set of entity ids (or the strands list) changes
+  _entIds() {
+    const st = this._hass.states;
+    let n = 0;
+    for (const k in st) n++;
+    let c = this._ids;
+    if (c && c.n === n && c.strands === this._strands && (!c.player || st[c.player]?.attributes.queue !== undefined)) return c;
+    const known = new Set((this._strands || []).map((x) => x.entity_id).filter((id) => id && st[id]));
+    // an unavailable entity has no attributes, so offline strands come from the strands list
+    const lights = [];
+    let player = null;
+    for (const id in st) {
+      if (id.startsWith("light.")) {
+        const a = st[id].attributes;
+        if ((a.bulbs && (a.effect_list || []).includes("Light show")) || known.has(id)) lights.push(id);
+      } else if (!player && id.startsWith("media_player.") && st[id].attributes.queue !== undefined) player = id;
+    }
+    c = this._ids = { n, strands: this._strands, lights, player };
+    return c;
   }
 
   set narrow(v) {
@@ -198,13 +253,7 @@ class LightShowStudioPanel extends HTMLElement {
 
   // --- data --------------------------------------------------------------
   _lights() {
-    const known = (this._strands || []).map((s) => s.entity_id).filter((id) => id && this._hass.states[id]);
-    // an unavailable entity has no attributes, so offline strands come from the strands list
-    const ids = Object.keys(this._hass.states).filter((id) => {
-      const a = this._hass.states[id].attributes;
-      return id.startsWith("light.") && ((a.bulbs && (a.effect_list || []).includes("Light show")) || known.includes(id));
-    });
-    return ids;
+    return this._entIds().lights;
   }
 
   // --- layout ------------------------------------------------------------
@@ -786,6 +835,19 @@ class LightShowStudioPanel extends HTMLElement {
         .addbar { display: flex; }
         .addbar .btn { width: 100%; min-height: 52px; font-size: 15px; border-radius: 14px; }
         .sbanner { border-left-width: 4px; }
+        .schead .hol-btn { flex: 0 0 auto; }
+        .box.hol .sn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .hol-edit { display: flex; flex-direction: column; gap: 12px; padding: 4px 8px 8px 0; }
+        .hol-edit select, .hol-edit input[type=number] { width: 100%; min-height: 44px; }
+        .hol-edit .fld { display: flex; flex-direction: column; gap: 4px; }
+        .box.sc .tags { padding: 0 8px 4px 0; display: flex; gap: 6px; flex-wrap: wrap; }
+        .looktabs { gap: 6px; }
+        .ed-opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .ed-opt-t { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+        .ed-opt-t b { font-size: 14px; font-weight: 600; }
+        .lss-toast { position: fixed; left: 12px; right: 12px; bottom: 16px; z-index: 40; max-width: 560px; margin: 0 auto; padding: 12px 14px; border-radius: 14px;
+                     background: var(--lss-card); color: var(--lss-text); border: 1px solid var(--lss-acc); box-shadow: 0 6px 28px rgba(0,0,0,.3); font-size: 13.5px; display: flex; gap: 10px; align-items: flex-start; }
+        .lss-toast span { flex: 1; min-width: 0; }
         /* ---- light schedule editor ---- */
         .ed-sec { display: flex; flex-direction: column; gap: 8px; }
         .ed-sec > .ed-lb { font-size: 13px; font-weight: 600; color: var(--lss-mut); display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -891,7 +953,7 @@ class LightShowStudioPanel extends HTMLElement {
             </details>
           </section>
           <section id="p-schedule" role="tabpanel" aria-label="Schedule" hidden>
-            <div class="schead"><div><h1 class="pg-h">Schedule</h1><div class="pg-sub sch-sub">Loading…</div></div></div>
+            <div class="schead"><div><h1 class="pg-h">Schedule</h1><div class="pg-sub sch-sub">Loading…</div></div><button class="btn alt sm hol-btn" type="button" hidden>${svg(PANEL_ICON.cal)}Holidays</button></div>
             <div class="box tl" aria-label="Tonight timeline"></div>
             <div class="box sbanner" role="status" aria-live="polite" hidden></div>
             <div class="box sed" hidden></div>
@@ -994,6 +1056,8 @@ class LightShowStudioPanel extends HTMLElement {
     this._tlBox = root.querySelector(".tl");
     this._addSched = root.querySelector(".add-sched");
     this._addSched.onclick = () => this._addScheduleChooser();
+    this._holBtn = root.querySelector(".hol-btn");
+    this._holBtn.onclick = () => this._openHolidays();
     // sheet (light detail, play-a-pattern, light schedule editor)
     this._sheetBack = root.querySelector(".sheet-back");
     this._sheetEl = root.querySelector(".sheet");
@@ -1268,16 +1332,19 @@ class LightShowStudioPanel extends HTMLElement {
   _startPolling() {
     if (this._poll || !this._hass || !this.isConnected) return;
     this._loadStrands();
+    this._pollN = 0;
     this._poll = setInterval(() => {
       if (document.hidden) return;
-      if (this._tab === "areas" || this._tab === "map") this._loadStrands();
-      if (this._tab === "areas") this._loadMap();
+      const slow = ++this._pollN % 4 === 0; // ~60 s: the strands list and the map have no push for layout changes
+      if (slow && (this._tab === "areas" || this._tab === "map")) this._loadStrands();
+      if (slow && this._tab === "areas") this._loadMap();
       this._syncWatch();
       if (this._tab === "shows" && this._sub !== "play") this._loadPlaylists();
       if (this._tab === "schedule" || this._tab === "areas") {
-        if (!this._draft) this._loadSchedules();
-        this._loadLightSchedules();
         this._subscribeSchedule();
+        // schedules are pushed by their subscriptions; poll only where a subscription could not be made
+        if (!this._schUnsub && !this._draft && slow) this._loadSchedules();
+        if (!this._lschUnsub && slow) this._loadLightSchedules();
       }
       this._renderTonight();
     }, 15000);
@@ -2087,7 +2154,7 @@ class LightShowStudioPanel extends HTMLElement {
   // --- pattern -> effect -> speed controls, used by the Studio tab and by every zone on the Map tab ---
   _patternBox({ title, speedText, onPick, onSpeed }) {
     const box = this._el("div", "box st-pat");
-    box.innerHTML = `<h2><span class="hi">${svg(PANEL_ICON.palette)}</span>${title}</h2>
+    box.innerHTML = `<h2><span class="hi">${svg(PANEL_ICON.palette)}</span></h2>
       <div class="grp"><h3><span class="n" aria-hidden="true">1</span>Pattern: choose the colours</h3>
         <div class="chips pat-chips" role="group" aria-label="Pattern"></div></div>
       <div class="grp"><h3><span class="n" aria-hidden="true">2</span>Effect: choose the motion</h3>
@@ -2095,11 +2162,14 @@ class LightShowStudioPanel extends HTMLElement {
         <div class="mfxg" hidden><h3 class="mfxh">Map effects: move through the area in 3D</h3>
           <div class="chips mfx-chips" role="group" aria-label="Map effects"></div></div>
         <div class="fxdesc" aria-live="polite"></div></div>
-      <div class="grp spdgrp"><h3><span class="n" aria-hidden="true">3</span>${speedText}</h3>
+      <div class="grp spdgrp"><h3 class="spdh"><span class="n" aria-hidden="true">3</span></h3>
         <div class="spdrow"><span>Slow</span><input class="sps" type="range" min="1" max="100" step="1" aria-label="Effect speed, slow to fast">
           <span>Fast</span></div>
         <div class="spdval"><span>Normal is 50</span><span>Speed <b class="sv"></b></span></div></div>`;
     const q = (c) => box.querySelector(c);
+    // the title and the speed text go in as text, never as markup (the area name is user data)
+    q("h2").append(String(title ?? ""));
+    q(".spdh").append(String(speedText ?? ""));
     const r = { sig: "", onPick, patChips: q(".pat-chips"), pfxChips: q(".pfx-chips"), mfxChips: q(".mfx-chips"), mfxG: q(".mfxg"), sps: q(".sps"), sv: q(".sv"), fxd: q(".fxdesc"), spdg: q(".spdgrp") };
     r.sps.oninput = () => {
       r.sv.textContent = r.sps.value;
@@ -2307,19 +2377,21 @@ class LightShowStudioPanel extends HTMLElement {
     return this._map.runs.filter((r) => r.area === id);
   }
 
-  // the 3D / scan modules load on demand, so an old cached panel still works if they are missing
+  // the 3D modules (map3d, with the trace editor) load on demand, so an old cached panel still works if they are missing;
+  // the scan modules wait for _loadScanMods, which only a starting scan calls
+  _modGet(n) {
+    const base = new URL(import.meta.url);
+    const u = new URL(n, base);
+    u.search = base.search;
+    return import(u.href);
+  }
+
   async _loadMods() {
     if (this._m) return this._m;
     if (!this._modsP) {
       this._modsP = (async () => {
-        const base = new URL(import.meta.url);
-        const get = (n) => {
-          const u = new URL(n, base);
-          u.search = base.search;
-          return import(u.href);
-        };
-        const [v, s, w, mvw] = await Promise.all([get("light-show-studio-map3d.js"), get("light-show-studio-scan.js"), get("light-show-studio-scan-wizard.js"), get("light-show-studio-multiview.js").catch(() => null)]);
-        return (this._m = { Viewer3D: v.Viewer3D, runRgb: v.runRgb, scan: s, ScanWizard: w.ScanWizard, multiview: mvw }); // multiview is optional: the wizard hides "several angles" without it
+        const v = await this._modGet("light-show-studio-map3d.js");
+        return (this._m = { Viewer3D: v.Viewer3D, runRgb: v.runRgb, RunEditor: v.RunEditor });
       })().catch((e) => {
         this._modsP = null;
         this._modsErr = String(e?.message || e);
@@ -2327,6 +2399,25 @@ class LightShowStudioPanel extends HTMLElement {
       });
     }
     return this._modsP;
+  }
+
+  // everything above plus the scan, the scan wizard and (optional) multiview; same shape the callers always got
+  async _loadScanMods() {
+    const m = await this._loadMods();
+    if (!m) return null;
+    if (m.ScanWizard) return m;
+    if (!this._scanModsP) {
+      this._scanModsP = (async () => {
+        const [s, w, mvw] = await Promise.all([this._modGet("light-show-studio-scan.js"), this._modGet("light-show-studio-scan-wizard.js"), this._modGet("light-show-studio-multiview.js").catch(() => null)]);
+        // multiview is optional: the wizard hides "several angles" without it
+        return Object.assign(m, { scan: s, ScanWizard: w.ScanWizard, multiview: mvw });
+      })().catch((e) => {
+        this._scanModsP = null;
+        this._modsErr = String(e?.message || e);
+        return null;
+      });
+    }
+    return this._scanModsP;
   }
 
   _buildMap() {
@@ -2379,6 +2470,12 @@ class LightShowStudioPanel extends HTMLElement {
     if (this._tab === "map") this._loadMods(); // the 3D and scan scripts only matter on the Map screen
     try {
       const r = await this._hass.callWS({ type: "light_show_studio/map/get" });
+      const rsig = JSON.stringify(r);
+      if (!force && this._map && !this._mapOld && !this._mapLoadErr && rsig === this._mapRespSig) {
+        this._mapLoading = false; // nothing changed on the server: keep the viewers, the timeline and the lists as they are
+        return;
+      }
+      this._mapRespSig = rsig;
       this._mapOld = false;
       this._mapLoadErr = "";
       this._mapLights = Array.isArray(r?.lights) ? r.lights : [];
@@ -2388,6 +2485,7 @@ class LightShowStudioPanel extends HTMLElement {
       this._mapScanning = new Set(Array.isArray(r?.scanning) ? r.scanning : []);
       this._mapSpatial = Array.isArray(r?.spatial_effects) ? r.spatial_effects : null;
     } catch (err) {
+      this._mapRespSig = null;
       if (/unknown/i.test(this._mapErrText(err, "")) || err?.code === "unknown_command") this._mapOld = true;
       else this._mapLoadErr = this._mapErrText(err, "Couldn't load the map.");
     }
@@ -2399,8 +2497,7 @@ class LightShowStudioPanel extends HTMLElement {
     } else this._mapStale = true;
     this._renderHome();
     if (this._tab === "schedule" || this._tab === "areas") {
-      this._tlSig = null;
-      if (!this._draft) this._renderSchedules();
+      if (!this._draft) this._renderSchedules(true);
       this._renderTonight();
     }
     if (this._sheet?.kind === "lsched") this._renderLightEditor();
@@ -2661,7 +2758,10 @@ class LightShowStudioPanel extends HTMLElement {
       d.pill.className = "pill " + (running ? "ok run" : "");
       d.pill.textContent = running ? "Running" : "Idle";
       d.stop.disabled = !running || !admin;
-      if (!d.busy) d.start.innerHTML = `${svg(PANEL_ICON.play)}${running ? "Restart" : "Start"}`;
+      if (!d.busy && d.runKey !== !!running) {
+        d.runKey = !!running;
+        d.start.innerHTML = `${svg(PANEL_ICON.play)}${running ? "Restart" : "Start"}`;
+      }
       d.start.disabled = d.busy || !admin;
     }
   }
@@ -2833,7 +2933,11 @@ class LightShowStudioPanel extends HTMLElement {
       }
     });
     clr.hidden = true;
-    sacts.append(scanBtn, clr);
+    const traceBtn = this._btn("", "btn alt sm", () => this._openTrace(area.id, this._mapSel.run));
+    traceBtn.innerHTML = `${svg(PANEL_ICON.edit, 18)}Trace and edit`;
+    traceBtn.title = "Trace a run as a line on the room plan, or fix its pixels by hand";
+    traceBtn.disabled = !this._areaRuns(area.id).some((r) => Number.isInteger(r.count) && r.count > 0);
+    sacts.append(scanBtn, traceBtn, clr);
     vb.append(ch, wrap, hint, sacts);
     box.append(head, vb);
     // the viewer
@@ -3123,13 +3227,14 @@ class LightShowStudioPanel extends HTMLElement {
   // ---- scanning ---------------------------------------------------------------------------------------------------------
   async _openScan(areaId) {
     if (this._wiz || !this._map) return;
-    const m = await this._loadMods();
+    const m = await this._loadScanMods();
     if (!m) {
       this._mapErr = "The scan screen couldn't load. Reload the page after updating Light Show Studio.";
       this._renderSaveBar();
       return;
     }
     if (this._mapDirty() && !(await this._mapSave())) return;
+    if (this._wiz) return;
     const area = this._area(areaId);
     const runs = this._areaRuns(areaId).filter((r) => Number.isInteger(r.count) && r.count > 0);
     if (!area || !runs.length) return;
@@ -3137,18 +3242,26 @@ class LightShowStudioPanel extends HTMLElement {
     const lights = (this._mapLights || []).filter((l) => l.segmented !== false && l.loaded !== false);
     this._wiz = new m.ScanWizard({
       hass: this._hass, host: this._root, mods: m, lights,
-      runs: runs.map((r) => ({ id: r.id, entry_id: r.entry_id, name: r.name, first: r.first, count: r.count })),
+      runs: runs.map((r) => ({ id: r.id, entry_id: r.entry_id, name: r.name, first: r.first, count: r.count, mapped: !!r.positions })),
       start: sel ? { entry_id: sel.entry_id, run_id: sel.id } : null,
       colourOf: (id) => this._runRgb(id),
       onSave: (res) => this._applyScan(res),
       onClose: () => {
         this._wiz = null;
+        this._wizArea = null;
       },
     });
+    this._wizArea = areaId;
   }
 
   async _applyScan(res) {
     const c = LightShowStudioPanel._clamp01;
+    let note = "";
+    try {
+      note = this._fitScan(res, this._wizArea);
+    } catch (e) {
+      note = ""; // a fit that fails must never stop the save: the positions go in as scanned
+    }
     for (const r of res.runs) {
       const run = this._map.runs.find((x) => x.id === r.id);
       if (!run || r.positions.length !== run.count * 3) continue;
@@ -3159,12 +3272,249 @@ class LightShowStudioPanel extends HTMLElement {
     this._mapChanged();
     const ok = await this._mapSave();
     if (!ok) return this._mapErr || "Couldn't save the map.";
+    if (note) this._toast(note);
     return "";
+  }
+
+  // The wizard hands back each scan in its own 0-1 box. When only some of an area's runs are saved, the new runs have to be
+  // lined up with the runs already saved in the area, or they land in the wrong place. Returns a note for the person (or "").
+  //  1. a similarity fit (scale, turn about the vertical axis, move) on pixels the new runs share with the saved ones: the same
+  //     pixel of a run being scanned again, or the pixel next to a run's end on the same light (the previous run's last pixel);
+  //  2. else just move the run so the touching ends meet (size and angle are a guess);
+  //  3. else put the run beside the saved ones (smaller, to the right). The person then uses Trace and edit, Move run.
+  // All runs of the area saved together: nothing to do (today's behaviour).
+  _fitScan(res, areaId) {
+    if (!this._map || !areaId || !res?.runs?.length) return "";
+    const areaRuns = this._areaRuns(areaId).filter((r) => Number.isInteger(r.count) && r.count > 0);
+    const ids = new Set(res.runs.map((r) => r.id));
+    if (areaRuns.every((r) => ids.has(r.id))) return "";
+    const ok = (r) => Array.isArray(r.positions) && r.positions.length === r.count * 3;
+    const others = areaRuns.filter((r) => !ids.has(r.id) && ok(r));
+    if (!others.length) return ""; // nothing saved here yet: these runs set the area's frame
+    const prior = areaRuns.filter((r) => ids.has(r.id) && ok(r)); // runs being scanned again: their old pixels are the same pixels
+    const index = (list) => {
+      const mp = new Map();
+      for (const r of list) for (let i = 0; i < r.count; i++) mp.set(`${r.entry_id}:${r.first + i}`, [r.positions[i * 3] / 1000, r.positions[i * 3 + 1] / 1000, r.positions[i * 3 + 2] / 1000]);
+      return mp;
+    };
+    const same = index([...others, ...prior]), near = index(others);
+    const pairs = [];
+    const items = [];
+    for (const r of res.runs) {
+      const run = this._map.runs.find((x) => x.id === r.id);
+      if (!run || !Array.isArray(r.positions) || r.positions.length !== run.count * 3) continue;
+      items.push({ run, pos: r.positions });
+      const at = (i) => [r.positions[i * 3] / 1000, r.positions[i * 3 + 1] / 1000, r.positions[i * 3 + 2] / 1000];
+      let hasFirst = false, hasLast = false;
+      for (let i = 0; i < run.count; i++) {
+        const b = same.get(`${run.entry_id}:${run.first + i}`);
+        if (!b) continue;
+        pairs.push([at(i), b]);
+        if (i === 0) hasFirst = true;
+        if (i === run.count - 1) hasLast = true;
+      }
+      const pre = near.get(`${run.entry_id}:${run.first - 1}`), post = near.get(`${run.entry_id}:${run.first + run.count}`);
+      if (pre && !hasFirst) pairs.push([at(0), pre]);
+      if (post && !hasLast) pairs.push([at(run.count - 1), post]);
+    }
+    if (!items.length) return "";
+    const n = pairs.length;
+    let T = null, how = "beside";
+    if (n) {
+      const ca = [0, 0, 0], cb = [0, 0, 0];
+      for (const [a, b] of pairs) for (let k = 0; k < 3; k++) {
+        ca[k] += a[k] / n;
+        cb[k] += b[k] / n;
+      }
+      let sc = 0, sab = 0, saa = 0, rot = [0, 0];
+      for (const [a, b] of pairs) {
+        const ax = a[0] - ca[0], ay = a[1] - ca[1], az = a[2] - ca[2], bx = b[0] - cb[0], bz = b[2] - cb[2];
+        rot[0] += ax * bz - az * bx;
+        rot[1] += ax * bx + az * bz;
+        saa += ax * ax + ay * ay + az * az;
+      }
+      const spread = Math.sqrt(saa / n);
+      const apply = (s, th) => {
+        const cs = Math.cos(th), sn = Math.sin(th);
+        return (p) => {
+          const x = p[0] - ca[0], y = p[1] - ca[1], z = p[2] - ca[2];
+          return [cb[0] + s * (x * cs - z * sn), cb[1] + s * y, cb[2] + s * (x * sn + z * cs)];
+        };
+      };
+      how = "place";
+      T = apply(1, 0);
+      if (n >= 2 && spread >= 0.06) {
+        const th = Math.hypot(rot[0], rot[1]) > 1e-9 ? Math.atan2(rot[0], rot[1]) : 0;
+        const cs = Math.cos(th), sn = Math.sin(th);
+        for (const [a, b] of pairs) {
+          const ax = a[0] - ca[0], ay = a[1] - ca[1], az = a[2] - ca[2], bx = b[0] - cb[0], by = b[1] - cb[1], bz = b[2] - cb[2];
+          sab += (ax * cs - az * sn) * bx + (ax * sn + az * cs) * bz + ay * by;
+        }
+        const s = sab / saa;
+        if (Number.isFinite(s) && s >= 0.03 && s <= 30) {
+          const F = apply(s, th);
+          let err = 0;
+          for (const [a, b] of pairs) {
+            const q = F(a);
+            err += (q[0] - b[0]) ** 2 + (q[1] - b[1]) ** 2 + (q[2] - b[2]) ** 2;
+          }
+          if (Math.sqrt(err / n) <= 0.12) {
+            T = F;
+            how = "fit";
+          }
+        }
+      }
+    } else {
+      // no shared or neighbouring pixel: a small copy beside the saved runs
+      const lo = [1, 1, 1], hi = [0, 0, 0], elo = [1, 1, 1], ehi = [0, 0, 0];
+      for (const it of items) for (let i = 0; i < it.run.count; i++) for (let k = 0; k < 3; k++) {
+        const v = it.pos[i * 3 + k] / 1000;
+        lo[k] = Math.min(lo[k], v);
+        hi[k] = Math.max(hi[k], v);
+      }
+      for (const r of others) for (let i = 0; i < r.count; i++) for (let k = 0; k < 3; k++) {
+        const v = r.positions[i * 3 + k] / 1000;
+        elo[k] = Math.min(elo[k], v);
+        ehi[k] = Math.max(ehi[k], v);
+      }
+      const span = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+      const s = span > 0 ? Math.min(1, 0.3 / span) : 1;
+      const w = (hi[0] - lo[0]) * s;
+      let tx = ehi[0] + 0.04 - lo[0] * s;
+      if (ehi[0] + 0.04 + w > 1) tx = elo[0] - 0.04 - hi[0] * s;
+      if (elo[0] - 0.04 - w < 0 && ehi[0] + 0.04 + w > 1) tx = 1 - w - lo[0] * s;
+      const ty = elo[1] - lo[1] * s, tz = (elo[2] + ehi[2]) / 2 - ((lo[2] + hi[2]) / 2) * s;
+      T = (p) => [p[0] * s + tx, p[1] * s + ty, p[2] * s + tz];
+    }
+    let clipped = 0;
+    for (const r of res.runs) {
+      const it = items.find((x) => x.run.id === r.id);
+      if (!it) continue;
+      const out = new Array(it.run.count * 3);
+      for (let i = 0; i < it.run.count; i++) {
+        const q = T([it.pos[i * 3] / 1000, it.pos[i * 3 + 1] / 1000, it.pos[i * 3 + 2] / 1000]);
+        for (let k = 0; k < 3; k++) {
+          const v = Math.round(q[k] * 1000);
+          if (v < 0 || v > 1000) clipped++;
+          out[i * 3 + k] = Math.max(0, Math.min(1000, v));
+        }
+      }
+      r.positions = out;
+    }
+    const names = items.map((x) => x.run.name || "the run");
+    const who = names.length > 2 ? `${names[0]}, ${names[1]} and ${names.length - 2} more` : names.join(" and ");
+    const edge = clipped ? " Some pixels reached the edge of the area." : "";
+    if (how === "fit") return `${who} lined up with the runs already saved in this area.${edge}`;
+    if (how === "place") return `${who} was moved to meet its neighbour on the same light, but its size and angle are a guess. Use Trace and edit, then Move run, to put it in place.${edge}`;
+    return `${who} was scanned on its own, so it could not be matched to the runs already saved in this area. It sits beside them. Use Trace and edit, then Move run, to put it in place.${edge}`;
+  }
+
+  // a short message at the bottom of the page that goes away on its own
+  _toast(text, ms = 20000) {
+    this._root.querySelector(".lss-toast")?.remove();
+    const t = this._el("div", "lss-toast");
+    t.setAttribute("role", "status");
+    const x = this._btn("OK", "btn alt sm", () => t.remove());
+    t.append(this._el("span", "", text), x);
+    this._root.append(t);
+    setTimeout(() => t.remove(), ms);
   }
 
   _closeScan() {
     this._wiz?.destroy();
     this._wiz = null;
+    this._closeTrace();
+  }
+
+  // --- trace and edit: draw a run as a line on the room plan, then fix pixels by hand (RunEditor in light-show-studio-map3d.js) ---
+  async _openTrace(areaId, runId) {
+    if (this._trace || !this._map) return;
+    const m = await this._loadMods();
+    if (!m?.RunEditor) {
+      this._mapErr = "The editor couldn't load. Reload the page after updating Light Show Studio.";
+      this._renderSaveBar();
+      return;
+    }
+    const area = this._area(areaId);
+    const runs = this._areaRuns(areaId).filter((r) => Number.isInteger(r.count) && r.count > 0);
+    if (!area || !runs.length || this._trace) return;
+    const admin = this._isAdmin();
+    this._trace = new m.RunEditor({
+      host: this._root, area: { id: area.id, name: area.name }, canEdit: admin,
+      runs: runs.map((r) => ({ id: r.id, name: r.name, entry_id: r.entry_id, first: r.first, count: r.count, pts: r.pts, positions: r.positions })),
+      start: runId && runs.some((r) => r.id === runId) ? runId : runs[0].id,
+      colourOf: (id) => this._runRgb(id),
+      onSave: (res) => this._applyTrace(res),
+      probe: {
+        can: (run) => {
+          const L = this._mLight(run.entry_id);
+          if (!L) return { ok: false, why: "This run's light isn't available." };
+          if (L.segmented === false || L.loaded === false) return { ok: false, why: "This light can't light single pixels." };
+          return { ok: true };
+        },
+        light: (run, i, n) => this._probeLight(run, i, n),
+        stop: () => this._probeStop(),
+      },
+      onClose: () => {
+        this._trace = null;
+        this._probeStop();
+      },
+    });
+  }
+
+  _closeTrace() {
+    if (!this._trace) return;
+    this._trace.destroy();
+    this._trace = null;
+    this._probeStop();
+  }
+
+  // the editor's Save: put the traced / edited positions into the map and save it (same format as a scan)
+  async _applyTrace(res) {
+    const c = LightShowStudioPanel._clamp01;
+    for (const r of res) {
+      const run = this._map.runs.find((x) => x.id === r.id);
+      if (!run || r.positions.length !== run.count * 3) continue;
+      run.positions = r.positions.map((v) => Math.max(0, Math.min(1000, Math.round(v))));
+      run.pts = r.pts.map((p) => [c(p[0]), c(p[1]), c(p[2])]);
+    }
+    this._mapChanged();
+    const ok = await this._mapSave();
+    if (!ok) return this._mapErr || "Couldn't save the map.";
+    return "";
+  }
+
+  // light one pixel (or a stretch) of a run so you can see where it really is: scan/start takes the light, scan/segment lights the
+  // stretch. The light goes back to what it showed on scan/stop (also after 120 s without a call).
+  _probeLight(run, i, n) {
+    const go = async () => {
+      const entry = run.entry_id;
+      if (this._probe && this._probe.entry !== entry) await this._probeStop(true);
+      const seg = () => this._hass.callWS({ type: "light_show_studio/map/scan/segment", entry_id: entry, start: run.first + i, count: Math.max(1, n || 1), colour: [255, 255, 255] });
+      if (this._probe) {
+        try {
+          return await seg();
+        } catch (err) {
+          this._probe = null; // probably timed out or taken by someone else: start again once
+        }
+      }
+      await this._hass.callWS({ type: "light_show_studio/map/scan/start", entry_id: entry });
+      this._probe = { entry };
+      return seg();
+    };
+    this._probeQ = (this._probeQ || Promise.resolve()).catch(() => {}).then(go);
+    return this._probeQ.catch((err) => {
+      this._probe = null;
+      throw new Error(this._mapErrText(err, "Couldn't light that pixel."));
+    });
+  }
+
+  _probeStop(wait) {
+    const p = this._probe;
+    this._probe = null;
+    if (!p) return Promise.resolve();
+    const q = this._hass.callWS({ type: "light_show_studio/map/scan/stop", entry_id: p.entry }).catch(() => {});
+    return wait ? q : Promise.resolve();
   }
 
   // --- change tracking + validation ----------------------------------------------------------
@@ -3560,7 +3910,10 @@ class LightShowStudioPanel extends HTMLElement {
       ref.pill.className = "pill " + (running ? "ok run" : "");
       ref.pill.textContent = running ? "Running" : "Idle";
       ref.card.classList.toggle("running", running);
-      if (!ref.busy) ref.start.innerHTML = `${svg(PANEL_ICON.play)}${running ? "Restart" : "Start"}`;
+      if (!ref.busy && ref.runKey !== running) {
+        ref.runKey = running;
+        ref.start.innerHTML = `${svg(PANEL_ICON.play)}${running ? "Restart" : "Start"}`;
+      }
       ref.stop.disabled = !running || !this._isAdmin();
       ref.start.disabled = ref.busy || !this._isAdmin();
     }
@@ -3734,10 +4087,14 @@ class LightShowStudioPanel extends HTMLElement {
     const flags = this._el("div", "inl");
     if (L && L.loaded === false) flags.append(this._el("span", "pill err", "Not loaded"));
     if (L && L.segmented === false) flags.append(this._el("span", "pill warn", "Shows one average colour"));
-    if (run.positions) flags.append(this._el("span", "pill ok", "Scanned in 3D"));
+    if (run.positions) flags.append(this._el("span", "pill ok", run.pts.length > 2 ? "Traced in 3D" : "Mapped in 3D"));
     else if (run.pts.length > 2) flags.append(this._el("span", "pill acc", `${run.pts.length} imported positions`));
     const prob = this._el("div", "rprob");
     prob.setAttribute("role", "alert");
+    const traceRun = this._btn("", "btn alt sm", () => this._openTrace(run.area, run.id));
+    traceRun.innerHTML = `${svg(PANEL_ICON.edit, 18)}Trace this run`;
+    traceRun.title = "Draw this run as a line on the room plan and set its height";
+    flags.append(traceRun);
     // import positions
     const det = this._el("details");
     det.append(this._el("summary", "", "Import positions"));
@@ -3885,6 +4242,25 @@ class LightShowStudioPanel extends HTMLElement {
 
   _err(err, fallback) {
     return (typeof err === "string" ? err : err?.message) || fallback;
+  }
+
+  // errors from the commands that drive a light (music, preview, paint): `unauthorized` = this person may not control that light
+  _ctlErr(err, fallback) {
+    if (err?.code === "unauthorized") return "You can't control that light.";
+    if (err?.code === "rate_limited") return "Home Assistant is busy right now. Try again in a moment.";
+    return this._err(err, fallback);
+  }
+
+  // callWS that quietly waits and tries again when the server says `rate_limited` (up to `tries` times, 0.4 s, 0.8 s, ...)
+  async _callRL(msg, tries = 3) {
+    for (let k = 1; ; k++) {
+      try {
+        return await this._hass.callWS(msg);
+      } catch (err) {
+        if (err?.code !== "rate_limited" || k >= tries || this._dead) throw err;
+        await new Promise((r) => setTimeout(r, 400 * k));
+      }
+    }
   }
 
   _seg(options, value, label, onPick) {
@@ -4254,22 +4630,32 @@ class LightShowStudioPanel extends HTMLElement {
       return;
     }
     this._schLoading = true;
+    let changed = false;
     do {
       this._schAgain = false;
       try {
         const r = await this._hass.callWS({ type: "light_show_studio/schedules/list" });
+        const sig = JSON.stringify([r.schedules, r.playlists, r.status, r.active, r.next]);
+        // unchanged on the server, and no optimistic edit in memory: keep what is on screen
+        if (this._sch && !this._schError && sig === this._schSig && JSON.stringify(this._sch) === JSON.stringify(r.schedules || [])) continue;
+        this._schSig = sig;
+        changed = true;
         this._sch = r.schedules || [];
         this._schPlaylists = r.playlists || [];
         this._schSummary = { status: r.status, active: r.active, next: r.next };
         this._schError = "";
       } catch (err) {
         this._schError = this._err(err, "Couldn't load the schedules.");
+        this._schSig = null;
+        changed = true;
         this._sch = this._sch || [];
       }
     } while (this._schAgain);
     this._schLoading = false;
+    if (!changed) return;
     this._renderSchedBanner();
-    if (!this._draft) this._renderSchedules();
+    if (!this._draft) this._renderSchedules(true);
+    this._renderTonight();
   }
 
   _renderSchedBanner() {
@@ -4315,11 +4701,16 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   // one list for both kinds: light schedules (new) and show schedules (playlists), grouped Today / This week / Seasonal
-  _renderSchedules() {
+  // `auto`: called because data arrived (not because of a click), so a repeat of what is already drawn is skipped
+  _renderSchedules(auto) {
     const box = this._schList;
     if (!box) return;
     const admin = this._isAdmin();
+    const sig = JSON.stringify([this._lsch, this._sch, this._schPlaylists, this._schNotice, this._lschErr, this._schError, admin, !!this._draft, this._schConfirm, this._lschOld, !!this._hol, Math.floor(Date.now() / 60000), this._map?.areas ? this._map.areas.map((a) => a.id + a.name) : 0]);
+    if (auto && sig === this._schListSig && box.firstChild) return;
+    this._schListSig = sig;
     this._addSched.hidden = !admin || !!this._draft;
+    this._holBtn.hidden = !!this._lschOld || this._lsch === null || this._lsch === undefined;
     box.textContent = "";
     if (this._schNotice) box.append(this._el("div", "box notice", this._schNotice));
     if (this._lschErr) box.append(this._el("div", "serr", this._lschErr));
@@ -4879,6 +5270,7 @@ class LightShowStudioPanel extends HTMLElement {
     }
     this._renderScenes();
     this._syncHome();
+    requestAnimationFrame(() => this._drawStrips()); // new or reordered canvases
   }
 
   _areaSection(g) {
@@ -5010,7 +5402,7 @@ class LightShowStudioPanel extends HTMLElement {
         if (g.play.lastChild.nodeType === 3) g.play.lastChild.textContent = running ? "Change pattern" : "Play pattern in area";
       }
     }
-    this._drawStrips();
+    // no repaint here: the frame subscription repaints the strips (see _onFrames), and a rebuilt list repaints itself
   }
 
   _syncHomeFrames() {
@@ -5241,6 +5633,12 @@ class LightShowStudioPanel extends HTMLElement {
   // everything the Areas header and the timeline need; cheap, so it runs on every state change but only touches the DOM when it changed
   _renderTonight() {
     if (!this._upNext || !this._hass || (this._tab !== "areas" && this._tab !== "schedule")) return;
+    // nothing it reads has changed since the last pass (same data objects, same minute): nothing to do
+    const stSun = this._hass.states["sun.sun"];
+    const tk = this._tnKey;
+    const minute = Math.floor(Date.now() / 60000);
+    if (tk && tk.minute === minute && tk.sun === stSun && tk.lsch === this._lsch && tk.sch === this._sch && tk.map === this._map && tk.tab === this._tab && tk.up === this._upNext && tk.sig === this._tlSig) return;
+    this._tnKey = { minute, sun: stSun, lsch: this._lsch, sch: this._sch, map: this._map, tab: this._tab, up: this._upNext, sig: undefined };
     const sun = this._sun();
     const now = new Date();
     let pill = "";
@@ -5282,6 +5680,7 @@ class LightShowStudioPanel extends HTMLElement {
     if (text && this._upNext.lastChild.textContent !== text) this._upNext.lastChild.textContent = text;
     this._renderTimeline();
     this._renderSchSub();
+    if (this._tnKey) this._tnKey.sig = this._tlSig;
   }
 
   _renderSchSub() {
@@ -5522,20 +5921,27 @@ class LightShowStudioPanel extends HTMLElement {
       return;
     }
     this._lschLoading = true;
+    let changed = false;
     do {
       this._lschAgain = false;
       try {
         const r = await this._hass.callWS({ type: "light_show_studio/light_schedules/list" });
-        this._lsch = Array.isArray(r?.schedules) ? r.schedules : [];
+        const list = Array.isArray(r?.schedules) ? r.schedules : [];
+        if (this._lsch && !this._lschErr && JSON.stringify(this._lsch) === JSON.stringify(list)) continue; // unchanged
+        changed = true;
+        this._lsch = list;
         this._lschErr = "";
       } catch (err) {
         if (err?.code === "unknown_command" || /unknown command/i.test(String(err?.message || err))) this._lschOld = true;
         else this._lschErr = this._err(err, "Couldn't load the light schedules.");
+        changed = true;
         this._lsch = this._lsch || [];
       }
     } while (this._lschAgain);
     this._lschLoading = false;
-    if (!this._draft) this._renderSchedules();
+    this._holNames();
+    if (!changed) return;
+    if (!this._draft) this._renderSchedules(true);
     this._renderTonight();
   }
 
@@ -5545,8 +5951,10 @@ class LightShowStudioPanel extends HTMLElement {
     this._hass.connection
       .subscribeMessage((m) => {
         if (Array.isArray(m?.schedules)) {
+          if (this._lsch && !this._lschErr && JSON.stringify(this._lsch) === JSON.stringify(m.schedules)) return;
           this._lsch = m.schedules;
-          if (!this._draft) this._renderSchedules();
+          this._holNames();
+          if (!this._draft) this._renderSchedules(true);
           this._renderTonight();
         }
       }, { type: "light_show_studio/light_schedules/subscribe" })
@@ -5611,9 +6019,22 @@ class LightShowStudioPanel extends HTMLElement {
     sub.append(b, ` \u00b7 ${L._daysText(s.days)} \u00b7 ${L._edgeText(s.start)} \u2192 ${endTxt}`);
     card.append(sub);
     if (s.date_from && s.date_to) card.append(this._el("div", "sub2", `Season: ${L._mdText(s.date_from)} \u2013 ${L._mdText(s.date_to)}, every year`));
+    const cl = s.look_now || s.look; // the look in force right now (after rotation / a holiday), else the schedule's own
     const look = this._el("div", "looks");
-    look.append(this._lookDots(s.look?.pattern), this._el("span", "lt", `${s.look?.pattern || "Pattern"} \u00b7 ${s.look?.effect || ""} \u00b7 ${s.look?.brightness ?? 100}%`));
+    look.append(this._lookDots(cl?.pattern), this._el("span", "lt", `${s.look_now ? "Now: " : ""}${cl?.pattern || "Pattern"} \u00b7 ${cl?.effect || ""} \u00b7 ${cl?.brightness ?? 100}%`));
     card.append(look);
+    const facts = [];
+    if (s.looks?.length > 1) facts.push(`${s.looks.length} looks, ${s.rotate?.type === "interval" ? `changing every ${s.rotate.minutes} min` : "a different one each night"}`);
+    if (s.holiday_looks) facts.push("holiday looks");
+    if (s.random_offset_min > 0) facts.push(`times vary by up to ${s.random_offset_min} min`);
+    if (s.only_when === "home" || s.only_when === "away") facts.push(s.only_when === "home" ? "only when someone is home" : "only when nobody is home");
+    if (facts.length) card.append(this._el("div", "sub2", facts.join(" \u00b7 ")));
+    if (s.holiday_now || s.skipped_now) {
+      const tags = this._el("div", "tags");
+      if (s.holiday_now) tags.append(this._el("span", "tag run", `Holiday look: ${this._holName(s.holiday_now)}`), " ");
+      if (s.skipped_now) tags.append(this._el("span", "tag pause", s.only_when === "away" ? "Skipped today: someone is home" : "Skipped today: nobody is home"), " ");
+      card.append(tags);
+    }
     const nx = this._el("div", "nextl" + (s.active ? " on" : ""));
     nx.innerHTML = svg("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm.5 5H11v6l5.25 3.15.75-1.23-4.5-2.67z", 16);
     let txt;
@@ -5658,6 +6079,259 @@ class LightShowStudioPanel extends HTMLElement {
     return card;
   }
 
+  // --- holidays: light_schedules/holidays, holiday_set, holiday_reset (docs/LIGHT_SCHEDULES.md) --------------------------
+  _holName(id) {
+    const h = this._hol?.holidays?.find((x) => x.id === id);
+    return h?.name || String(id).replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  // a schedule is showing a holiday's look: fetch the holiday names once so the card can say which
+  _holNames() {
+    if (!this._hol && !this._holLoading && !this._holTried && (this._lsch || []).some((x) => x.holiday_now)) {
+      this._holTried = true;
+      this._loadHolidays();
+    }
+  }
+
+  async _loadHolidays() {
+    if (!this._hass || this._lschOld) return;
+    if (this._holLoading) {
+      this._holAgain = true;
+      return;
+    }
+    this._holLoading = true;
+    do {
+      this._holAgain = false;
+      try {
+        const r = await this._hass.callWS({ type: "light_show_studio/light_schedules/holidays", days: 366 });
+        this._hol = r && Array.isArray(r.holidays) ? r : { holidays: [], upcoming: [] };
+        this._holErr = "";
+      } catch (err) {
+        this._holErr = this._err(err, "Couldn't load the holidays.");
+        this._hol = this._hol || null;
+      }
+    } while (this._holAgain && !this._dead);
+    this._holLoading = false;
+    if (this._sheet?.kind === "holidays") this._renderHolidays();
+    this._renderSchedules(true);
+  }
+
+  // holiday_set / holiday_reset, then fetch the holidays again (and the schedules: their look_now / holiday_now may have moved)
+  async _holCall(type, data, fallback) {
+    try {
+      const r = await this._hass.callWS({ type: `light_show_studio/light_schedules/${type}`, ...data });
+      this._holErr = "";
+      return r;
+    } catch (err) {
+      this._holErr = this._err(err, fallback);
+      return null;
+    } finally {
+      await this._loadHolidays();
+      this._loadLightSchedules();
+    }
+  }
+
+  _openHolidays() {
+    this._holEdit = null;
+    this._holErr = "";
+    this._openSheet("holidays", "Holidays");
+    this._renderHolidays();
+    this._loadHolidays();
+  }
+
+  static _ymd(s) {
+    const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(String(s || ""));
+    return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+  }
+
+  static _dayText(s, long) {
+    const d = LightShowStudioPanel._ymd(s);
+    return d ? d.toLocaleDateString([], long ? { weekday: "short", month: "short", day: "numeric" } : { month: "short", day: "numeric" }) : "";
+  }
+
+  _renderHolidays() {
+    if (this._sheet?.kind !== "holidays") return;
+    const L = LightShowStudioPanel;
+    const body = this._sheetBody;
+    const scroll = body.scrollTop;
+    this._stopPreview?.();
+    body.textContent = "";
+    this._sheetFoot.hidden = true;
+    const admin = this._isAdmin();
+    body.append(this._el("div", "ed-hint", "A schedule with “Use holiday looks” switches to a holiday's look while its window is open. Pick a look for each holiday, or turn one off."));
+    if (this._holErr) {
+      const e = this._el("div", "serr", this._holErr);
+      e.setAttribute("role", "alert");
+      body.append(e);
+    }
+    const H = this._hol;
+    if (!H) {
+      if (!this._holErr) {
+        const sk = this._el("div", "skel");
+        sk.setAttribute("aria-busy", "true");
+        sk.append(document.createElement("i"), document.createElement("i"));
+        body.append(sk);
+      }
+      return;
+    }
+    const byId = Object.fromEntries(H.holidays.map((h) => [h.id, h]));
+    const seen = new Set();
+    const up = [];
+    for (const u of H.upcoming || []) {
+      if (seen.has(u.id) || !byId[u.id]) continue;
+      seen.add(u.id);
+      up.push({ ...byId[u.id], ...u, look: byId[u.id].look });
+    }
+    const rest = H.holidays.filter((h) => !seen.has(h.id));
+    if (!up.length && !rest.length) body.append(this._el("div", "box empty", "No holidays to show."));
+    for (const [title, list] of [["Coming up", up], ["Later, or no date", rest]]) {
+      if (!list.length) continue;
+      const sec = this._el("section", "sgroup");
+      sec.setAttribute("aria-label", title);
+      sec.append(this._el("h2", "grph", title));
+      for (const h of list) sec.append(this._holCard(h, admin));
+      body.append(sec);
+    }
+    this._restoreFocus();
+    body.scrollTop = scroll;
+  }
+
+  _holCard(h, admin) {
+    const L = LightShowStudioPanel;
+    const card = this._el("div", "box sc hol" + (h.enabled ? "" : " off"));
+    card.setAttribute("role", "listitem");
+    card.dataset.hol = h.id;
+    const top = this._el("div", "top");
+    const nm = this._el("div", "sn", h.name);
+    if (h.active) nm.append(this._el("span", "tag run", "On now"));
+    top.append(nm, this._toggle(h.enabled, `${h.name} enabled`, !admin, `hl-${h.id}`, async (on) => {
+      h.enabled = on;
+      this._keepFocus(`hl-${h.id}`);
+      this._renderHolidays();
+      await this._holCall("holiday_set", { holiday_id: h.id, enabled: on }, "Couldn't change the holiday.");
+      this._keepFocus(`hl-${h.id}`);
+    }));
+    card.append(top);
+    const when = h.date ? L._dayText(h.date, true) : "No date after 2030";
+    card.append(this._el("div", "sub2", h.date ? `${when}${h.window_start && h.window_end ? ` · lights ${L._dayText(h.window_start)} to ${L._dayText(h.window_end)}` : ""}` : when));
+    if (h.date) card.append(this._el("div", "sub2", `Starts ${h.before} day${h.before === 1 ? "" : "s"} before, ends ${h.after} day${h.after === 1 ? "" : "s"} after`));
+    if (h.note) card.append(this._el("div", "sub2", h.note));
+    const look = this._el("div", "looks");
+    look.append(this._lookDots(h.look?.pattern), this._el("span", "lt", `${h.look?.pattern || "Pattern"} · ${h.look?.effect || ""} · ${h.look?.brightness ?? 100}%`));
+    if (h.overridden) look.append(this._el("span", "tag", "Changed by you"));
+    card.append(look);
+    if (admin) {
+      if (this._holEdit?.id === h.id) card.append(this._holEditor(h));
+      else {
+        const acts = this._el("div", "sacts");
+        const ch = this._btn("Change look", "btn alt sm", () => {
+          this._holEdit = { id: h.id, look: { pattern: h.look?.pattern, effect: h.look?.effect, speed: h.look?.speed ?? 50, brightness: h.look?.brightness ?? 100 }, before: h.before, after: h.after };
+          this._keepFocus(`hc-${h.id}`);
+          this._renderHolidays();
+        });
+        ch.dataset.fk = `hc-${h.id}`;
+        ch.setAttribute("aria-label", `Change the look for ${h.name}`);
+        acts.append(ch);
+        if (h.overridden) {
+          const rs = this._btn("Reset", "btn alt sm", () => this._holCall("holiday_reset", { holiday_id: h.id }, "Couldn't reset the holiday."));
+          rs.setAttribute("aria-label", `Reset ${h.name} to the built-in look and dates`);
+          acts.append(rs);
+        }
+        card.append(acts);
+      }
+    }
+    return card;
+  }
+
+  // the look, and how many days before / after the lights run, for one holiday
+  _holEditor(h) {
+    const E = this._holEdit;
+    const wrap = this._el("div", "hol-edit");
+    const pv = this._el("div", "pv");
+    pv.setAttribute("role", "img");
+    pv.setAttribute("aria-label", `Preview of ${h.name}`);
+    const cv = this._el("canvas");
+    pv.append(cv);
+    const pvt = this._el("div", "pvt");
+    const upd = () => (pvt.textContent = `Preview · ${E.look.pattern} · ${E.look.effect}`);
+    upd();
+    const [pats, pfx] = this._patternLists();
+    const sel = (label, opts, val, on) => {
+      const f = this._el("label", "fld");
+      f.append(this._el("span", "lb", label));
+      const s = this._el("select");
+      for (const o of opts) s.append(Object.assign(this._el("option", "", o), { value: o }));
+      if (val && !opts.includes(val)) s.append(Object.assign(this._el("option", "", val), { value: val }));
+      s.value = val;
+      s.onchange = () => on(s.value);
+      f.append(s);
+      return f;
+    };
+    const fx = [...new Set([...pfx, ...(this._mapSpatial?.length ? this._mapSpatial : MAP_FX)])];
+    const two = this._el("div", "ed-two");
+    const effSel = sel("Effect", fx, E.look.effect, (v) => {
+      E.look.effect = v;
+      upd();
+    });
+    two.append(sel("Pattern", pats, E.look.pattern, (v) => {
+      E.look.pattern = v;
+      const df = this._patDefaults(v);
+      if (df) {
+        Object.assign(E.look, df);
+        this._renderHolidays();
+        return;
+      }
+      upd();
+    }), effSel);
+    const rng = (label, key, min, max, fmt) => {
+      const w = this._el("div", "rng");
+      const rl = this._el("div", "rl");
+      const v = this._el("span", "", fmt(E.look[key]));
+      const l = this._el("label", "", label);
+      const id = `hl-${key}-${h.id}`;
+      l.htmlFor = id;
+      rl.append(l, v);
+      const r = this._el("input");
+      Object.assign(r, { type: "range", id, min, max, value: E.look[key] });
+      r.oninput = () => {
+        E.look[key] = Number(r.value);
+        v.textContent = fmt(E.look[key]);
+      };
+      w.append(rl, r);
+      return w;
+    };
+    const num = (label, key) => {
+      const f = this._el("label", "fld");
+      f.append(this._el("span", "lb", label));
+      const n = this._el("input");
+      Object.assign(n, { type: "number", min: 0, max: 60, step: 1, value: E[key] });
+      n.oninput = () => (E[key] = Math.min(60, Math.max(0, Math.round(Number(n.value)) || 0)));
+      f.append(n);
+      return f;
+    };
+    const days = this._el("div", "ed-two");
+    days.append(num("Start this many days before", "before"), num("Keep going this many days after", "after"));
+    const acts = this._el("div", "sacts");
+    const save = this._btn("Save", "btn sm", async () => {
+      save.disabled = true;
+      const msg = { holiday_id: h.id };
+      const same = (a, b) => ["pattern", "effect", "speed", "brightness"].every((k) => (a?.[k] ?? null) === (b?.[k] ?? null));
+      if (!same(E.look, h.look)) msg.look = h.default_look && Object.keys(h.default_look).length && same(E.look, h.default_look) ? null : { ...E.look };
+      if (E.before !== h.before) msg.before = E.before === h.default_before ? null : E.before;
+      if (E.after !== h.after) msg.after = E.after === h.default_after ? null : E.after;
+      this._holEdit = null;
+      if (Object.keys(msg).length > 1) await this._holCall("holiday_set", msg, "Couldn't save the holiday.");
+      else this._renderHolidays();
+    });
+    acts.append(save, this._btn("Cancel", "btn alt sm", () => {
+      this._holEdit = null;
+      this._renderHolidays();
+    }));
+    wrap.append(pv, pvt, two, rng("Speed", "speed", 1, 100, (x) => `${(x / 50).toFixed(x % 50 ? 1 : 0)}x`), rng("Brightness", "brightness", 1, 100, (x) => `${x}%`), days, acts);
+    this._startPreview(cv, () => E.look);
+    return wrap;
+  }
+
   // a switch (role=switch) in the schedule look
   _toggle(on, label, disabled, fk, onChange) {
     const tg = this._el("button", "tgl");
@@ -5678,7 +6352,9 @@ class LightShowStudioPanel extends HTMLElement {
     const mk = (title, d, icon, fn) => {
       const b = this._el("button", "kindbtn");
       b.type = "button";
-      b.innerHTML = `<span class="hi">${svg(icon)}</span><span><b>${title}</b><span class="d">${d}</span></span>`;
+      b.innerHTML = `<span class="hi">${svg(icon)}</span><span><b></b><span class="d"></span></span>`;
+      b.querySelector("b").textContent = title;
+      b.querySelector(".d").textContent = d;
       b.onclick = fn;
       return b;
     };
@@ -5701,7 +6377,8 @@ class LightShowStudioPanel extends HTMLElement {
       end: { type: "time", time: "23:00", offset_min: 0, minutes: 240 },
       season: false, date_from: "11-25", date_to: "01-06", fade_in_s: 2, fade_out_s: 2,
       areas: [], lights: [],
-      look: { pattern: this._patternLists()[0].includes("Classic Multicolor") ? "Classic Multicolor" : this._patternLists()[0][0], effect: "Steady", speed: 50, brightness: 100 },
+      looks: [{ pattern: this._patternLists()[0].includes("Classic Multicolor") ? "Classic Multicolor" : this._patternLists()[0][0], effect: "Steady", speed: 50, brightness: 100 }],
+      cur: 0, rotate: "night", rotate_min: 60, holiday_looks: false, random_offset_min: 0, only_when: "any",
     };
   }
 
@@ -5719,7 +6396,9 @@ class LightShowStudioPanel extends HTMLElement {
         return a ? a.id : String(r);
       }),
       lights: [...(s.targets?.lights || [])],
-      look: { pattern: s.look.pattern, effect: s.look.effect, speed: s.look.speed ?? 50, brightness: s.look.brightness ?? 100 },
+      looks: (s.looks?.length ? s.looks : [s.look]).map((l) => ({ pattern: l.pattern, effect: l.effect, speed: l.speed ?? 50, brightness: l.brightness ?? 100 })),
+      cur: 0, rotate: s.rotate?.type === "interval" ? "interval" : "night", rotate_min: s.rotate?.minutes || 60,
+      holiday_looks: !!s.holiday_looks, random_offset_min: Number(s.random_offset_min) || 0, only_when: ["home", "away"].includes(s.only_when) ? s.only_when : "any",
     });
     const e = s.end;
     d.end = !e ? { type: "none", time: "23:00", offset_min: 0, minutes: 240 }
@@ -5961,20 +6640,39 @@ class LightShowStudioPanel extends HTMLElement {
       }
       body.append(sec);
     }
-    // look
+    // look (one, or several that take turns)
     {
+      const look = d.looks[d.cur];
+      const many = d.looks.length > 1;
       const sec = this._el("div", "ed-sec");
-      sec.append(this._el("div", "ed-lb", "Look"));
+      const lbl = this._el("div", "ed-lb");
+      lbl.append(this._el("span", "", many ? "Looks" : "Look"), this._el("em", "", many ? `look ${d.cur + 1} of ${d.looks.length}` : ""));
+      sec.append(lbl);
       const card = this._el("div", "ed-card");
+      if (many) {
+        const tabs = this._el("div", "chips looktabs");
+        tabs.setAttribute("role", "group");
+        tabs.setAttribute("aria-label", "Looks");
+        d.looks.forEach((l, i) => {
+          const tb = this._btn(`Look ${i + 1}`, "chip", () => {
+            d.cur = i;
+            again();
+          });
+          tb.title = `${l.pattern} \u00b7 ${l.effect}`;
+          tb.setAttribute("aria-pressed", String(i === d.cur));
+          tabs.append(tb);
+        });
+        card.append(tabs);
+      }
       const pv = this._el("div", "pv");
       pv.setAttribute("role", "img");
       const cv = this._el("canvas");
       pv.append(cv);
       const pvt = this._el("div", "pvt");
       const upd = () => {
-        const t = `Preview \u00b7 ${d.look.pattern} \u00b7 ${d.look.effect}`;
+        const t = `Preview \u00b7 ${look.pattern} \u00b7 ${look.effect}`;
         pvt.textContent = t;
-        pv.setAttribute("aria-label", `Live preview: ${d.look.pattern}, ${d.look.effect}`);
+        pv.setAttribute("aria-label", `Live preview: ${look.pattern}, ${look.effect}`);
       };
       upd();
       card.append(pv, pvt);
@@ -5984,10 +6682,10 @@ class LightShowStudioPanel extends HTMLElement {
       grid.setAttribute("aria-label", "Pattern");
       for (const p of pats) {
         const b = this._btn("", "patopt", () => {
-          d.look.pattern = p;
+          look.pattern = p;
           const df = this._patDefaults(p); // a pattern of your own brings its effect and speed
           if (df) {
-            Object.assign(d.look, df);
+            Object.assign(look, df);
             again();
             return;
           }
@@ -5995,7 +6693,7 @@ class LightShowStudioPanel extends HTMLElement {
           upd();
         });
         b.setAttribute("role", "radio");
-        b.setAttribute("aria-checked", String(d.look.pattern === p));
+        b.setAttribute("aria-checked", String(look.pattern === p));
         const dots = this._dots(p);
         if (dots.style.display === "none") dots.classList.add("none");
         b.append(dots, document.createTextNode(p));
@@ -6009,12 +6707,12 @@ class LightShowStudioPanel extends HTMLElement {
       chips.setAttribute("aria-label", "Effect");
       for (const n of pfx) {
         const b = this._btn(n, "chip", () => {
-          d.look.effect = n;
+          look.effect = n;
           fx.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
           upd();
         });
         if (EFFECT_INFO[n]) b.title = EFFECT_INFO[n];
-        b.setAttribute("aria-pressed", String(d.look.effect === n));
+        b.setAttribute("aria-pressed", String(look.effect === n));
         chips.append(b);
       }
       fx.append(chips);
@@ -6027,12 +6725,12 @@ class LightShowStudioPanel extends HTMLElement {
         mc.setAttribute("aria-label", "Map effects");
         for (const n of mfx) {
           const b = this._btn(n, "chip", () => {
-            d.look.effect = n;
+            look.effect = n;
             fx.querySelectorAll(".chip").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
             upd();
           });
           b.title = MAP_FX_INFO[n] || "";
-          b.setAttribute("aria-pressed", String(d.look.effect === n));
+          b.setAttribute("aria-pressed", String(look.effect === n));
           mc.append(b);
         }
         fx.append(mc, this._el("div", "ed-hint", hasArea
@@ -6043,7 +6741,7 @@ class LightShowStudioPanel extends HTMLElement {
       const rng = (label, key, min, max, ends, fmt) => {
         const w = this._el("div", "rng");
         const rl = this._el("div", "rl");
-        const v = this._el("span", "", fmt(d.look[key]));
+        const v = this._el("span", "", fmt(look[key]));
         const idn = `ls-${key}`;
         const l = this._el("label", "", label);
         l.htmlFor = idn;
@@ -6053,10 +6751,10 @@ class LightShowStudioPanel extends HTMLElement {
         r.id = idn;
         r.min = min;
         r.max = max;
-        r.value = d.look[key];
+        r.value = look[key];
         r.oninput = () => {
-          d.look[key] = Number(r.value);
-          v.textContent = fmt(d.look[key]);
+          look[key] = Number(r.value);
+          v.textContent = fmt(look[key]);
         };
         const en = this._el("div", "ends");
         en.append(...ends.map((t) => this._el("span", "", t)));
@@ -6072,9 +6770,88 @@ class LightShowStudioPanel extends HTMLElement {
       hook.dataset.hook = "lsched-look-extra";
       hook.hidden = true;
       card.append(hook);
+      const lrow = this._el("div", "inl");
+      if (d.looks.length < 12) {
+        lrow.append(this._btn(many ? "Add another look" : "Add another look for a different night", "btn alt sm add-look", () => {
+          d.looks.push({ ...look });
+          d.cur = d.looks.length - 1;
+          again();
+        }));
+      }
+      if (many) {
+        lrow.append(this._btn("Remove this look", "btn alt sm danger", () => {
+          d.looks.splice(d.cur, 1);
+          d.cur = Math.min(d.cur, d.looks.length - 1);
+          again();
+        }));
+      }
+      card.append(lrow);
       sec.append(card);
       body.append(sec);
-      this._startPreview(cv, () => d.look);
+      this._startPreview(cv, () => look);
+    }
+    // how several looks take turns
+    if (d.looks.length > 1) {
+      const sec = this._el("div", "ed-sec");
+      sec.append(this._el("div", "ed-lb", "How the looks change"));
+      const card = this._el("div", "ed-card");
+      card.append(this._seg([["night", "A different look each night"], ["interval", "Change every N minutes"]], d.rotate, "How the looks change", (v) => {
+        d.rotate = v;
+        again();
+      }));
+      if (d.rotate === "interval") {
+        const row = this._el("div", "ed-row");
+        const n = this._el("input");
+        Object.assign(n, { type: "number", min: 1, max: 1440, step: 5, value: d.rotate_min });
+        n.setAttribute("aria-label", "Minutes between looks");
+        n.oninput = () => (d.rotate_min = Math.round(Number(n.value)) || 0);
+        row.append(this._el("span", "", "Every"), n, this._el("span", "ed-hint", "minutes (1 to 1440). Each night starts on a different look, then moves on to the next."));
+        card.append(row);
+      } else card.append(this._el("div", "ed-hint", `${d.looks.length} looks take turns: look 1 one night, look 2 the next, and so on.`));
+      sec.append(card);
+      body.append(sec);
+    }
+    // holiday looks, vacation mode, only when
+    {
+      const sec = this._el("div", "ed-sec");
+      sec.append(this._el("div", "ed-lb", "Smart options"));
+      const card = this._el("div", "ed-card");
+      const tog = (title, hint, on, fk, fn) => {
+        const w = this._el("div", "ed-opt");
+        const t = this._el("div", "ed-opt-t");
+        t.append(this._el("b", "", title), this._el("span", "ed-hint", hint));
+        w.append(t, this._toggle(on, title, false, fk, fn));
+        return w;
+      };
+      card.append(tog("Use holiday looks", "On Christmas, Halloween and other holidays, the holiday's own look replaces this one. Change them under Holidays.", d.holiday_looks, "ls-hol", (on) => {
+        d.holiday_looks = on;
+        again();
+      }));
+      card.append(tog("Vacation mode", "Vary the times a little each day so the house looks lived in.", d.random_offset_min > 0, "ls-vac", (on) => {
+        d.random_offset_min = on ? d.random_offset_min || 20 : 0;
+        again();
+      }));
+      if (d.random_offset_min > 0) {
+        const row = this._el("div", "ed-row");
+        const n = this._el("input");
+        Object.assign(n, { type: "number", min: 1, max: 60, step: 5, value: d.random_offset_min });
+        n.setAttribute("aria-label", "Vary times by up to this many minutes");
+        n.oninput = () => (d.random_offset_min = Math.min(60, Math.max(0, Math.round(Number(n.value)) || 0)));
+        row.append(this._el("span", "", "Vary times by up to"), n, this._el("span", "", "minutes"));
+        card.append(row);
+      }
+      const ow = this._el("div", "fld");
+      ow.append(this._el("span", "lb", "Only when"));
+      const ohint = this._el("div", "ed-hint", LightShowStudioPanel._ONLY_HINT[d.only_when]);
+      ow.append(this._seg([["any", "Always"], ["home", "Anyone home"], ["away", "Everyone away"]], d.only_when, "Only when", (v) => {
+        d.only_when = v;
+        ow.querySelectorAll(".segb").forEach((x) => x.setAttribute("aria-checked", String(x.dataset.v === v)));
+        ohint.textContent = LightShowStudioPanel._ONLY_HINT[v];
+      }), ohint);
+      [...ow.querySelectorAll(".segb")].forEach((x, i) => (x.dataset.v = ["any", "home", "away"][i]));
+      card.append(ow);
+      sec.append(card);
+      body.append(sec);
     }
     const err = this._el("div", "serr", this._lsError);
     err.setAttribute("role", "alert");
@@ -6110,7 +6887,9 @@ class LightShowStudioPanel extends HTMLElement {
     if (d.start.type === "time" && !HHMM.test(d.start.time || "")) return fail("Enter the time it turns on.");
     if (d.end.type === "time" && !HHMM.test(d.end.time || "")) return fail("Enter the time it turns off.");
     if (d.end.type === "duration" && !(d.end.minutes >= 1 && d.end.minutes <= 1440)) return fail("Stay on for 1 to 1440 minutes.");
-    if (!d.look.pattern || !d.look.effect) return fail("Pick a pattern and an effect.");
+    if (d.looks.some((l) => !l.pattern || !l.effect)) return fail("Pick a pattern and an effect for every look.");
+    if (d.looks.length > 1 && d.rotate === "interval" && !(d.rotate_min >= 1 && d.rotate_min <= 1440)) return fail("Change the look every 1 to 1440 minutes.");
+    if (d.random_offset_min > 0 && !(d.random_offset_min >= 1 && d.random_offset_min <= 60)) return fail("Vary the times by 1 to 60 minutes.");
     const edge = (e) => (e.type === "time" ? { type: "time", time: e.time, offset_min: 0 } : { type: e.type, offset_min: Number(e.offset_min) || 0 });
     const msg = {
       type: "light_show_studio/light_schedules/save", name, enabled: d.enabled, days: d.days, start: edge(d.start),
@@ -6118,8 +6897,16 @@ class LightShowStudioPanel extends HTMLElement {
       date_from: d.season ? d.date_from : null, date_to: d.season ? d.date_to : null,
       targets: { areas: d.areas, lights: d.lights },
       fade_in_s: d.fade_in_s, fade_out_s: d.fade_out_s,
-      look: { pattern: d.look.pattern, effect: d.look.effect, speed: d.look.speed, brightness: d.look.brightness },
     };
+    const lk = (l) => ({ pattern: l.pattern, effect: l.effect, speed: l.speed, brightness: l.brightness });
+    if (d.looks.length > 1) {
+      msg.looks = d.looks.map(lk);
+      msg.rotate = d.rotate === "interval" ? { type: "interval", minutes: d.rotate_min } : { type: "night" };
+    } else msg.look = lk(d.looks[0]);
+    // the 2.6.1 settings are only sent when they are not the defaults, so a server from before them still saves
+    if (d.holiday_looks) msg.holiday_looks = true;
+    if (d.random_offset_min > 0) msg.random_offset_min = d.random_offset_min;
+    if (d.only_when !== "any") msg.only_when = d.only_when;
     if (d.id) msg.schedule_id = d.id;
     const btn = this._sheetFoot.querySelector(".save-lsched");
     if (btn) btn.disabled = true;
@@ -6140,8 +6927,42 @@ class LightShowStudioPanel extends HTMLElement {
     this._stopPreview?.();
     const reduce = !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const t0 = performance.now();
+    let last = 0;
+    const sprites = new Map(); // "r,g,b,level" -> a pre-rendered glowing dot (shadowBlur is far too slow to run per dot per frame)
+    let spKey = "";
+    const sprite = (c, k, r, glow, dpr) => {
+      const key = `${r}|${glow}|${dpr}`;
+      if (key !== spKey || sprites.size > 400) {
+        sprites.clear();
+        spKey = key;
+      }
+      const lv = Math.round(Math.min(1.5, Math.max(0, k)) * 8);
+      const id = `${c[0]},${c[1]},${c[2]},${lv}`;
+      let sp = sprites.get(id);
+      if (!sp) {
+        const kq = lv / 8;
+        const pad = Math.ceil(r + 2 * 10 * glow * dpr * Math.max(kq, 0.1)) + 2;
+        const cvs = document.createElement("canvas");
+        cvs.width = cvs.height = pad * 2;
+        const sg = cvs.getContext("2d");
+        sg.shadowColor = `rgba(${c[0]},${c[1]},${c[2]},${Math.min(1, kq)})`;
+        sg.shadowBlur = 10 * glow * dpr * kq;
+        sg.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${0.12 + 0.88 * kq})`;
+        sg.beginPath();
+        sg.ellipse(pad, pad, r * 0.8, r, 0, 0, 6.2832);
+        sg.fill();
+        sp = { cvs, pad };
+        sprites.set(id, sp);
+      }
+      return sp;
+    };
     const draw = (now) => {
       if (!cv.isConnected) return;
+      if (!reduce && now - last < 32) {
+        this._pvRaf = requestAnimationFrame(draw); // ~30 fps is plenty for a preview
+        return;
+      }
+      last = now;
       const look = getLook();
       const w = cv.clientWidth, h = cv.clientHeight;
       if (w && h) {
@@ -6153,7 +6974,7 @@ class LightShowStudioPanel extends HTMLElement {
         const g = cv.getContext("2d");
         g.clearRect(0, 0, cv.width, cv.height);
         const cols = look._cols ? look._cols.flatMap((c) => Array.from({ length: look._bpc || 1 }, () => c)) : this._lookColours(look.pattern);
-        const NEAR = { Sweep: "Chase", Rise: "Chase", "Rainbow Wash": "Chase", Ripple: "Wave", Snowfall: "Twinkle", Fireworks: "Sparkle", "Breathe Outward": "Fade" };
+        const NEAR = { Sweep: "Chase", Rise: "Chase", "Rainbow Wash": "Chase", Ripple: "Wave", Snowfall: "Twinkle", Fireworks: "Sparkle", "Breathe Outward": "Fade", "Gradient Axis": "Wave", "Plasma Field": "Twinkle", "Candy Helix": "Chase" };
         const eff = NEAR[look.effect] || look.effect;
         const n = Math.max(8, Math.floor(w / 16));
         const t = reduce ? 0 : ((now - t0) / 1000) * (0.4 + (look.speed || 50) / 40);
@@ -6175,14 +6996,8 @@ class LightShowStudioPanel extends HTMLElement {
           k *= bri;
           const x = ((i + 0.5) / n) * cv.width, y = cv.height / 2;
           const r = Math.min(cv.height * 0.3, 6 * dpr);
-          g.save();
-          g.shadowColor = `rgba(${c[0]},${c[1]},${c[2]},${Math.min(1, k)})`;
-          g.shadowBlur = 10 * glow * dpr * k;
-          g.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${0.12 + 0.88 * k})`;
-          g.beginPath();
-          g.ellipse(x, y, r * 0.8, r, 0, 0, 6.2832);
-          g.fill();
-          g.restore();
+          const sp = sprite(c, k, r, glow, dpr);
+          g.drawImage(sp.cvs, x - sp.pad, y - sp.pad);
         }
       }
       this._pvRaf = reduce ? setTimeout(() => draw(performance.now()), 250) : requestAnimationFrame(draw);
@@ -6258,6 +7073,7 @@ class LightShowStudioPanel extends HTMLElement {
     const wrap = this._el("div", "fld motion mfxopts");
     wrap.append(this._el("span", "lb", `Map effect: ${o.effect}`));
     wrap.append(this._el("div", "muted", MAP_FX_INFO[o.effect] || ""));
+    if (NO_DIR_FX.has(o.effect)) return wrap; // fills the area (or turns round its vertical axis): no direction to pick
     const chips = this._el("div", "chips");
     chips.setAttribute("role", "group");
     chips.setAttribute("aria-label", "Direction");
@@ -6476,11 +7292,11 @@ class LightShowStudioPanel extends HTMLElement {
     if (pt.target.type === "light") msg.entry_id = pt.target.id;
     else msg.area = pt.target.id;
     try {
-      await this._hass.callWS(msg);
+      await this._callRL(msg);
       pt.previewing = true;
       this._ptSetErr("");
     } catch (err) {
-      this._ptSetErr(this._err(err, "The preview didn't start."));
+      this._ptSetErr(this._ctlErr(err, "The preview didn't start."));
     }
   }
 
@@ -6508,12 +7324,22 @@ class LightShowStudioPanel extends HTMLElement {
     if (!pt.previewing) await this._ptPreview();
     const by = {};
     for (const [e, i, c] of items) (by[e] = by[e] || []).push([i, ...(c || [0, 0, 0])]);
-    for (const [entry, set] of Object.entries(by)) {
+    const groups = Object.entries(by);
+    for (let gi = 0; gi < groups.length; gi++) {
+      const [entry, set] = groups[gi];
       for (let k = 0; k < set.length; k += 500) {
         try {
           await this._hass.callWS({ type: "light_show_studio/patterns/paint", entry_id: entry, set: set.slice(k, k + 500) });
         } catch (err) {
-          this._ptSetErr(this._err(err, "Couldn't paint the lights."));
+          if (err?.code === "rate_limited" && this._pt === pt) {
+            // too many calls: put what has not been sent back in the queue (never over a newer change) and try again shortly
+            const back = (e2, list) => list.forEach(([i, ...c]) => !pt.q.has(`${e2}:${i}`) && pt.q.set(`${e2}:${i}`, [e2, i, c]));
+            back(entry, set.slice(k));
+            for (const [e2, set2] of groups.slice(gi + 1)) back(e2, set2);
+            if (!pt.qt) pt.qt = setTimeout(() => this._ptFlush(), 500);
+            return;
+          }
+          this._ptSetErr(this._ctlErr(err, "Couldn't paint the lights."));
           pt.previewing = false;
           return;
         }
@@ -7052,7 +7878,7 @@ class LightShowStudioPanel extends HTMLElement {
       const chips = this._el("div", "chips");
       chips.setAttribute("role", "group");
       chips.setAttribute("aria-label", "Music effect");
-      const INFO = { Pulse: "Brightness follows the volume, with a kick on each beat", "Beat Chase": "The pattern steps along on every beat", Spectrum: "Bass, mids and treble light different parts", Flash: "Each beat flashes the lights" };
+      const INFO = { Pulse: "Brightness follows the volume, with a kick on each beat", "Beat Chase": "The pattern steps along on every beat", Spectrum: "Bass, mids and treble light different parts", Flash: "Each beat flashes the lights", "Beat Scatter": "A fresh handful of bulbs flashes on every beat", "Gravity Drop": "A band of light falls and bounces to the bass", "Beat Shell": "Each beat opens a shell of light outward from the centre" };
       for (const n of MUSIC_FX) {
         const b = this._btn(n, "chip", () => {
           m.effect = n;
@@ -7162,7 +7988,7 @@ class LightShowStudioPanel extends HTMLElement {
 
   async _musicSession() {
     const m = this._mu;
-    const r = await this._hass.callWS({
+    const r = await this._callRL({
       type: "light_show_studio/music/start", targets: this._musicTargets(), pattern: m.pattern, effect: m.effect, sensitivity: m.sensitivity,
     });
     return r;
@@ -7173,18 +7999,34 @@ class LightShowStudioPanel extends HTMLElement {
     if (this._musicRunning || this._musicStarting) return;
     this._musicStarting = true;
     this._musicErr("");
-    let stream;
+    const tok = this._lifeTok;
+    const gone = () => this._dead || tok !== this._lifeTok; // the panel was closed while we waited
+    let stream = null, ctx = null;
+    const release = () => {
+      this._musicStarting = false;
+      this._musicTeardown();
+      try {
+        stream?.getTracks().forEach((t) => t.stop()); // not yet in this._mAudio when we bail out early
+        if (ctx && ctx.state !== "closed") ctx.close().catch(() => {});
+      } catch (e) {
+        /* already closed */
+      }
+    };
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     } catch (err) {
       this._musicStarting = false;
+      if (gone()) return;
       this._musicErr(err?.name === "NotAllowedError" ? "The microphone is blocked. Allow it for this page in the browser's site settings, then try again." : "Couldn't open the microphone.");
       return;
     }
+    if (gone()) return release();
+    let started = false;
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AC();
+      ctx = new AC();
       await ctx.resume?.();
+      if (gone()) return release();
       const an = ctx.createAnalyser();
       an.fftSize = 1024;
       an.smoothingTimeConstant = 0.4;
@@ -7192,12 +8034,21 @@ class LightShowStudioPanel extends HTMLElement {
       this._mAudio = {
         stream, ctx, an, freq: new Uint8Array(an.frequencyBinCount), time: new Uint8Array(an.fftSize),
         peak: { level: 0.05, bass: 0.05, mid: 0.05, treble: 0.05 }, hist: [], last: 0, ibi: [], bpm: 0, prevE: 0, back: 0,
+        raw: { level: 0, bass: 0, mid: 0, treble: 0 }, f: { level: 0, bass: 0, mid: 0, treble: 0, beat: false, bpm: 0 },
+        msg: { type: "light_show_studio/music/frame", targets: null, level: 0, bass: 0, mid: 0, treble: 0, beat: false },
+        sent: 0, tgtAt: 0, pendBeat: false,
       };
       await this._musicSession();
+      started = true;
+      if (gone()) {
+        release();
+        this._hass?.callWS({ type: "light_show_studio/music/stop" }).catch(() => {});
+        return;
+      }
     } catch (err) {
-      this._musicStarting = false;
-      this._musicTeardown();
-      this._musicErr(this._err(err, "Couldn't start music mode."));
+      release();
+      if (started) this._hass?.callWS({ type: "light_show_studio/music/stop" }).catch(() => {});
+      if (!gone()) this._musicErr(this._ctlErr(err, "Couldn't start music mode."));
       return;
     }
     this._musicStarting = false;
@@ -7207,8 +8058,14 @@ class LightShowStudioPanel extends HTMLElement {
     } catch (e) {
       this._wake = null;
     }
+    if (gone() || !this._musicRunning) {
+      // closed (or stopped) while the wake lock was pending
+      if (gone()) this._musicStop(true);
+      else this._musicTeardown();
+      return;
+    }
     clearInterval(this._mTimer);
-    this._mTimer = setInterval(() => this._musicTick(), 40);
+    this._mTimer = setInterval(() => this._musicTick(), 50); // 20 Hz: analysis, meters and frames to Home Assistant
     this._renderMusic();
     void m;
   }
@@ -7222,7 +8079,7 @@ class LightShowStudioPanel extends HTMLElement {
         await this._musicSession();
         this._musicErr("");
       } catch (err) {
-        this._musicErr(this._err(err, "Couldn't change music mode."));
+        this._musicErr(this._ctlErr(err, "Couldn't change music mode."));
       }
     }, ms);
   }
@@ -7234,26 +8091,33 @@ class LightShowStudioPanel extends HTMLElement {
     a.an.getByteFrequencyData(a.freq);
     a.an.getByteTimeDomainData(a.time);
     let s = 0;
-    for (const v of a.time) {
-      const d = (v - 128) / 128;
+    const tm = a.time;
+    for (let i = 0; i < tm.length; i++) {
+      const d = (tm[i] - 128) / 128;
       s += d * d;
     }
     const bw = a.ctx.sampleRate / a.an.fftSize;
+    const fq = a.freq;
     const band = (lo, hi) => {
-      const i0 = Math.max(1, Math.floor(lo / bw)), i1 = Math.min(a.freq.length - 1, Math.max(i0, Math.ceil(hi / bw)));
+      const i0 = Math.max(1, Math.floor(lo / bw)), i1 = Math.min(fq.length - 1, Math.max(i0, Math.ceil(hi / bw)));
       let t = 0;
-      for (let i = i0; i <= i1; i++) t += a.freq[i];
+      for (let i = i0; i <= i1; i++) t += fq[i];
       return t / (i1 - i0 + 1) / 255;
     };
-    const raw = { level: Math.sqrt(s / a.time.length) * 2, bass: band(20, 150), mid: band(150, 2000), treble: band(2000, 10000) };
-    const f = { level: 0, bass: 0, mid: 0, treble: 0 };
-    for (const k of Object.keys(f)) {
+    const raw = a.raw, f = a.f;
+    raw.level = Math.sqrt(s / tm.length) * 2;
+    raw.bass = band(20, 150);
+    raw.mid = band(150, 2000);
+    raw.treble = band(2000, 10000);
+    for (const k of MUSIC_KEYS) {
       a.peak[k] = Math.max(raw[k], a.peak[k] * 0.995, 0.03); // auto-gain: scale by a slowly falling peak
       f[k] = Math.min(1, raw[k] / a.peak[k]);
     }
     // onsets: low-frequency energy against its running average, at most one per 250 ms
     const e = raw.bass + 0.5 * raw.mid;
-    const avg = a.hist.length ? a.hist.reduce((x, y) => x + y, 0) / a.hist.length : e;
+    let sum = 0;
+    for (let i = 0; i < a.hist.length; i++) sum += a.hist[i];
+    const avg = a.hist.length ? sum / a.hist.length : e;
     a.hist.push(e);
     if (a.hist.length > 43) a.hist.shift();
     let beat = false;
@@ -7269,15 +8133,34 @@ class LightShowStudioPanel extends HTMLElement {
       a.last = now;
     }
     a.prevE = e;
-    this._musicPaint({ ...f, beat, bpm: a.bpm });
+    f.beat = beat;
+    f.bpm = a.bpm;
+    this._musicPaint(f);
+    if (beat) a.pendBeat = true; // a beat that falls between two sends is not lost
     if (now < a.back) return; // rate limited: wait
-    const msg = { type: "light_show_studio/music/frame", targets: this._musicTargets(), level: +f.level.toFixed(3), bass: +f.bass.toFixed(3), mid: +f.mid.toFixed(3), treble: +f.treble.toFixed(3), beat };
+    if (now - a.sent < 40) return; // at most ~20 frames a second to Home Assistant
+    a.sent = now;
+    if (!a.msg.targets || now - a.tgtAt > 1000) {
+      a.msg.targets = this._musicTargets();
+      a.tgtAt = now;
+    }
+    const msg = a.msg;
+    msg.level = +f.level.toFixed(3);
+    msg.bass = +f.bass.toFixed(3);
+    msg.mid = +f.mid.toFixed(3);
+    msg.treble = +f.treble.toFixed(3);
+    msg.beat = a.pendBeat;
+    a.pendBeat = false;
     if (a.bpm) msg.bpm = a.bpm;
+    else delete msg.bpm;
     this._hass.connection.sendMessagePromise(msg).catch((err) => {
       if (err?.code === "rate_limited") a.back = performance.now() + 600;
-      else if (err?.code === "not_found" && this._musicRunning && performance.now() > (a.restartAt || 0)) {
+      else if (err?.code === "unauthorized" && this._musicRunning) {
+        this._musicStop();
+        this._musicErr("You can't control that light.");
+      } else if (err?.code === "not_found" && this._musicRunning && performance.now() > (a.restartAt || 0)) {
         a.restartAt = performance.now() + 1500; // the session ended (someone changed the light): start again
-        this._musicSession().catch((e) => this._musicErr(this._err(e, "Music mode stopped.")));
+        this._musicSession().catch((e) => this._musicErr(this._ctlErr(e, "Music mode stopped.")));
       }
     });
   }
@@ -7285,10 +8168,13 @@ class LightShowStudioPanel extends HTMLElement {
   _musicPaint(f) {
     const r = this._muRefs;
     if (!r) return;
-    for (const k of Object.keys(r.bars)) {
+    for (const k in r.bars) {
       const v = Math.round((f[k] || 0) * 100);
-      r.bars[k].i.style.width = v + "%";
-      r.bars[k].bar.setAttribute("aria-valuenow", String(v));
+      const b = r.bars[k];
+      if (b.v === v) continue; // unchanged since the last tick: no style or attribute write
+      b.v = v;
+      b.i.style.width = v + "%";
+      b.bar.setAttribute("aria-valuenow", String(v));
     }
     if (f.beat) {
       r.beat.classList.add("on");
@@ -7305,7 +8191,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._mAudio = null;
     try {
       a?.stream.getTracks().forEach((t) => t.stop());
-      a?.ctx.close();
+      if (a && a.ctx.state !== "closed") a.ctx.close().catch(() => {});
     } catch (e) {
       /* already closed */
     }
@@ -7326,6 +8212,11 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   // --- fades ---------------------------------------------------------------------------------------------------------
+  static _ONLY_HINT = {
+    any: "Runs whether or not anyone is home.",
+    home: "Only turns on if at least one person is home when it starts.",
+    away: "Only turns on if nobody is home when it starts.",
+  };
   static _FADES = [[0, "Off"], [2, "2 s"], [30, "30 s"], [120, "2 min"], [600, "10 min"]];
 
   static _fadeText(s) {
@@ -7371,7 +8262,17 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   // --- live updates ------------------------------------------------------
+  // coalesced: at most once per animation frame (the first call, which picks the tab, runs at once)
   _update() {
+    if (this._tab === null) return this._updateNow();
+    if (this._updRaf) return;
+    this._updRaf = requestAnimationFrame(() => {
+      this._updRaf = 0;
+      if (this._hass && this.isConnected) this._updateNow();
+    });
+  }
+
+  _updateNow() {
     const player = this._findPlayer();
     const shows = (player?.attributes.queue || []).length;
     const status = { lights: this._strands ? this._strands.length > 0 : this._lights().length > 0, player: !!player, shows: shows > 0 };
@@ -7389,9 +8290,7 @@ class LightShowStudioPanel extends HTMLElement {
   }
 
   _findPlayerId() {
-    return Object.keys(this._hass.states).find(
-      (k) => k.startsWith("media_player.") && this._hass.states[k].attributes.queue !== undefined
-    );
+    return this._entIds().player || undefined;
   }
 
   _findPlayer() {
@@ -7448,4 +8347,4 @@ class LightShowStudioPanel extends HTMLElement {
   }
 }
 
-customElements.define("light-show-studio-panel", LightShowStudioPanel);
+if (!customElements.get("light-show-studio-panel")) customElements.define("light-show-studio-panel", LightShowStudioPanel);

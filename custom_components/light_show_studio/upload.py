@@ -1,16 +1,19 @@
 """POST /api/light_show_studio/shows/upload: add .fseq and song files to the show library."""
 from __future__ import annotations
 
+import logging
 import os
 from http import HTTPStatus
 
+import aiohttp
 from aiohttp import web
 
 from homeassistant.components.http import KEY_HASS, HomeAssistantView
 from homeassistant.core import HomeAssistant
 
-from .library import AUDIO_EXTS, FSEQ_EXT, SHOW_PLAYER_KEY, library_for, sanitize_name
+from .library import AUDIO_EXTS, FSEQ_EXT, SHOW_PLAYER_KEY, invalidate_scan, library_for, sanitize_name, show_id_for
 
+_LOGGER = logging.getLogger(__name__)
 MAX_BYTES = 300 * 1024 * 1024  # per file
 MAX_TOTAL = 1024 * 1024 * 1024  # per request
 MAX_FILES = 20
@@ -48,6 +51,8 @@ class ShowUploadView(HomeAssistantView):
                 parts += 1
                 if parts > MAX_PARTS:
                     return self.json_message("Too many form fields", HTTPStatus.BAD_REQUEST)
+                if not isinstance(part, aiohttp.BodyPartReader):  # a nested multipart is not accepted
+                    return self.json_message("Invalid upload", HTTPStatus.BAD_REQUEST)
                 if part.name == "show":
                     raw = b""
                     while (piece := await part.read_chunk(MAX_FIELD + 1)) and len(raw) <= MAX_FIELD:
@@ -88,15 +93,30 @@ class ShowUploadView(HomeAssistantView):
                     await hass.async_add_executor_job(f.close)
             if not files:
                 return self.json_message("No files in the upload", HTTPStatus.BAD_REQUEST)
+            player = hass.data.get(SHOW_PLAYER_KEY)
             for name, tmp in files:
                 try:
+                    show_id = show_id_for(name, show)
+                    if player and player.show and player.show.id == show_id and player.state != "idle":
+                        await player.async_stop(reason="show_replaced")  # its files are about to change under it
                     show_id = await hass.async_add_executor_job(library.commit_upload, tmp, name, show)
                 except ValueError as err:
-                    return self.json_message(f"File not accepted: {err}", HTTPStatus.BAD_REQUEST)
+                    _LOGGER.warning("Upload of %r refused: %s", name, err)
+                    return self.json_message("File not accepted", HTTPStatus.BAD_REQUEST)
+                except OSError:
+                    _LOGGER.exception("Could not store the upload %r", name)
+                    return self.json_message("Couldn't store the upload", HTTPStatus.INTERNAL_SERVER_ERROR)
                 if show_id not in touched:
                     touched.append(show_id)
+        except (aiohttp.ClientError, ValueError):  # a malformed multipart body
+            _LOGGER.warning("Malformed upload request", exc_info=True)
+            return self.json_message("Invalid upload", HTTPStatus.BAD_REQUEST)
+        except OSError:
+            _LOGGER.exception("Could not store an upload")
+            return self.json_message("Couldn't store the upload", HTTPStatus.INTERNAL_SERVER_ERROR)
         finally:
             await hass.async_add_executor_job(_cleanup, [tmp for _, tmp in files])
+            invalidate_scan(hass)
         if player := hass.data.get(SHOW_PLAYER_KEY):
             await player.async_refresh()
         return self.json({"shows": touched})

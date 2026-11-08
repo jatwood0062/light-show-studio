@@ -63,6 +63,16 @@ function smooth121(src, w, h) {
   return out;
 }
 
+// The frame-wide level shift of `frame` against `dark` (auto exposure, ambient light drifting between frames), for channel c of nc
+// interleaved channels: the 40th percentile of the difference on a sparse sample, within +-12 (a lit scene does not count as drift;
+// lit pixels are a minority, and a stray lamp turning on cannot move it by more than the cap).
+function frameShift(frame, dark, c = 0, nc = 1) {
+  const n = frame.length / nc, stride = Math.max(1, n >> 14), v = [];
+  for (let i = 0; i < n; i += stride) v.push(frame[i * nc + c] - dark[i * nc + c]);
+  v.sort((a, b) => a - b);
+  return clamp(v[Math.floor(v.length * 0.4)] ?? 0, -12, 12);
+}
+
 // bright local maxima of (allOn - dark): [{x, y, px, py, v}] strongest first, at least minDist apart
 export function findBlobs(dark, allOn, w, h, opts = {}) {
   const diff = new Uint8ClampedArray(w * h);
@@ -137,8 +147,9 @@ export function decodeScan(frames, n, w, h, opts = {}) {
   const B = scanBits(n), F = 2 + 2 * B;
   if (frames.length < F) throw new Error(`Expected ${F} frames, got ${frames.length}.`);
   const dark = frames[0];
+  const shift = frames.map((f, k) => (k === 0 ? 0 : frameShift(f, dark)));
   const blobs = findBlobs(dark, frames[1], w, h, opts);
-  const val = (k, b) => Math.max(0, frames[k][b.py * w + b.px] - dark[b.py * w + b.px]);
+  const val = (k, b) => Math.max(0, frames[k][b.py * w + b.px] - dark[b.py * w + b.px] - shift[k]);
   const A = [], C = [];
   const med = new Array(B);
   for (let b = 0; b < B; b++) {
@@ -236,9 +247,9 @@ export function lumaFromRGB(rgb, w, h) {
 
 // the reading at a blob's brightest pixel (the sub-pixel centre is not needed here), minus the same in dark: [r, g, b], not below 0.
 // One pixel, not a 3x3 mean: strips with LEDs 3 px apart would otherwise mix their neighbours' colours into the reading.
-function sampleRGB(frame, dark, w, px, py) {
+function sampleRGB(frame, dark, w, px, py, sh = [0, 0, 0]) {
   const o = (py * w + px) * 3;
-  return [Math.max(0, frame[o] - dark[o]), Math.max(0, frame[o + 1] - dark[o + 1]), Math.max(0, frame[o + 2] - dark[o + 2])];
+  return [Math.max(0, frame[o] - dark[o] - sh[0]), Math.max(0, frame[o + 1] - dark[o + 1] - sh[1]), Math.max(0, frame[o + 2] - dark[o + 2] - sh[2])];
 }
 
 const l1 = (v) => v[0] + v[1] + v[2];
@@ -279,6 +290,8 @@ export function decodeColourScan(frames, n, w, h, opts = {}) {
     diff[p] = sum / 6; // about the level a white LED would have in luma
   }
   const blobs = findBlobsInDiff(diff, w, h, opts);
+  // per frame and channel: the level shift of auto exposure / ambient light against the dark frame
+  const shift = frames.map((f, k) => (k === 0 ? [0, 0, 0] : [0, 1, 2].map((c) => frameShift(f, dark, c, 3))));
   const minSep = opts.minSeparation ?? 0.2, minMargin = opts.minMargin ?? 0.35, minLevel = opts.minLevel ?? 0.3;
   const minCal = opts.minCal ?? 12;
   const rej = { badCal: 0, badDigit: 0, badCheck: 0, outOfRange: 0, duplicate: 0 };
@@ -287,7 +300,7 @@ export function decodeColourScan(frames, n, w, h, opts = {}) {
     const cal = [];
     let bad = false;
     for (let k = 0; k < 3; k++) {
-      const v = sampleRGB(frames[1 + k], dark, w, bl.px, bl.py), m = l1(v);
+      const v = sampleRGB(frames[1 + k], dark, w, bl.px, bl.py, shift[1 + k]), m = l1(v);
       if (m < minCal) {
         bad = true;
         break;
@@ -301,7 +314,7 @@ export function decodeColourScan(frames, n, w, h, opts = {}) {
     const digits = [];
     let conf = 1;
     for (let j = 0; j <= D && !bad; j++) {
-      const r = classifyColour(sampleRGB(frames[COLOUR_CAL + j], dark, w, bl.px, bl.py), cal);
+      const r = classifyColour(sampleRGB(frames[COLOUR_CAL + j], dark, w, bl.px, bl.py, shift[COLOUR_CAL + j]), cal);
       if (r.cls < 0 || r.margin < minMargin || r.level < minLevel) {
         bad = true;
         break;
@@ -515,17 +528,19 @@ export function topBrightness(luma) {
 // Camera frames are shrunk first (downscaleLuma) so ~80 of them fit in memory and every search is fast; coordinates come
 // back in full-size camera pixels (y down), like the point scan's.
 // ======================================================================================================================
-export const GLOW = { minAnchors: 16, maxAnchors: 24, minWidth: 6, maxWidth: 10, darkEvery: 12, minConf: 0.35, smallWidth: 480 };
+export const GLOW = { minAnchors: 16, maxAnchors: 24, minWidth: 3, maxWidth: 6, darkEvery: 12, minConf: 0.35, smallWidth: 480, minPeak: 2 };
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
 // Which stretches to light for a run of `count` pixels: [{i, start, width, c}], start relative to the run, c = the stretch's
-// centre pixel (a fraction when the width is even). Default ~16-24 anchors, 6-10 pixels wide; opts {anchors, width}.
+// centre pixel (a fraction when the width is even). Default ~16-24 anchors, 3-6 pixels wide (small flashes: the glow of a few
+// pixels is a tight patch whose centre is well defined, and it spills less on neighbours; findGlow's `hint` says when a spot needs
+// more, see glowAdaptWidth); opts {anchors, width}.
 export function glowPlan(count, opts = {}) {
   const n = Math.max(1, Math.floor(count));
   let A = opts.anchors ?? Math.min(GLOW.maxAnchors, Math.max(GLOW.minAnchors, Math.round(1.2 * Math.sqrt(n))));
   A = clamp(Math.round(A), 1, n);
-  let width = opts.width ?? clamp(Math.round((0.6 * n) / A), GLOW.minWidth, GLOW.maxWidth);
+  let width = opts.width ?? clamp(Math.round((0.35 * n) / A), GLOW.minWidth, GLOW.maxWidth);
   width = clamp(Math.round(width), 1, n);
   const anchors = [];
   let last = -1;
@@ -599,43 +614,176 @@ function medianOf(arr, stride = 1) {
   return s.length ? s[s.length >> 1] : 0;
 }
 
-// lit - dark, minus the frame-wide shift (auto exposure), then softened: the picture the search works on
-function glowDiff(dark, lit, w, h) {
-  const d = new Float32Array(w * h);
-  for (let i = 0; i < d.length; i++) d[i] = lit[i] - dark[i];
-  const off = medianOf(d, Math.max(1, d.length >> 14));
-  for (let i = 0; i < d.length; i++) d[i] -= off; // signed: blurring keeps the noise symmetric, so its size can be measured
-  return blur121(blur121(d, w, h), w, h);
+// Robust background for lit - dark. Exposure and white balance drift scale the whole picture a little (lit = a + b * dark outside
+// the glow), so a line is fitted through the per-brightness-bin medians of (dark, lit): the glow covers a minority of every bin, so
+// medians ignore it. With a flat dark picture only the offset is taken. Returns {a, b}.
+function glowBackground(dark, lit) {
+  const n = dark.length, stride = Math.max(1, n >> 14), idx = [];
+  for (let i = 0; i < n; i += stride) idx.push(i);
+  idx.sort((p, q) => dark[p] - dark[q]);
+  const bins = 8, per = Math.floor(idx.length / bins), bx = [], by = [];
+  if (per >= 8) {
+    for (let k = 0; k < bins; k++) {
+      const part = idx.slice(k * per, (k + 1) * per);
+      const dk = part.map((i) => dark[i]).sort((p, q) => p - q), df = part.map((i) => lit[i] - dark[i]).sort((p, q) => p - q);
+      bx.push(dk[dk.length >> 1]);
+      by.push(df[df.length >> 1]);
+    }
+  }
+  const off = by.length ? medianOf(by) : medianOf(Float32Array.from(idx, (i) => lit[i] - dark[i]));
+  if (bx.length < 4 || bx[bx.length - 1] - bx[0] < 8) return { a: off, b: 0 };
+  let mx = 0, my = 0;
+  for (let k = 0; k < bx.length; k++) (mx += bx[k]), (my += by[k]);
+  mx /= bx.length;
+  my /= by.length;
+  let sxx = 0, sxy = 0;
+  for (let k = 0; k < bx.length; k++) (sxx += (bx[k] - mx) ** 2), (sxy += (bx[k] - mx) * (by[k] - my));
+  const b = clamp(sxy / (sxx || 1), -0.4, 0.6);
+  return { a: my - b * mx, b }; // lit - dark = a + b * dark outside the glow
 }
 
-// The glow in one anchor frame. dark and lit: small luma arrays (w x h). Returns
-// {x, y, conf (0-1), peak, snr, area, dominance, reason}, x/y in full camera pixels (opts.f = camera pixels per small pixel);
-// reason is null when found, else "none" | "weak" | "wide" (x and y are null). Only blobs at least minArea small pixels big (and minCore
-// big at half their peak) count, so specks are ignored; the biggest by brightness-weighted mass wins. A sharper central cut gives the centre.
+// subtract a plane fitted (trimmed against the glow) to d: slow gradients left by gain drift or a lamp changing do not make blobs
+function removePlane(d, w, h) {
+  const stride = Math.max(1, Math.floor(d.length / 6000)), pts = [];
+  for (let i = 0; i < d.length; i += stride) pts.push(i);
+  const ab = pts.map((i) => Math.abs(d[i]));
+  const mad = Math.max(0.2, medianOf(ab) * 1.4826);
+  let keep = pts, c = [0, 0, 0];
+  for (let it = 0; it < 4; it++) {
+    // least squares of d = c0 + c1 * u + c2 * v, u and v in -0.5..0.5
+    const A = [0, 0, 0, 0, 0, 0, 0, 0, 0], B = [0, 0, 0];
+    for (const i of keep) {
+      const u = (i % w) / w - 0.5, v = ((i / w) | 0) / h - 0.5, r = [1, u, v];
+      for (let p = 0; p < 3; p++) {
+        B[p] += r[p] * d[i];
+        for (let q = 0; q < 3; q++) A[p * 3 + q] += r[p] * r[q];
+      }
+    }
+    const iv = inv3(A);
+    if (!iv) return;
+    c = [0, 1, 2].map((p) => iv.inv[p * 3] * B[0] + iv.inv[p * 3 + 1] * B[1] + iv.inv[p * 3 + 2] * B[2]);
+    keep = pts.filter((i) => {
+      const u = (i % w) / w - 0.5, v = ((i / w) | 0) / h - 0.5;
+      return Math.abs(d[i] - (c[0] + c[1] * u + c[2] * v)) < 3 * mad;
+    });
+    if (keep.length < 100) return;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) d[y * w + x] -= c[0] + c[1] * (x / w - 0.5) + c[2] * (y / h - 0.5);
+}
+
+// lit - dark with the background (auto exposure, white balance, slow gradients) taken out, then softened: the picture the search
+// works on. opts {darkAfter: a second dark picture taken after the lit one (averaged with dark: drift in between cancels), passes}.
+// Returns {s, sat (fraction of lit pixels at the sensor's top), gain (the fitted b)}.
+function glowDiffEx(dark, lit, w, h, opts = {}) {
+  let dk = dark;
+  if (opts.darkAfter && opts.darkAfter.length === dark.length) {
+    dk = new Float32Array(dark.length);
+    for (let i = 0; i < dk.length; i++) dk[i] = 0.5 * (dark[i] + opts.darkAfter[i]);
+  }
+  const bg = glowBackground(dk, lit);
+  const d = new Float32Array(w * h);
+  let sat = 0;
+  for (let i = 0; i < d.length; i++) {
+    d[i] = lit[i] - dk[i] - bg.a - bg.b * dk[i]; // signed: blurring keeps the noise symmetric, so its size can be measured
+    if (lit[i] >= (opts.satLevel ?? 250)) sat++;
+  }
+  removePlane(d, w, h);
+  let s = blur121(blur121(d, w, h), w, h);
+  for (let k = 2; k < (opts.passes ?? 2); k += 2) s = blur121(blur121(s, w, h), w, h);
+  return { s, sat: sat / d.length, gain: 1 + bg.b };
+}
+// How much of white noise survives (s - blur(s)) when s is white noise softened by `passes` double-121 blurs: the ratio of the
+// two kernels' energies, so measuring the high-pass noise gives the noise of s itself.
+const _nr = {};
+function noiseRatio(passes) {
+  if (_nr[passes]) return _nr[passes];
+  let K = [1];
+  const conv = (a, b) => {
+    const o = new Array(a.length + b.length - 1).fill(0);
+    a.forEach((x, i) => b.forEach((y, j) => (o[i + j] += x * y)));
+    return o;
+  };
+  for (let q = 0; q < passes; q++) K = conv(K, [0.25, 0.5, 0.25]);
+  const AB = conv(K, [0.25, 0.5, 0.25]);
+  const pad = (AB.length - K.length) / 2, Kp = AB.map((_, i) => K[i - pad] || 0);
+  const e = (a) => a.reduce((s, v) => s + v * v, 0), dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
+  const kk = e(Kp) ** 2, hh = kk - 2 * dot(Kp, AB) ** 2 + e(AB) ** 2;
+  return (_nr[passes] = Math.sqrt(Math.max(1e-6, hh / kk)));
+}
+function glowDiff(dark, lit, w, h, opts = {}) {
+  return glowDiffEx(dark, lit, w, h, opts).s;
+}
+
+// ---- the glow in one anchor frame -----------------------------------------------------------------------------------------
+// dark and lit: small luma arrays (w x h). Returns
+//   {x, y, conf (0-1), peak, snr, area, dominance, reason, size, elong, angle, saturated, clipped, hint, alt, ...}
+// x/y in full camera pixels (opts.f = camera pixels per small pixel); reason is null when found, else "none" | "weak" | "wide"
+// (x and y are null). Only blobs at least minArea small pixels big (and minCore big at half their peak) count, so specks are
+// ignored. Patches that merge into one connected region but have separate peaks (valley between them) are told apart, and the
+// best of all candidates wins by brightness-weighted mass (and the prior, below). The centre is the centroid of the brightest part
+// (above a fraction of the peak that grows with the signal-to-noise: a clean glow ignores its faint skirt, a dim one keeps more
+// pixels to average the noise).
+// Options:
+//   expect: {x, y, r}   where the glow should be (full camera pixels), e.g. glowPredict(). A soft prior: candidates farther than
+//                       r from it lose weight; one far outside is trusted less. Resolves "two patches" and reflections.
+//   gate:   {x, y, r}   hard search window (full camera pixels): nothing outside counts.
+//   darkAfter           a second dark picture (taken after the lit one) averaged with dark.
+//   dim                 true: look harder (more smoothing, lower floor); findGlow also does this by itself when nothing was found.
+//   floor, minPeak, minArea, minCore, maxAreaFrac, satLevel
+// Extra result fields: size (equivalent diameter at half peak, camera px), elong (major/minor axis, >= 1), angle (major axis, radians,
+// y down), spread {sx, sy} (std dev, camera px), saturated (fraction of lit pixels at the top), clipped (touches the picture edge),
+// alt: other candidates [{x, y, share, peak}] strongest first (share = their weight relative to the winner) so a later step can
+// choose the one that fits the string (glowReconsider), hint: null | "wider" | "narrower" (what the next try should change),
+// off (distance from expect in units of r), gain (fitted exposure change).
 export function findGlow(dark, lit, w, h, opts = {}) {
+  const r1 = findGlowPass(dark, lit, w, h, opts, opts.dim ? 12 : 2);
+  if (!opts.dim && (r1.reason === "none" || r1.reason === "weak") && !opts.noRetry) {
+    const r2 = findGlowPass(dark, lit, w, h, { ...opts, minPeak: (opts.minPeak ?? GLOW.minPeak) * 0.6 }, 12);
+    if (!r2.reason) return { ...r2, hint: r2.hint || "wider" };
+    if (r1.reason === "none" && r2.reason === "weak") return r2;
+  }
+  return r1;
+}
+
+function findGlowPass(dark, lit, w, h, opts, passes) {
   const f = opts.f ?? 1;
-  const s = glowDiff(dark, lit, w, h);
-  const med = medianOf(s, Math.max(1, s.length >> 14));
-  const dev = new Float32Array(Math.ceil(s.length / Math.max(1, s.length >> 14)));
-  for (let i = 0, j = 0; i < s.length; i += Math.max(1, s.length >> 14), j++) dev[j] = Math.abs(s[i] - med);
-  const sigma = Math.max(0.25, medianOf(dev) * 1.4826);
-  const t0 = Math.max(opts.floor ?? 1.2, 3.5 * sigma);
+  const { s, sat, gain } = glowDiffEx(dark, lit, w, h, { ...opts, passes });
+  const stride = Math.max(1, s.length >> 14);
+  const med = medianOf(s, stride);
+  const dev = new Float32Array(Math.ceil(s.length / stride));
+  for (let i = 0, j = 0; i < s.length; i += stride, j++) dev[j] = Math.abs(s[i] - med);
+  const sigmaAll = medianOf(dev) * 1.4826; // inflated when the glow itself fills much of the picture
+  // noise from the picture's fine structure only: what is left of s after taking away its own softening, divided by how much of white
+  // noise that leaves. Big soft patches and gradients do not count, so a dim wide glow is not hidden by its own size.
+  const s2 = blur121(s, w, h), hp = new Float32Array(dev.length);
+  for (let i = 0, j = 0; i < s.length; i += stride, j++) hp[j] = s[i] - s2[i];
+  const hpMed = medianOf(hp);
+  for (let j = 0; j < hp.length; j++) hp[j] = Math.abs(hp[j] - hpMed);
+  const sigmaHF = (medianOf(hp) * 1.4826) / noiseRatio(passes);
+  const sigma = Math.max(0.15, sigmaHF, 0.3 * sigmaAll);
+  const t0 = Math.max(opts.floor ?? (passes > 2 ? 0.6 : 1.0), 3.5 * sigma);
   const cap = 4 * t0;
   const minArea = opts.minArea ?? Math.max(6, Math.round(w * h * 0.00006));
+  const minCore = opts.minCore ?? (passes > 2 ? 60 : 16); // the heavy smoothing of the dim search spreads a speck over ~25 pixels
+  const none = (reason, extra = {}) => ({ x: null, y: null, conf: 0, peak: 0, snr: 0, area: 0, dominance: 0, reason, saturated: sat, gain, hint: reason === "weak" || reason === "none" ? "wider" : reason === "wide" ? "narrower" : null, alt: [], ...extra });
+  // the search window
+  const gt = opts.gate;
+  if (gt) {
+    const gx = (gt.x + 0.5) / f - 0.5, gy = (gt.y + 0.5) / f - 0.5, gr = (gt.r ?? 0.2 * w * f) / f;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if ((x - gx) ** 2 + (y - gy) ** 2 > gr * gr) s[y * w + x] = 0;
+  }
   // connected regions above t0
-  const lab = new Int32Array(s.length);
-  const stack = new Int32Array(s.length);
+  const lab = new Int32Array(s.length), stack = new Int32Array(s.length);
   const regions = [];
   for (let p0 = 0; p0 < s.length; p0++) {
     if (s[p0] <= t0 || lab[p0]) continue;
     const id = regions.length + 1;
-    let sp = 0, area = 0, mass = 0, peak = 0;
+    let sp = 0, area = 0, peak = 0;
     stack[sp++] = p0;
     lab[p0] = id;
     while (sp) {
       const p = stack[--sp];
       area++;
-      mass += Math.min(s[p], cap) - t0; // clipped: how far it spreads counts more than a flare's brightness
       if (s[p] > peak) peak = s[p];
       const x = p % w;
       if (x > 0 && s[p - 1] > t0 && !lab[p - 1]) (lab[p - 1] = id), (stack[sp++] = p - 1);
@@ -643,31 +791,202 @@ export function findGlow(dark, lit, w, h, opts = {}) {
       if (p >= w && s[p - w] > t0 && !lab[p - w]) (lab[p - w] = id), (stack[sp++] = p - w);
       if (p + w < s.length && s[p + w] > t0 && !lab[p + w]) (lab[p + w] = id), (stack[sp++] = p + w);
     }
-    regions.push({ id, area, mass, peak });
+    regions.push({ id, area, peak });
   }
-  // a glint is small at half its peak, a puddle is not: count each region's pixels above half of its own peak
-  for (let p = 0; p < s.length; p++) if (lab[p] && s[p] > 0.5 * regions[lab[p] - 1].peak) regions[lab[p] - 1].core = (regions[lab[p] - 1].core || 0) + 1;
-  const minCore = opts.minCore ?? 16;
-  const real = regions.filter((r) => r.area >= minArea && (r.core || 0) >= minCore && r.peak >= 6 * sigma); // noise ripples don't reach 6 sigma
-  const none = (reason, extra = {}) => ({ x: null, y: null, conf: 0, peak: 0, snr: 0, area: 0, dominance: 0, reason, ...extra });
+  if (!regions.length) return none("none");
+  // split regions that hold several peaks with a real valley between them: a second smoothing finds the peaks
+  const group = new Int32Array(s.length); // candidate id (1-based) of each pixel
+  const cands = [];
+  for (const r of regions) {
+    if (r.area < minArea || r.peak < 4 * sigma) continue; // can't be a candidate; saves the peak search
+    const pk = [];
+    for (let p = 0; p < s.length; p++) {
+      if (lab[p] !== r.id || s2[p] < 0.35 * r.peak || s2[p] <= t0 || s2[p] < 6 * sigma) continue;
+      const x = p % w, y = (p / w) | 0;
+      let isMax = true;
+      for (let dy = -1; dy <= 1 && isMax; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const q = yy * w + xx, later = dy > 0 || (dy === 0 && dx > 0);
+          if (later ? s2[q] > s2[p] : s2[q] >= s2[p]) {
+            isMax = false;
+            break;
+          }
+        }
+      }
+      if (isMax) pk.push(p);
+    }
+    pk.sort((a, b) => s2[b] - s2[a]);
+    const kept = [];
+    for (const p of pk) {
+      const x = p % w, y = (p / w) | 0;
+      let distinct = true;
+      for (const q of kept) {
+        const qx = q % w, qy = (q / w) | 0, dist = Math.hypot(qx - x, qy - y);
+        if (dist < 3) {
+          distinct = false;
+          break;
+        }
+        let lo = Infinity;
+        const steps = Math.ceil(dist);
+        for (let k = 1; k < steps; k++) lo = Math.min(lo, s2[Math.round(y + ((qy - y) * k) / steps) * w + Math.round(x + ((qx - x) * k) / steps)]);
+        if (lo >= 0.8 * s2[p] || s2[p] - lo < 5 * sigma) {
+          distinct = false;
+          break;
+        }
+      }
+      if (distinct) kept.push(p);
+      if (kept.length >= 6) break;
+    }
+    if (!kept.length) kept.push(pk[0] ?? 0);
+    const base = cands.length;
+    for (const p of kept) cands.push({ region: r.id, px: p % w, py: (p / w) | 0, area: 0, mass: 0, peak: 0, core: 0, x0: w, x1: 0, y0: h, y1: 0 });
+    // each pixel to its nearest peak
+    for (let p = 0; p < s.length; p++) {
+      if (lab[p] !== r.id) continue;
+      const x = p % w, y = (p / w) | 0;
+      let bi = base;
+      if (kept.length > 1) {
+        let bd = Infinity;
+        for (let k = 0; k < kept.length; k++) {
+          const d = (cands[base + k].px - x) ** 2 + (cands[base + k].py - y) ** 2;
+          if (d < bd) (bd = d), (bi = base + k);
+        }
+      }
+      group[p] = bi + 1;
+      const c = cands[bi];
+      c.area++;
+      c.mass += Math.min(s[p], cap) - t0; // clipped: how far it spreads counts more than a flare's brightness
+      if (s[p] > c.peak) c.peak = s[p];
+      if (x < c.x0) c.x0 = x;
+      if (x > c.x1) c.x1 = x;
+      if (y < c.y0) c.y0 = y;
+      if (y > c.y1) c.y1 = y;
+    }
+  }
+  for (let p = 0; p < s.length; p++) if (group[p] && s[p] > 0.5 * cands[group[p] - 1].peak) cands[group[p] - 1].core++;
+  const real = cands.filter((c) => c.area >= minArea && c.core >= minCore && c.peak >= 6 * sigma); // noise ripples don't reach 6 sigma
   if (!real.length) return none("none");
-  const best = real.reduce((a, b) => (b.mass > a.mass ? b : a));
-  const total = real.reduce((a, r) => a + r.mass, 0);
-  const snr = best.peak / sigma, dominance = best.mass / total;
-  const info = { peak: best.peak, snr, area: best.area, dominance };
-  if (best.peak < (opts.minPeak ?? 3) || snr < 6) return none("weak", info);
-  if (best.area > (opts.maxAreaFrac ?? 0.25) * w * h) return none("wide", info);
-  const cut = Math.max(t0, 0.25 * best.peak);
-  let sx = 0, sy = 0, sw = 0;
-  for (let p = 0; p < s.length; p++) {
-    if (lab[p] !== best.id || s[p] <= cut) continue;
-    const wt = s[p] - cut;
-    sx += wt * (p % w);
-    sy += wt * ((p / w) | 0);
-    sw += wt;
+  // the prior: where the glow should be
+  const ex = opts.expect;
+  const exx = ex ? (ex.x + 0.5) / f - 0.5 : 0, exy = ex ? (ex.y + 0.5) / f - 0.5 : 0, exr = ex ? Math.max(2, (ex.r ?? 0.15 * w * f) / f) : 1;
+  for (const c of real) {
+    c.off = ex ? Math.hypot(c.px - exx, c.py - exy) / exr : 0;
+    c.score = c.mass * (ex ? Math.max(0.04, Math.exp(-0.5 * c.off * c.off)) : 1);
   }
-  const conf = clamp((snr - 4) / 10, 0, 1) * clamp((dominance - 0.4) / 0.4, 0, 1);
-  return { x: (sx / sw + 0.5) * f - 0.5, y: (sy / sw + 0.5) * f - 0.5, conf, reason: null, ...info };
+  const best = real.reduce((a, b) => (b.score > a.score ? b : a));
+  const total = real.reduce((a, c) => a + c.score, 0);
+  const snr = best.peak / sigma, dominance = best.score / total;
+  const info = { peak: best.peak, snr, area: best.area, dominance };
+  const minPeak = opts.minPeak ?? GLOW.minPeak;
+  if (best.peak < minPeak || snr < 6) return none("weak", info);
+  if (best.area > (opts.maxAreaFrac ?? 0.25) * w * h) return none("wide", info);
+  // centre: the brightest part of the winner
+  const frac = clamp(0.5 - (0.2 * (30 - snr)) / 22, 0.3, 0.5); // snr >= 30: half of the peak, snr 8: 0.3
+  const cut = Math.max(t0, frac * best.peak), gid = cands.indexOf(best) + 1;
+  let sx = 0, sy = 0, sw = 0, sxx = 0, syy = 0, sxy = 0, half = 0;
+  for (let p = 0; p < s.length; p++) {
+    if (group[p] !== gid || s[p] <= cut) continue;
+    const wt = s[p] - cut, x = p % w, y = (p / w) | 0;
+    sx += wt * x;
+    sy += wt * y;
+    sw += wt;
+    sxx += wt * x * x;
+    syy += wt * y * y;
+    sxy += wt * x * y;
+    if (s[p] > 0.5 * best.peak) half++;
+  }
+  if (!sw) return none("weak", info);
+  const mx = sx / sw, my = sy / sw;
+  const vxx = Math.max(0, sxx / sw - mx * mx) + 1 / 12, vyy = Math.max(0, syy / sw - my * my) + 1 / 12, vxy = sxy / sw - mx * my;
+  const tr = vxx + vyy, dt = Math.sqrt(Math.max(0, ((vxx - vyy) / 2) ** 2 + vxy * vxy));
+  const l1v = tr / 2 + dt, l2v = Math.max(1e-6, tr / 2 - dt);
+  const saturated = sat;
+  const edge = best.x0 <= 0 || best.y0 <= 0 || best.x1 >= w - 1 || best.y1 >= h - 1;
+  const priorF = ex ? clamp(1 - 0.3 * (best.off - 2), 0.3, 1) : 1;
+  const conf =
+    clamp((snr - 4.5) / 6, 0, 1) * clamp((dominance - 0.4) / 0.4, 0, 1) * (saturated > 0.01 ? clamp(1 - 4 * (saturated - 0.01), 0.4, 1) : 1) * (edge ? 0.7 : 1) * priorF;
+  const alt = real
+    .filter((c) => c !== best)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map((c) => ({ x: (c.px + 0.5) * f - 0.5, y: (c.py + 0.5) * f - 0.5, share: c.score / best.score, peak: c.peak }));
+  const hint = snr < 10 && best.peak < 8 ? "wider" : saturated > 0.02 || best.area > 0.12 * w * h ? "narrower" : null;
+  return {
+    x: (mx + 0.5) * f - 0.5,
+    y: (my + 0.5) * f - 0.5,
+    conf,
+    reason: null,
+    ...info,
+    size: 2 * Math.sqrt(half / Math.PI) * f,
+    elong: Math.sqrt(l1v / l2v),
+    angle: 0.5 * Math.atan2(2 * vxy, vxx - vyy),
+    spread: { sx: Math.sqrt(vxx) * f, sy: Math.sqrt(vyy) * f },
+    saturated,
+    clipped: edge,
+    hint,
+    alt,
+    off: best.off,
+    gain,
+  };
+}
+
+// Where the next spot's glow should be, from the spots found so far in string order. done: [{c, x, y, conf?, status?}] (found ones;
+// anything without a position, or with status other than "ok", is ignored); c = the next spot's centre pixel. Returns
+// {x, y, r, known} (full camera pixels) for findGlow's `expect`, or null with nothing found yet. With two or more found spots it
+// carries on in a straight line from the last two; r is 1.6 times the expected step (at least opts.minR, default 80) so a bend still
+// lands inside; with one, it stays there with a wide r (opts.wideR, default 240).
+export function glowPredict(done, c, opts = {}) {
+  const ok = done.filter((a) => a && Number.isFinite(a.x) && Number.isFinite(a.y) && (a.status == null || a.status === "ok") && (a.conf == null || a.conf >= (opts.minConf ?? GLOW.minConf)));
+  if (!ok.length) return null;
+  const a = ok[ok.length - 1];
+  if (ok.length < 2) return { x: a.x, y: a.y, r: opts.wideR ?? 240, known: 1 };
+  const b = ok[ok.length - 2], dc = a.c - b.c || 1, t = (c - a.c) / dc;
+  const stepLen = Math.hypot(a.x - b.x, a.y - b.y) * Math.abs(t);
+  return { x: a.x + (a.x - b.x) * t, y: a.y + (a.y - b.y) * t, r: Math.max(opts.minR ?? 80, 1.6 * stepLen), known: ok.length };
+}
+
+// Choose between a glow's candidates once the neighbours are known: spots found with low confidence because another patch of
+// similar weight was in the picture (anchor.alt from findGlow) take whichever candidate lies closest to the straight line between
+// their confident neighbours. anchors: [{c, x, y, conf, alt?, manual?}] in string order. Returns a new array (same objects where
+// nothing changed); a changed one has x, y moved, conf raised to just above minConf, `picked: "alt"`.
+export function glowReconsider(anchors, opts = {}) {
+  const minConf = opts.minConf ?? GLOW.minConf;
+  const solid = (a) => a && a.x != null && a.conf >= 0.6;
+  return anchors.map((a, k) => {
+    if (!a || a.manual || !a.alt || !a.alt.length || (a.x != null && a.conf >= 0.6)) return a;
+    let p = null, q = null;
+    for (let j = k - 1; j >= 0 && !p; j--) if (solid(anchors[j])) p = anchors[j];
+    for (let j = k + 1; j < anchors.length && !q; j++) if (solid(anchors[j])) q = anchors[j];
+    let ex, ey, tol;
+    if (p && q) {
+      const t = (a.c - p.c) / (q.c - p.c);
+      ex = p.x + (q.x - p.x) * t;
+      ey = p.y + (q.y - p.y) * t;
+      tol = Math.hypot(q.x - p.x, q.y - p.y) * 0.5 + 20;
+    } else if (p || q) {
+      ex = (p || q).x;
+      ey = (p || q).y;
+      tol = 150;
+    } else return a;
+    const options = [...(a.x != null ? [{ x: a.x, y: a.y, share: 1 }] : []), ...a.alt].map((o) => ({ ...o, d: Math.hypot(o.x - ex, o.y - ey) }));
+    options.sort((u, v) => u.d - v.d);
+    const pick = options[0];
+    if (!pick || pick.d > tol || (options[1] && options[1].d < pick.d * 1.5 && options[1].d < tol * 0.5)) return a; // still ambiguous
+    if (a.x != null && pick.x === a.x && pick.y === a.y) return { ...a, conf: Math.max(a.conf, minConf + 0.01), picked: "alt" };
+    return { ...a, x: pick.x, y: pick.y, conf: Math.max(a.conf || 0, minConf + 0.01), picked: "alt" };
+  });
+}
+
+// A better width for the next try of a spot, from what the last try showed (findGlow's hint): "wider" +50% (more light), "narrower"
+// -35% (less spill); within [GLOW.minWidth, GLOW.maxWidth * 2]. Returns the new width in pixels (integer).
+export function glowAdaptWidth(width, hint, opts = {}) {
+  const lo = opts.min ?? GLOW.minWidth, hi = opts.max ?? GLOW.maxWidth * 2;
+  if (hint === "wider") return clamp(Math.max(width + 1, Math.round(width * 1.5)), lo, hi);
+  if (hint === "narrower") return clamp(Math.min(width - 1, Math.round(width * 0.65)), lo, hi);
+  return width;
 }
 
 // Where the person tapped (full camera pixels): nudged to the centre of any glow within `radius` small pixels, else exactly there.
@@ -796,6 +1115,30 @@ export function solveGlow(count, anchors, opts = {}) {
   }
   return { x, y, est, found: ids.length, anchors: out, step, ok: true };
 }
+// Glow scan from several angles: each run's spots get a 3D place from the multi-view solve; every pixel of the run is then placed
+// along the run between them (straight lines in 3D between neighbouring spots, carried on straight beyond the first and last spot).
+// count: pixels in the run; known: [{c (pixel position along the run, may be fractional), p: [x, y, z]}]. Returns {pos (Float32Array
+// 3 * count), est (Uint8Array: 1 = farther than 0.6 of a spot step from any spot, or beyond the ends), found} or null with < 2 spots.
+export function glowRun3D(count, known) {
+  const n = Math.max(1, Math.floor(count));
+  const k = known.filter((q) => q && q.p && q.p.every(Number.isFinite)).sort((a, b) => a.c - b.c);
+  if (k.length < 2) return null;
+  const pos = new Float32Array(3 * n), est = new Uint8Array(n);
+  const gaps = [];
+  for (let j = 1; j < k.length; j++) gaps.push(k[j].c - k[j - 1].c);
+  const step = medianOf(gaps) || n;
+  let j = 0;
+  for (let i = 0; i < n; i++) {
+    while (j + 2 < k.length && k[j + 1].c < i) j++;
+    const a = k[j], b = k[j + 1], t = (i - a.c) / (b.c - a.c || 1);
+    for (let c = 0; c < 3; c++) pos[3 * i + c] = a.p[c] + (b.p[c] - a.p[c]) * t;
+    let near = Infinity;
+    for (const q of k) near = Math.min(near, Math.abs(q.c - i));
+    if (near > 0.6 * step) est[i] = 1;
+  }
+  return { pos, est, found: k.length };
+}
+
 
 // ======================================================================================================================
 // Glow scan in colour: up to three stretches glow at once, one red, one green, one blue, and are told apart by colour, so

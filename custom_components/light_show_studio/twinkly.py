@@ -78,11 +78,12 @@ async def async_discover(timeout: float = 2.5) -> dict[str, str]:
         end = loop.time() + timeout
         while (left := end - loop.time()) > 0:
             try:
-                data, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 1024), left)
+                data, (src, _port) = await asyncio.wait_for(loop.sock_recvfrom(sock, 1024), left)
             except TimeoutError:
                 break
-            if (reply := parse_discovery(data)) and is_lan_ipv4(reply[0]) and len(found) < 64:
-                found[reply[0]] = reply[1][:100]  # the IP comes from the packet: only LAN addresses count
+            # the reply may only name the address it came from
+            if (reply := parse_discovery(data)) and reply[0] == src and is_lan_ipv4(src) and len(found) < 64:
+                found[src] = reply[1][:100]
     except OSError as err:
         _LOGGER.debug("Twinkly discovery failed: %s", err)
     finally:
@@ -128,6 +129,8 @@ class TwinklyClient:
                                      allow_redirects=False) as resp:
             check(resp)
             data = await read_json(resp)
+        if not isinstance(data, dict):
+            raise ValueError("unexpected login reply")
         token = data["authentication_token"]
         if not isinstance(token, str) or not 0 < len(token) <= 256:
             raise ValueError("unexpected login reply")
@@ -135,8 +138,14 @@ class TwinklyClient:
                                      headers={"X-Auth-Token": token}, timeout=TIMEOUT,
                                      allow_redirects=False) as resp:
             check(resp)
+        try:
+            lifetime = float(data.get("authentication_token_expires_in", 14400))
+        except (TypeError, ValueError):
+            lifetime = 14400.0
+        if not 0 <= lifetime < 1e7:  # also rejects nan / inf
+            lifetime = 14400.0
         self._token = token
-        self._expires = time.monotonic() + float(data.get("authentication_token_expires_in", 14400))
+        self._expires = time.monotonic() + lifetime
 
     async def _login_once(self) -> None:
         async with self._lock:
@@ -283,7 +292,7 @@ class TwinklyController(C9Controller):
             self._armed = True
             if self._last is not None:
                 self._hw_frame(self._last)
-        except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+        except Exception as err:  # noqa: BLE001  anything: back off rather than storm logins
             _LOGGER.debug("Twinkly %s: can't start realtime mode: %s", self.host, err)
             self._arm_after = time.monotonic() + ARM_RETRY
             if self._keepalive is None and not self._closed:  # a still picture sends no frames: retry from _tick
@@ -295,8 +304,9 @@ class TwinklyController(C9Controller):
         try:
             async with self._mode_lock:
                 await self.client.async_set_mode(mode)
-        except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+        except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Twinkly %s: can't set mode %s: %s", self.host, mode, err)
+            self._arm_after = time.monotonic() + ARM_RETRY
 
     def _tick(self) -> None:
         self._keepalive = None
@@ -319,5 +329,6 @@ class TwinklyController(C9Controller):
             if await self.client.async_get_mode() != "rt":
                 self._armed = False
                 self._start_arm()  # a still picture sends no new frame, so re-arm now (it resends the last one)
-        except (aiohttp.ClientError, TimeoutError, KeyError, ValueError) as err:
+        except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Twinkly %s: mode check failed: %s", self.host, err)
+            self._arm_after = time.monotonic() + ARM_RETRY

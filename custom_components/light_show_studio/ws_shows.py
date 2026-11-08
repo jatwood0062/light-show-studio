@@ -1,6 +1,7 @@
 """Websocket API for the player card: the show library and live player state."""
 from __future__ import annotations
 
+import logging
 import os
 from datetime import timedelta
 from typing import Any
@@ -14,7 +15,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .const import SCHEDULER_KEY, CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_TYPE, DOMAIN, TYPE_PLAYER
 from .effects import EFFECT_LIST
-from .library import SHOW_PLAYER_KEY, Show, library_for
+from .library import SHOW_PLAYER_KEY, Show, async_scan, invalidate_scan, library_for
 from .outputs import normalize_speakers
 from .transitions import MODES
 
@@ -22,6 +23,7 @@ TICK = timedelta(seconds=1)
 MAX_SPEAKERS = 16
 SHOW_ID = vol.All(str, vol.Length(min=1, max=255))  # a file or folder name
 MAX_SHOWS = 2000
+_LOGGER = logging.getLogger(__name__)
 
 
 def async_register(hass: HomeAssistant) -> None:
@@ -50,7 +52,12 @@ async def _refresh(hass: HomeAssistant) -> None:
 @websocket_api.async_response
 async def ws_list(hass: HomeAssistant, connection: websocket_api.ActiveConnection,
                   msg: dict[str, Any]) -> None:
-    shows = await hass.async_add_executor_job(library_for(hass).scan)
+    try:
+        shows = await async_scan(hass)
+    except OSError:
+        _LOGGER.exception("Could not read the show library")
+        connection.send_error(msg["id"], "failed", "Couldn't read the show library")
+        return
     connection.send_result(msg["id"], {"shows": [_row(s) for s in shows]})
 
 
@@ -64,11 +71,14 @@ async def ws_delete(hass: HomeAssistant, connection: websocket_api.ActiveConnect
         await player.async_stop(reason="show_deleted")
     try:
         found = await hass.async_add_executor_job(library_for(hass).delete, msg["show_id"])
-    except (OSError, ValueError) as err:
-        connection.send_error(msg["id"], "failed", str(err))
+    except (OSError, ValueError):
+        _LOGGER.exception("Could not delete show %r", msg["show_id"])
+        invalidate_scan(hass)
+        connection.send_error(msg["id"], "failed", "Couldn't delete that show")
         return
+    invalidate_scan(hass)
     if not found:
-        connection.send_error(msg["id"], "not_found", f"No show {msg['show_id']}")
+        connection.send_error(msg["id"], "not_found", "No such show")
         return
     if scheduler := hass.data.get(SCHEDULER_KEY):
         scheduler.remove_show(msg["show_id"])  # gone from every playlist
@@ -86,9 +96,11 @@ async def ws_reorder(hass: HomeAssistant, connection: websocket_api.ActiveConnec
                      msg: dict[str, Any]) -> None:
     try:
         await hass.async_add_executor_job(library_for(hass).reorder, msg["order"])
-    except OSError as err:
-        connection.send_error(msg["id"], "failed", str(err))
+    except OSError:
+        _LOGGER.exception("Could not save the show order")
+        connection.send_error(msg["id"], "failed", "Couldn't save the order")
         return
+    invalidate_scan(hass)
     await _refresh(hass)
     connection.send_result(msg["id"], {})
 

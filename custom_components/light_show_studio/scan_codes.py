@@ -187,3 +187,25 @@ def decode_pixel(levels: Sequence[float], n: int) -> int | None:
 def simulate(n: int, index: int, dark: float = 0.0, lit: float = 1.0) -> list[float]:
     """What a camera pixel sitting on LED `index` would read in every frame (for tests)."""
     return [lit if is_lit(index, f) else dark for f in range(frame_count(n))]
+
+
+# --- how long the phone should wait before it takes the picture --------------------------------------
+HOLD_DEFAULT = 350  # ms between the frame command returning and the camera picture
+HOLD_MIN = 250
+HOLD_MAX = 1500
+
+
+def hold_ms(kind: str = "govee", latency_ms: float | None = None, peak_ms: float | None = None) -> int:
+    """Recommended wait (ms) between a scan/frame (or scan/segment) reply and the camera picture. Frames go out over
+    UDP and the light needs a moment to show them: 350 by default; WLED (Wi-Fi, a frame may be forwarded on to a
+    second controller) 450. Measured round-trip times (`latency_ms` typical, `peak_ms` recent worst, from the health
+    check) add to that: a light that sometimes answers in 700 ms gets a long hold. Always between 250 and 1500."""
+    base = 450 if kind == "wled" else HOLD_DEFAULT
+    extra = 0.0
+    for value, weight in ((latency_ms, 1.0), (peak_ms, 0.8)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+            extra = max(extra, weight * value)
+    # network delay counts once to get the frame there (and the phone's own delay on top): only latency above a
+    # healthy 50 ms matters
+    extra = max(0.0, extra - 50.0)
+    return int(max(HOLD_MIN, min(HOLD_MAX, round(base + extra))))

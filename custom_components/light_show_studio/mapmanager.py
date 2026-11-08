@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any
@@ -26,6 +27,7 @@ from .zoneplayer import ZoneRunner
 _LOGGER = logging.getLogger(__name__)
 SAVE_DELAY = 1.0
 AD_HOC = "area:"  # id prefix of the zone made on the fly for "this area" (never saved)
+SCAN_RATE = 30  # frame / segment commands per second a scan accepts
 SCAN_IDLE = 120.0  # seconds without a frame (or a stop) after which a scan lets the light go
 
 
@@ -40,6 +42,17 @@ class _Scan:
         self.ctl, self.first, self.count, self.token, self.mode = ctl, first, count, token, mode
         self.frames = scan_codes.frames_for(count, mode)
         self.handle: asyncio.TimerHandle | None = None
+        self._bucket, self._bucket_at = float(SCAN_RATE), time.monotonic()
+
+    def allow(self) -> bool:
+        """Token bucket: SCAN_RATE commands a second (and as many in a burst)."""
+        now = time.monotonic()
+        self._bucket = min(float(SCAN_RATE), self._bucket + (now - self._bucket_at) * SCAN_RATE)
+        self._bucket_at = now
+        if self._bucket < 1:
+            return False
+        self._bucket -= 1
+        return True
 
 
 def _kind(entry: ConfigEntry) -> str:
@@ -372,15 +385,22 @@ class MapManager:
     # --- camera scan --------------------------------------------------------------------------
     @property
     def scanning(self) -> list[str]:
-        return list(self._scans)
+        # a scan whose light a person has taken is over, even before the next frame or the idle timer notices
+        return [eid for eid, scan in self._scans.items() if scan.ctl.scanning]
+
+    def _hold_ms(self, entry_id: str, ctl: C9Controller) -> int:
+        entry = self.hass.config_entries.async_get_entry(entry_id)
+        kind = _kind(entry) if entry is not None else "govee"
+        return scan_codes.hold_ms(kind, getattr(ctl, "latency_ms", None), getattr(ctl, "latency_peak_ms", None))
 
     async def async_scan_start(self, entry_id: str, token: object, first: int = 0, count: int | None = None,
                                mode: str = scan_codes.DEFAULT_MODE) -> dict[str, Any]:
         """Take a light for a scan: any effect or zone on it stops and it goes dark, ready for code frames. Only
         pixels first..first+count-1 are coded (the rest stay dark); the whole light by default. mode: "colour"
         (default: red/green/blue frames) or "white" (binary white flashes). Returns the number of pixels coded, of
-        frames, the first pixel, the level of a lit channel and the mode. The scan ends on scan_stop, SCAN_IDLE seconds without a frame,
-        or when something else takes the light."""
+        frames, the first pixel, the level of a lit channel, the mode and `hold_ms` (how long the phone should wait
+        after a frame command before taking the picture). The scan ends on scan_stop, SCAN_IDLE seconds without a
+        frame, or when something else takes the light."""
         if mode not in scan_codes.MODES:
             raise ZoneError(f"Scan mode must be one of {', '.join(scan_codes.MODES)}")
         ctl = self.controller(entry_id)
@@ -396,42 +416,63 @@ class MapManager:
         if old := self._scans.pop(entry_id, None):
             self._cancel_idle(old)
         scan = _Scan(ctl, first, count, token, mode)
-        info = {"bulbs": count, "frames": scan.frames, "first": first, "level": scan_codes.level_for(mode), "mode": mode}
+        info = {"bulbs": count, "frames": scan.frames, "first": first, "level": scan_codes.level_for(mode), "mode": mode,
+                "hold_ms": self._hold_ms(entry_id, ctl)}
         self._scans[entry_id] = scan
         self._arm_idle(entry_id, scan)  # from now on, whatever happens, the light is let go
         try:
             await ctl.async_claim_scan()
             if self._scans.get(entry_id) is not scan:  # stopped or replaced while the light was turning on
-                return info
-            ctl.push_scan_frame([scan_codes.OFF] * ctl.bulbs)
+                if entry_id not in self._scans:  # stopped (socket closed, scan/stop): the claim came too late for scan_stop to undo
+                    ctl.release_scan(True)
+                    raise ZoneError("The scan was stopped before it began")
+                return info  # replaced: the newer scan owns the light now
+            if not ctl.push_scan_frame([scan_codes.OFF] * ctl.bulbs):
+                raise ZoneError("The light was taken by something else, so the scan stopped")
         except BaseException:
             self.scan_stop(entry_id, token)
             raise
         return info
 
-    async def async_scan_frame(self, entry_id: str, frame: int) -> None:
+    def _live_scan(self, entry_id: str, token: object | None = None) -> _Scan:
+        """The scan of a light. With a token, only the connection that started it may drive it."""
         scan = self._scans.get(entry_id)
         if scan is None:
             raise ZoneError("That light isn't being scanned")
+        if token is not None and scan.token is not token:
+            raise ZoneError("That scan was started by another connection")
+        return scan
+
+    def check_scan_owner(self, entry_id: str, token: object) -> None:
+        """Raise unless nothing is scanned or the scan is this token's (for scan/stop)."""
+        if entry_id in self._scans:
+            self._live_scan(entry_id, token)
+
+    def _show_scan_frame(self, entry_id: str, scan: _Scan, colours: list) -> None:
+        if not scan.allow():
+            raise ZoneError(f"Too many scan commands: at most {SCAN_RATE} a second")
+        if not scan.ctl.push_scan_frame(colours):  # a person took the light
+            self.scan_stop(entry_id, scan.token, restore=False)
+            raise ZoneError("The light was taken by something else, so the scan stopped")
+        self._arm_idle(entry_id, scan)
+
+    async def async_scan_frame(self, entry_id: str, frame: int, token: object | None = None) -> None:
+        scan = self._live_scan(entry_id, token)
         if not 0 <= frame < scan.frames:
             raise ZoneError(f"Frame must be between 0 and {scan.frames - 1}")
         colours = [scan_codes.OFF] * scan.ctl.bulbs
         colours[scan.first : scan.first + scan.count] = scan_codes.frame_colours_for(scan.count, frame, scan.mode)
-        if not scan.ctl.push_scan_frame(colours):  # a person took the light
-            self.scan_stop(entry_id, restore=False)
-            raise ZoneError("The light was taken by something else, so the scan stopped")
-        self._arm_idle(entry_id, scan)
+        self._show_scan_frame(entry_id, scan, colours)
 
     async def async_scan_segment(self, entry_id: str, start: int | None = None, count: int | None = None,
-                                 colour: Sequence[int] | None = None, segments: Sequence[dict[str, Any]] | None = None) -> None:
+                                 colour: Sequence[int] | None = None, segments: Sequence[dict[str, Any]] | None = None,
+                                 token: object | None = None) -> None:
         """Glow scan: light only the given stretch(es) of the light, everything else off. Either start/count (one
         stretch, in `colour`, white at the scan level by default) or `segments`: up to 3 {start, count, colour}
         stretches lit at once (colour defaults to red, green, blue in that order), which lets the phone find three
         anchors per picture. start is a pixel of the light, not of the scan, and every stretch must lie inside the
         scanned pixels and not overlap another."""
-        scan = self._scans.get(entry_id)
-        if scan is None:
-            raise ZoneError("That light isn't being scanned")
+        scan = self._live_scan(entry_id, token)
         single = segments is None  # the old call: one white stretch
         if segments is None:
             if start is None or count is None:
@@ -455,10 +496,7 @@ class MapManager:
             if len(col) != 3 or not all(isinstance(v, int) and 0 <= v <= 255 for v in col):
                 raise ZoneError("A colour is three numbers from 0 to 255")
             colours[s : s + c] = [col] * c
-        if not scan.ctl.push_scan_frame(colours):  # a person took the light
-            self.scan_stop(entry_id, restore=False)
-            raise ZoneError("The light was taken by something else, so the scan stopped")
-        self._arm_idle(entry_id, scan)
+        self._show_scan_frame(entry_id, scan, colours)
 
     @callback
     def scan_stop(self, entry_id: str, token: object | None = None, restore: bool = True) -> None:

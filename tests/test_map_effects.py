@@ -54,8 +54,9 @@ def cloud(n=400, seed=3):
 
 
 # --- every effect ------------------------------------------------------------------------------------
-def test_the_list_is_exactly_the_seven_named_effects():
-    assert EFFECTS == ["Sweep", "Ripple", "Snowfall", "Rise", "Rainbow Wash", "Fireworks", "Breathe Outward"]
+def test_the_list_is_exactly_the_named_effects():
+    assert EFFECTS == ["Sweep", "Ripple", "Snowfall", "Rise", "Rainbow Wash", "Fireworks", "Breathe Outward",
+                       "Gradient Axis", "Plasma Field", "Candy Helix"]
     assert patterns.ALL_EFFECTS == patterns.PATTERN_EFFECTS + EFFECTS
     assert set(EFFECTS).isdisjoint(patterns.PATTERN_EFFECTS)
 
@@ -346,3 +347,73 @@ def test_string_effects_still_work_in_spatial_zones():
     assert all(v in patterns.PATTERN_EFFECTS for v in patterns.STRING_EQUIVALENT.values())
     assert patterns.light_effect("Ripple") == "Wave" and patterns.light_effect("Chase") == "Chase"
     assert patterns.light_effect("nonsense") == patterns.DEFAULT_EFFECT
+
+
+# --- the faster versions look like the plain formulas -----------------------------------------------------
+def _close(a, b, tol=1):
+    return len(a) == len(b) and all(abs(x - y) <= tol for p, q in zip(a, b) for x, y in zip(p, q))
+
+
+def _ref_fireworks(fx, t):
+    import math
+    hash_ = patterns._hash
+    pal, k = fx.palette, len(fx.palette)
+    FL, FE = 2.4, 0.8
+    out = [(int(c[0] * 0.04), int(c[1] * 0.04), int(c[2] * 0.04)) for c in fx.base]
+    level = [0.0] * fx.n
+    newest = int(t // FE)
+    for burst in range(newest - int(FL / FE), newest + 1):
+        tau = t - burst * FE
+        if not 0 <= tau < FL:
+            continue
+        life = (1 - tau / FL) ** 1.5
+        radius = 0.42 * (1 - math.exp(-3.2 * tau))
+        thick = 0.09 + 0.05 * tau
+        for g in fx.groups:
+            cx = g.lo[0] + g.span[0] * (0.15 + 0.7 * hash_(burst, 21 + g.index))
+            cy = g.lo[1] + g.span[1] * (0.25 + 0.65 * hash_(burst, 22 + g.index))
+            cz = g.lo[2] + g.span[2] * (0.15 + 0.7 * hash_(burst, 23 + g.index))
+            col = pal[int(hash_(burst, 24) * k) % k]
+            flash = tau < 0.15
+            hi2 = (radius + thick) ** 2
+            lo = radius - thick
+            lo2 = lo * lo if lo > 0 else -1.0
+            for j, x, y, z in zip(g.idx, g.xs, g.ys, g.zs):
+                d2 = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2
+                if flash and d2 < 0.01:
+                    v = 1.0
+                elif lo2 < d2 < hi2:
+                    v = (1 - abs(math.sqrt(d2) - radius) / thick) * life
+                else:
+                    continue
+                if v > level[j]:
+                    level[j] = v
+                    out[j] = (int(col[0] * v), int(col[1] * v), int(col[2] * v))
+    return out
+
+
+@pytest.mark.parametrize("t", [0.0, 0.05, 0.3, 0.9, 1.7, 2.3, 5.1, 40.0])
+def test_fireworks_matches_the_plain_version(t):
+    fx = plan_for("Fireworks", cloud(600)).mapfx_plan
+    assert fx.fireworks(t) == _ref_fireworks(fx, t)
+
+
+@pytest.mark.parametrize("t", [0.0, 0.7, 3.3, 19.0, 250.0])
+def test_ripple_and_breathe_match_the_formulas_within_a_level(t):
+    import math
+    plan = plan_for("Ripple", cloud(500))
+    fx = plan.mapfx_plan
+    tau = 2 * math.pi
+    ref_r, ref_b = [(0, 0, 0)] * fx.n, [(0, 0, 0)] * fx.n
+    for g in fx.groups:
+        for j, d, dn in zip(g.idx, g.dist, g.dn):
+            phase = d * 3.0 - t * 0.35
+            ring = math.floor(phase)
+            v = 0.05 + 0.95 * (0.5 + 0.5 * math.cos(tau * (phase - ring))) ** 4 * (1 - 0.5 * dn)
+            c = fx.palette[ring % len(fx.palette)]
+            ref_r[j] = (int(c[0] * v), int(c[1] * v), int(c[2] * v))
+            v = (0.5 + 0.5 * math.sin(tau * (t * 0.35 - dn))) ** 1.5 * 0.92 + 0.08
+            c = fx.base[j]
+            ref_b[j] = (int(c[0] * v), int(c[1] * v), int(c[2] * v))
+    assert _close(fx.ripple(t), ref_r)
+    assert _close(fx.breathe_outward(t), ref_b)

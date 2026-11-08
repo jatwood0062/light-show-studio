@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Sequence
 
+from .fade import scale_bytes
+
 _LOGGER = logging.getLogger(__name__)
 
 NONE, FADE, CROSSFADE, EFFECT = "none", "fade", "crossfade", "effect"
@@ -29,7 +31,7 @@ def fade(frame: bytes, k: float) -> bytes:
         return bytes(frame)
     if k <= 0.0:
         return bytes(len(frame))
-    return bytes(int(v * k) for v in frame)
+    return scale_bytes(frame, k)
 
 
 def blend(a: bytes, b: bytes, k: float) -> bytes:

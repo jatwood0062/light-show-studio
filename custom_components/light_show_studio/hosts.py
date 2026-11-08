@@ -12,6 +12,8 @@ from collections.abc import Iterable
 
 LAN_NETWORKS = tuple(ipaddress.IPv4Network(n) for n in (
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"))
+# link-local ranges that hold cloud metadata endpoints (169.254.169.254, 169.254.170.2)
+BLOCKED_NETWORKS = tuple(ipaddress.IPv4Network(n) for n in ("169.254.169.0/24", "169.254.170.0/24"))
 MAX_SOURCES = 32  # entries in a source allowlist
 
 
@@ -24,6 +26,8 @@ def is_lan_ipv4(value: object) -> bool:
     if addr is None or addr.is_unspecified or addr.is_multicast or addr.is_loopback or addr.is_reserved:
         return False
     if addr == ipaddress.IPv4Address("255.255.255.255"):
+        return False
+    if any(addr in net for net in BLOCKED_NETWORKS):
         return False
     return any(addr in net for net in LAN_NETWORKS)
 

@@ -10,6 +10,7 @@ Nothing here needs Home Assistant, so it is easy to test.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -24,6 +25,9 @@ FIREWORK_LIFE = 2.4  # seconds a burst lasts
 FIREWORK_EVERY = 0.8  # a new burst this often (they overlap)
 MAX_FLAKES = 60
 FLAKE_RADIUS = 0.09
+_LUT = 4096  # steps in the ripple / breathe lookup tables (a step is far below one brightness level)
+_RING = [(0.5 + 0.5 * math.cos(_TAU * k / _LUT)) ** 4 for k in range(_LUT + 1)]  # a ripple ring's profile
+_SWELL = [(0.5 + 0.5 * math.sin(_TAU * (-k / _LUT))) ** 1.5 * 0.92 + 0.08 for k in range(_LUT + 1)]  # breathe, by -phase
 _CELL = 0.12  # snow: size of the grid cells pixels are filed in
 
 
@@ -49,6 +53,19 @@ class _Group:
         self.dmax = max(max(self.dist), 1e-6)
         self.dn = [d / self.dmax for d in self.dist]
         self._cells: dict[tuple[int, int, int], list[int]] | None = None
+        self._by_x: tuple[list[float], list[int], list[float], list[float], list[float]] | None = None
+        self.ring_phase = [d * 3.0 for d in self.dist]  # ripple: what is the same every frame
+        self.ring_gain = [0.95 * (1 - 0.5 * dn) for dn in self.dn]
+
+    @property
+    def by_x(self) -> tuple[list[float], list[int], list[float], list[float], list[float]]:
+        """The pixels in order of x (xs, indexes in the zone, then each one's x, y, z), so a burst only visits the
+        ones whose x is near it. Worked out on first use."""
+        if self._by_x is None:
+            order = sorted(range(len(self.xs)), key=self.xs.__getitem__)
+            self._by_x = ([self.xs[j] for j in order], [self.idx[j] for j in order],
+                          [self.xs[j] for j in order], [self.ys[j] for j in order], [self.zs[j] for j in order])
+        return self._by_x
 
     @property
     def cells(self) -> dict[tuple[int, int, int], list[int]]:
@@ -102,12 +119,14 @@ class MapEffects:
         """Rings spreading out from the centre point, each ring in the next colour of the pattern."""
         out = [BLACK] * self.n
         pal, k = self.palette, len(self.palette)
-        cos, floor = math.cos, math.floor
+        floor = math.floor
+        ring_lut, steps = _RING, _LUT
+        shift = t * 0.35
         for g in self.groups:
-            for j, d, dn in zip(g.idx, g.dist, g.dn):
-                phase = d * 3.0 - t * 0.35
+            for j, ph, gain in zip(g.idx, g.ring_phase, g.ring_gain):
+                phase = ph - shift
                 ring = floor(phase)
-                v = 0.05 + 0.95 * (0.5 + 0.5 * cos(_TAU * (phase - ring))) ** 4 * (1 - 0.5 * dn)
+                v = 0.05 + ring_lut[int((phase - ring) * steps + 0.5)] * gain
                 c = pal[ring % k]
                 out[j] = (int(c[0] * v), int(c[1] * v), int(c[2] * v))
         return out
@@ -194,8 +213,11 @@ class MapEffects:
                 hi2 = (radius + thick) ** 2
                 lo = radius - thick
                 lo2 = lo * lo if lo > 0 else -1.0
-                for j, x, y, z in zip(g.idx, g.xs, g.ys, g.zs):
-                    d2 = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2
+                reach = max(radius + thick, 0.1) if flash else radius + thick  # nothing further out in x is lit
+                sxs, sidx, px, py, pz = g.by_x
+                for m in range(bisect_left(sxs, cx - reach), bisect_right(sxs, cx + reach)):
+                    j = sidx[m]
+                    d2 = (px[m] - cx) ** 2 + (py[m] - cy) ** 2 + (pz[m] - cz) ** 2
                     if flash and d2 < 0.01:
                         v = 1.0
                     elif lo2 < d2 < hi2:  # inside the shell (the cheap test first: most pixels are not)
@@ -210,11 +232,11 @@ class MapEffects:
     def breathe_outward(self, t: float) -> list[Colour]:
         """Brightness swells and ebbs in waves that travel out from the centre."""
         out = [BLACK] * self.n
-        sin = math.sin
-        base = self.base
+        base, lut, steps = self.base, _SWELL, _LUT
+        shift = t * 0.35
         for g in self.groups:
             for j, dn in zip(g.idx, g.dn):
-                v = (0.5 + 0.5 * sin(_TAU * (t * 0.35 - dn))) ** 1.5 * 0.92 + 0.08
+                v = lut[int(((dn - shift) % 1.0) * steps + 0.5)]  # the swell, by how far round its cycle (0-1)
                 c = base[j]
                 out[j] = (int(c[0] * v), int(c[1] * v), int(c[2] * v))
         return out
@@ -223,4 +245,7 @@ class MapEffects:
 _EFFECTS = {"Sweep": MapEffects.sweep, "Ripple": MapEffects.ripple, "Snowfall": MapEffects.snowfall,
             "Rise": MapEffects.rise, "Rainbow Wash": MapEffects.rainbow_wash, "Fireworks": MapEffects.fireworks,
             "Breathe Outward": MapEffects.breathe_outward}
+from .map_effects_extra import EXTRA_EFFECTS as _EXTRA  # noqa: E402  (Gradient Axis, Plasma Field, Candy Helix)
+
+_EFFECTS.update(_EXTRA)
 assert set(_EFFECTS) == set(patterns.MAP_EFFECTS)

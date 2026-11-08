@@ -93,6 +93,9 @@ class LightShowStudioCard extends HTMLElement {
 
   disconnectedCallback() {
     this._unsubscribe();
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._raf = 0;
+    this._frameMsg = null;
     clearTimeout(this._sendTimer);
     if (Object.keys(this._pending).length) this._send();
   }
@@ -137,6 +140,18 @@ class LightShowStudioCard extends HTMLElement {
   }
 
   _onFrame(m) {
+    // server frames can arrive faster than the screen refreshes: keep the newest and paint once per animation frame
+    this._frameMsg = m;
+    if (this._raf) return;
+    this._raf = requestAnimationFrame(() => {
+      this._raf = 0;
+      const f = this._frameMsg;
+      this._frameMsg = null;
+      if (f) this._applyFrame(f);
+    });
+  }
+
+  _applyFrame(m) {
     // a controller that knows its own geometry (Twinkly) sends it once; used only when the config has no layout
     let rebuild = false;
     if (!this._config.layout && !this._autoLayout && Array.isArray(m.layout) && m.layout.length) {
@@ -166,8 +181,11 @@ class LightShowStudioCard extends HTMLElement {
     const el = this._bulbs?.[i];
     if (!el) return;
     const lit = colour && colour !== "#000000";
-    el.style.background = lit ? colour : "";
-    el.style.boxShadow = lit ? `0 0 calc(var(--b, 18px) * 0.55) calc(var(--b, 18px) * 0.1) ${colour}` : "";
+    const key = lit ? colour : "";
+    if (el._c === key) return; // unchanged since the last paint
+    el._c = key;
+    el.style.background = key;
+    el.style.setProperty("--c", key); // the shared .bulb rule draws the glow from this
     el.classList.toggle("off", !lit);
   }
 
@@ -268,6 +286,7 @@ class LightShowStudioCard extends HTMLElement {
         .bulb { width: min(100%, calc(22px * var(--scale, 1))); aspect-ratio: 1; border-radius: 50%; cursor: pointer; box-sizing: border-box;
                 transition: background 0.08s; --b: 18px; }
         .strip.dis .bulb { cursor: not-allowed; }
+        .bulb:not(.off) { box-shadow: 0 0 calc(var(--b, 18px) * 0.55) calc(var(--b, 18px) * 0.1) var(--c); }
         .bulb.off { background: #26262e; box-shadow: inset 0 0 0 1px #3a3a44; }
         .strip.points { padding: 14px 12px; }
         ha-card, .strip { min-width: 0; max-width: 100%; box-sizing: border-box; }
@@ -575,25 +594,36 @@ class LightShowStudioCard extends HTMLElement {
 
   _updateStatus() {
     const root = this.shadowRoot;
-    const st = root?.querySelector(".status");
-    if (!st || !this._hass) return;
+    let q = this._sq;
+    if (!q || !q.st.isConnected) {
+      const st0 = root?.querySelector(".status");
+      q = this._sq = st0 ? { st: st0, warn: root.querySelector(".hint.warn"), info: root.querySelector(".paintinfo") } : null;
+    }
+    if (!q || !this._hass) return;
+    const st = q.st;
+    const text = (el, t) => {
+      if (el.textContent !== t) el.textContent = t;
+    };
+    const flag = (el, c, on) => {
+      if (el && el.classList.contains(c) !== on) el.classList.toggle(c, on);
+    };
     const s = this._hass.states[this._config.entity];
     const gone = !s || s.state === "unavailable" || s.state === "unknown";
-    if (!s) st.textContent = "Not found";
-    else if (gone) st.textContent = "Offline";
-    else if (s.state !== "on") st.textContent = "Off";
-    else st.textContent = s.attributes.effect || (s.attributes.per_bulb ? "Painted" : "Colour");
-    st.classList.toggle("bad", gone);
+    if (!s) text(st, "Not found");
+    else if (gone) text(st, "Offline");
+    else if (s.state !== "on") text(st, "Off");
+    else text(st, s.attributes.effect || (s.attributes.per_bulb ? "Painted" : "Colour"));
+    flag(st, "bad", gone);
     this._updatePattern(s);
-    this._strip?.classList.toggle("dis", gone);
-    this._tools?.classList.toggle("dis", gone);
-    const warn = root.querySelector(".hint.warn");
+    flag(this._strip, "dis", gone);
+    flag(this._tools, "dis", gone);
+    const warn = q.warn;
     const show = !gone && this._showActive();
-    warn.hidden = !show;
-    warn.textContent = show ? "A show is playing \u2014 your paint will be replaced." : "";
-    root.querySelector(".paintinfo").textContent = gone
+    if (warn.hidden !== !show) warn.hidden = !show;
+    text(warn, show ? "A show is playing \u2014 your paint will be replaced." : "");
+    text(q.info, gone
       ? ""
-      : "Mouse: click or drag. Touch: press and hold on the bulbs, then drag \u2014 or turn on Paint.";
+      : "Mouse: click or drag. Touch: press and hold on the bulbs, then drag \u2014 or turn on Paint.");
   }
 
   _error(text) {
@@ -604,7 +634,7 @@ class LightShowStudioCard extends HTMLElement {
   }
 }
 
-customElements.define("light-show-studio-card", LightShowStudioCard);
+if (!customElements.get("light-show-studio-card")) customElements.define("light-show-studio-card", LightShowStudioCard);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "light-show-studio-card",
