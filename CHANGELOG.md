@@ -4,6 +4,12 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.6.3] - 2026-11-09
+
+### Fixed
+- Saving a light schedule failed with "No light …" when it still named a light that had since been removed. Removed
+  lights are now dropped on save (the editor drops them too); it only asks you to pick again if nothing is left.
+
 ## [2.6.2] - 2026-11-08
 
 ### Added (Trace and edit)

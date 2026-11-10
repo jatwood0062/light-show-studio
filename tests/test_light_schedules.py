@@ -323,6 +323,11 @@ async def test_unknown_light_or_area_is_refused_on_save(hass):
         await save(s, targets={"areas": ["Moon base"]})
     await save(s, targets={"areas": ["porch_ha"]})  # a Home Assistant area id works, so do specials
     await save(s, targets={"areas": ["all"]})
+    # a light removed since the schedule was made is dropped, not an error, while something is left to drive
+    out = await save(s, targets={"lights": ["e1", "gone"]})
+    assert out["targets"]["lights"] == ["e1"]
+    out = await save(s, targets={"areas": ["porch"], "lights": ["gone"]})
+    assert out["targets"] == {"areas": ["porch"], "lights": []}
 
 
 @aio

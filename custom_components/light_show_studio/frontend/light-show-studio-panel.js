@@ -6570,6 +6570,8 @@ class LightShowStudioPanel extends HTMLElement {
       const pick = this._el("button", "ed-pick");
       pick.type = "button";
       pick.setAttribute("aria-expanded", String(this._lsLightsOpen));
+      // lights removed since the schedule was made are dropped so the save doesn't fail on them
+      if (lights.length) d.lights = d.lights.filter((id) => lights.some((l) => l.id === id));
       const names = d.lights.map((id) => lights.find((l) => l.id === id)?.title || "a light");
       pick.append(this._el("span", "", "or pick lights"), this._el("span", "m", names.length ? (names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0]) : `${lights.length} lights`));
       pick.onclick = () => {

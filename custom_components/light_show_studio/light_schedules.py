@@ -368,8 +368,12 @@ class LightScheduler:
         if mgr is None:
             return
         known = {row["entry_id"] for row in mgr.lights()}
-        if bad := [e for e in targets["lights"] if e not in known]:
-            raise ValueError(f"No light {bad[0]}")
+        # a light removed since the schedule was made is dropped, not an error: the editor can't show it to untick
+        if gone := [e for e in targets["lights"] if e not in known]:
+            _LOGGER.info("Light schedule: dropping %d removed light(s)", len(gone))
+            targets["lights"] = [e for e in targets["lights"] if e in known]
+            if not targets["lights"] and not targets["areas"]:
+                raise ValueError("The lights this schedule used were removed. Pick an area or light.")
         model = mgr.model
         if bad := [a for a in targets["areas"] if a not in SPECIAL_AREAS and model.area(a) is None]:
             raise ValueError(f"No area {bad[0]}")
