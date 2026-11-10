@@ -4,6 +4,13 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.6.4] - 2026-11-10
+
+### Fixed
+- "Login attempt failed" alerts from Sonos speakers: after a show, the speaker kept the show's song in its queue and
+  kept asking for it after its signed link expired. When a show ends and the speaker has stopped on the show's song,
+  that song is now cleared from the speaker's queue.
+
 ## [2.6.3] - 2026-11-09
 
 ### Fixed

@@ -5,6 +5,7 @@ import asyncio
 import logging
 from datetime import datetime
 
+from homeassistant.components.media_player import MediaPlayerEntityFeature
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import ServiceValidationError
@@ -19,6 +20,8 @@ _LOGGER = logging.getLogger(__name__)
 START_TIMEOUT = 15  # Music Assistant / Sonos can take a few seconds to start
 TRACK_ATTRS = ("media_content_id", "media_title")
 RUNNING = ("playing", "paused", "buffering")
+SHOW_MEDIA = "/xlights/"  # show songs are served from media/xlights
+CLEAR_DELAY = 10
 
 
 def _updated_at(state: State) -> datetime | None:
@@ -101,3 +104,23 @@ async def play_with_speaker(hass: HomeAssistant, player: SequencePlayer, seq: Fs
     if state is not None:
         unsub_follow = async_track_state_change_event(hass, entity_id, changed)
         task.add_done_callback(lambda _: unsub_follow())
+    task.add_done_callback(lambda _: hass.async_create_background_task(
+        clear_stale_queue(hass, entity_id), "light_show_studio clear speaker queue"))
+
+
+def _ours(state: State | None) -> bool:
+    """The speaker is stopped on a show song (its signed link expires, and Sonos keeps asking for it)."""
+    return (state is not None and state.state not in ("playing", "buffering")
+            and SHOW_MEDIA in str(state.attributes.get("media_content_id") or ""))
+
+
+async def clear_stale_queue(hass: HomeAssistant, entity_id: str) -> None:
+    """After a show, take its song off the speaker's queue once the speaker has stopped on it."""
+    await asyncio.sleep(CLEAR_DELAY)  # a playlist's next show starts its own song in this time
+    state = hass.states.get(entity_id)
+    if not _ours(state) or not int(state.attributes.get("supported_features") or 0) & MediaPlayerEntityFeature.CLEAR_PLAYLIST:
+        return
+    try:
+        await hass.services.async_call("media_player", "clear_playlist", {ATTR_ENTITY_ID: entity_id}, blocking=True)
+    except Exception as err:  # noqa: BLE001  tidying up must never break playback
+        _LOGGER.debug("Could not clear %s's queue: %s", entity_id, err)
