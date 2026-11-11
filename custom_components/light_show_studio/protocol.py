@@ -145,6 +145,49 @@ def _arp_table() -> dict[str, bool]:
     return out
 
 
+def arp_macs() -> dict[str, str] | None:
+    """{ip: mac} for every resolved entry in the kernel's ARP table; None when there is no table (not Linux). Blocking."""
+    out: dict[str, str] = {}
+    try:
+        with open("/proc/net/arp", encoding="ascii") as f:
+            next(f, None)
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 4 and int(parts[2], 16) & 0x2 and parts[3] != "00:00:00:00:00:00":
+                    out[parts[0]] = parts[3].lower()
+    except (OSError, ValueError):
+        return None
+    return out
+
+
+async def async_poke_neighbours(host: str, wait: float = 1.5) -> None:
+    """Send a status query to every address in `host`'s /24, so the kernel resolves whoever is there and a light
+    that moved shows up in the ARP table. 253 tiny packets; the caller keeps it rare."""
+    base = host.rsplit(".", 1)[0]
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    try:
+        for n in range(1, 255):
+            ip = f"{base}.{n}"
+            if ip != host and is_lan_ipv4(ip):
+                try:
+                    sock.sendto(_wrap("devStatus", {}), (ip, CMD_PORT))
+                except OSError:
+                    pass
+            if n % 32 == 0:
+                await asyncio.sleep(0.05)  # in small bursts, not one flood
+        await asyncio.sleep(wait)
+    finally:
+        sock.close()
+
+
+def moved_to(mac: str | None, host: str, macs: dict[str, str] | None) -> str | None:
+    """The address a light with this MAC answers at now, when that isn't `host`."""
+    if not mac or not macs:
+        return None
+    return next((ip for ip, m in macs.items() if m == mac.lower() and ip != host), None)
+
+
 async def async_probe(hosts: list[str], wait: float = 6.0) -> dict[str, bool] | None:
     """Fallback presence check when the scan can't run: poke each light (a status query), give the
     kernel time to re-check its address, then see whether it answered ARP. None if there's no ARP

@@ -10,10 +10,10 @@ from homeassistant.core import callback, CALLBACK_TYPE, HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
 
-from .const import CONF_DEVICE_ID, CONF_TYPE, DOMAIN, TYPE_PLAYER, TYPE_TWINKLY, TYPE_WLED
+from .const import CONF_DEVICE_ID, CONF_MAC, CONF_TYPE, DOMAIN, TYPE_PLAYER, TYPE_TWINKLY, TYPE_WLED
 from .controller import C9Controller
 from .hosts import host_taken, is_lan_ipv4
-from .protocol import async_probe, async_scan
+from .protocol import arp_macs, async_poke_neighbours, async_probe, async_scan, moved_to
 from .twinkly import TwinklyController, async_discover, async_gestalt
 from .wled import async_info
 
@@ -22,6 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 INTERVAL = 60
 FIRST_RUN = 10
 GOVEE_MISSES = 3
+POKE_EVERY = 600.0  # seconds between neighbourhood searches for one missing light
 TWINKLY_MISSES = 2
 WLED_MISSES = 2
 MAX_GESTALT_PROBES = 16  # discovery replies followed up per check
@@ -44,6 +45,7 @@ class HealthMonitor:
         self.hass = hass
         self._cancel: CALLBACK_TYPE | None = None
         self._stopped = False
+        self._poked: dict[str, float] = {}  # entry id -> when the neighbourhood was last searched for it
 
     def start(self) -> None:
         self._stopped = False
@@ -105,15 +107,30 @@ class HealthMonitor:
         unheard = [e for e in entries if e.data[CONF_HOST] not in found]
         probed = await async_probe([e.data[CONF_HOST] for e in unheard]) if unheard else {}
         _LOGGER.debug("Govee probe: %s", probed)
+        # the scan can't always be heard (another integration may take its replies), so a light is also known by its
+        # network (MAC) address: remembered while it answers, and looked for at another address when it stops
+        macs = await self.hass.async_add_executor_job(arp_macs)
         for entry in entries:
             ctl: C9Controller = entry.runtime_data
             host, device = entry.data[CONF_HOST], entry.data.get(CONF_DEVICE_ID)
+            if (host in found or (probed or {}).get(host)) and macs and (mac := macs.get(host)) \
+                    and entry.data.get(CONF_MAC) != mac:
+                self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_MAC: mac})
             if host in found:
                 ctl.mark_seen()
                 if not device and (dev := found[host].get("device")):
                     self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_DEVICE_ID: dev})
                 continue
             new = next((ip for ip, d in found.items() if device and d.get("device") == device), None)
+            mac = entry.data.get(CONF_MAC)
+            if not new and mac and probed is not None and not probed.get(host):
+                # gone from its address: has its MAC turned up at another? Ask the neighbours first (rarely), so
+                # the ARP table knows who is where now
+                new = moved_to(mac, host, macs)
+                if not new and time.monotonic() - self._poked.get(entry.entry_id, -POKE_EVERY) >= POKE_EVERY:
+                    self._poked[entry.entry_id] = time.monotonic()
+                    await async_poke_neighbours(host)
+                    new = moved_to(mac, host, await self.hass.async_add_executor_job(arp_macs))
             if new:
                 self._move(entry, new)
             elif probed is None:  # no way to tell (no ARP table): leave it as it is

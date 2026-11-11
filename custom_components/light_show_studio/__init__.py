@@ -26,6 +26,7 @@ from .const import (
     CONF_DEVICE_ID,
     CONF_FPP_REMOTES,
     CONF_FPP_SYNC,
+    CONF_MAC,
     CONF_DEVICE_OFFSET,
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
@@ -332,7 +333,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
 
 # Changes the entry can make without a reload: a light's device id being filled in, and the player's
 # speakers / transition, which the websocket commands have already applied to the running player.
-_IN_PLACE_DATA = (CONF_DEVICE_ID,)
+_IN_PLACE_DATA = (CONF_DEVICE_ID, CONF_MAC)
 _IN_PLACE_OPTIONS = (CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT)
 
 

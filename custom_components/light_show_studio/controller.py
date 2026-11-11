@@ -154,10 +154,24 @@ class C9Controller:
 
     # --- health ----------------------------------------------------------
     def mark_seen(self) -> None:
-        changed = self.online is not True
+        changed, back = self.online is not True, self.online is False
         self.online, self._misses, self.last_seen = True, 0, time.time()
+        if back and self.is_on and not self._identifying and not self._scanning:
+            self._recover()
         if changed:
             self._notify()
+
+    def _recover(self) -> None:
+        """The light is back after being unreachable (off Wi-Fi, power cut): it lost realtime mode and the picture,
+        so put both back instead of leaving it dark or on whatever it woke up with."""
+        last = self._hw_last
+        self._realtime = False
+        self._whole = None
+        self._wire = None
+        if last is not None:
+            self._hw_frame(last)
+        elif not self.show_mode and not self._zones:
+            self._render()
 
     def mark_missed(self, threshold: int) -> None:
         self._misses += 1

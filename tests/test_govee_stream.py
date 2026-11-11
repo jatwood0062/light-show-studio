@@ -150,3 +150,17 @@ async def test_twenty_ms_show_frames_all_get_through():
         await asyncio.sleep(0.02)
     assert lan.kinds().count("frame") == 10
     ctl.shutdown()
+
+
+@aio
+async def test_a_light_that_comes_back_gets_realtime_mode_and_its_picture_again():
+    lan = Lan()
+    ctl = Light(FakeHass(), lan)
+    ctl._hw_frame(RED)
+    ctl.mark_seen()  # first check: nothing to recover
+    assert lan.kinds() == ["brightness", "arm", "frame"]
+    ctl.mark_missed(1)
+    assert ctl.online is False
+    ctl.mark_seen()
+    assert lan.kinds()[3:] == ["brightness", "arm", "frame"]
+    ctl.shutdown()

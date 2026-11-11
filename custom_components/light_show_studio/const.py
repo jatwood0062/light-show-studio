@@ -15,6 +15,7 @@ CONF_TYPE = "type"  # "light" (default) or "player"
 TYPE_PLAYER = "player"
 CONF_SPEAKERS = "speakers"  # ordered list of media players; the first leads
 CONF_AUDIO_OFFSET = "audio_offset"
+CONF_MAC = "mac"  # a Govee light's network (MAC) address, learned from the ARP table: finds it again at a new IP
 CONF_FPP_SYNC = "fpp_sync"  # player option: send FPP MultiSync so show controllers holding the show play in step
 CONF_FPP_REMOTES = "fpp_remotes"  # ...to these IPs (comma separated; empty = multicast to all)
 CONF_ALLOWED_SOURCES = "allowed_sources"  # player option: comma separated IPs / networks allowed to send DDP / E1.31 ("" = any LAN address)

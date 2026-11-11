@@ -4,6 +4,18 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.7.3] - 2026-11-11
+
+### Added
+- A Govee light that changes IP address is now also found by its network (MAC) address. Following it used to depend
+  on hearing the light's reply to a scan, which another integration listening on the same port (Home Assistant's
+  Govee light local) can take. The MAC is remembered while the light answers; when it stops answering, its
+  neighbourhood (/24) is asked once every 10 minutes and the light is moved to wherever its MAC turns up.
+
+### Fixed
+- A light that came back after being unreachable (off Wi-Fi, a power cut) stayed dark or on a stale picture. It now
+  gets realtime mode and its picture again as soon as it is seen.
+
 ## [2.7.2] - 2026-11-11
 
 ### Fixed
