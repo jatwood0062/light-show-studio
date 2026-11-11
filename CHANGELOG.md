@@ -4,6 +4,23 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-11-11
+
+### Fixed
+- Shows with 20 ms frames (and 25 ms shows catching up with a speaker) still lost about 4% of their frames: the
+  smallest allowed gap between show frames was 20 ms, the frame period itself. It is now 12.5 ms, so every frame of
+  those shows reaches the lights; only real bursts are merged.
+- A Govee string turned off and straight back on could flash the picture from before it was turned off (the
+  keep-alive put it back).
+- Strings that had each run a pattern before kept their own clocks when started together. A light now always takes
+  its timing from a light already running the same look.
+- WLED and Twinkly held an old effect picture forever after switching to "Light show" with no show playing. Only a
+  show's own picture is held.
+- FPP sync: remotes are stopped when a show pauses and start again at the right frame on resume (MultiSync has no
+  pause); they start playing at the first sync instead of early when a light delay or a speaker is used; syncs are
+  paced from the last one sent, so a seek or a resume is followed at once; a stop is no longer lost when the player
+  reloads.
+
 ## [2.7.0] - 2026-11-11
 
 ### Added

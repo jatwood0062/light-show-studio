@@ -329,7 +329,10 @@ class C9Controller:
         # Effect time runs at the speed setting; accumulating it lets the speed change smoothly mid-effect.
         # Re-rendering the same effect (or changing a Pattern's colours or motion) keeps the clock running, so
         # nothing jumps back to the start.
-        t = self._fx_t if self.effect == self._fx_effect else self._peer_clock()
+        # a light already running this look sets the time (strings started together move as one); otherwise this
+        # light's own clock carries on, so re-rendering the same effect doesn't jump back to the start
+        peer = self._peer_clock()
+        t = peer if peer is not None else (self._fx_t if self.effect == self._fx_effect else 0.0)
         self._fx_effect = self.effect
         step = 1 / FPS
         last = time.monotonic()
@@ -357,13 +360,13 @@ class C9Controller:
                 wait = 0.0
             await asyncio.sleep(max(0.0, wait))
 
-    def _peer_clock(self) -> float:
+    def _peer_clock(self) -> float | None:
         """Where another light running the same look has got to, so strings started together stay in step
-        (a chase across several strings moves as one); 0 when none is."""
+        (a chase across several strings moves as one); None when none is."""
         try:
             entries = self.hass.config_entries.async_loaded_entries(DOMAIN)
         except AttributeError:
-            return 0.0
+            return None
         look = (self.effect, self.pattern, self.pattern_effect, self.speed)
         for entry in entries:
             peer = getattr(entry, "runtime_data", None)
@@ -371,7 +374,7 @@ class C9Controller:
                     and (peer.effect, peer.pattern, peer.pattern_effect, peer.speed) == look
                     and peer._fx_effect == peer.effect):
                 return peer._fx_t
-        return 0.0
+        return None
 
     def _stop_animation(self) -> None:
         if self._task:
@@ -412,6 +415,7 @@ class C9Controller:
         if not self.is_on:
             self._hw_power(True)
             self._realtime = False  # the light may leave realtime mode while off
+            self._hw_last = None  # nothing for the keep-alive to put back
             self._whole = None
             self._wire = None
             self.is_on = True
@@ -512,6 +516,7 @@ class C9Controller:
         self._hw_power(False)
         self.is_on = False
         self._realtime = False
+        self._hw_last = None  # nothing for the keep-alive to put back
         self._set_frame([(0, 0, 0)] * self.bulbs)
 
     async def async_set_pixels(self, colours: list[Colour], repeat: bool = True) -> None:
@@ -701,6 +706,7 @@ class C9Controller:
                 return
             self._whole = None
             self._realtime = False
+            self._hw_last = None  # nothing for the keep-alive to put back
             if self._zones:
                 self._resend_zone()
             elif self.show_mode:  # the sequencer isn't sending: put the last picture back until it does
@@ -723,6 +729,7 @@ class C9Controller:
             self._hw_power(True)
             self.is_on = True
             self._realtime = False
+            self._hw_last = None  # nothing for the keep-alive to put back
             self._whole = None
             self._wire = None
         self.show_mode, self.effect, self.custom = True, None, False
@@ -737,7 +744,9 @@ class C9Controller:
             return
         if not self.show_mode or not self.is_on:
             return  # an effect or colour was picked, or the light was turned off; ignore the sequencer
-        wait = 0.8 / EXTERNAL_MAX_FPS - (now - self._ext_sent)  # slack for jitter, or 25 ms shows lose every other frame
+        # the gap is half a 40 fps frame: 20 ms shows, and 25 ms shows running 25% fast to catch up with a speaker,
+        # pass untouched even when a frame is a little late; only real bursts (live xLights over Wi-Fi) are merged
+        wait = 0.5 / EXTERNAL_MAX_FPS - (now - self._ext_sent)
         if wait > 0:  # too soon after the last: keep the newest and send it when due, never drop it
             self._ext_latest = bytes(rgb)
             if self._ext_handle is None:
@@ -750,6 +759,7 @@ class C9Controller:
         if now - self._ext_sent > 2:  # a new show (or the first frame after a pause)
             self._stop_animation()
             self._realtime = False  # re-arm realtime mode in case the string dropped it
+            self._hw_last = None  # nothing for the keep-alive to put back
             self._whole = None
             self._wire = None
             self.effect, self.custom = None, False
@@ -803,6 +813,7 @@ class C9Controller:
             if not was_on:
                 self._hw_power(True)
                 self._realtime = False
+                self._hw_last = None  # nothing for the keep-alive to put back
                 await asyncio.sleep(0.3)
             await self._hw_wait()
             for _ in range(3):
@@ -816,6 +827,7 @@ class C9Controller:
             if not was_on:
                 self._hw_power(False)
                 self._realtime = False
+                self._hw_last = None  # nothing for the keep-alive to put back
                 self._set_frame([(0, 0, 0)] * self.bulbs)
             elif self._zones:
                 self._resend_zone()

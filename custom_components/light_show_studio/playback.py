@@ -226,6 +226,8 @@ class SequencePlayer:
                     if j is not None:
                         prefetch = ev.run_in_executor(None, seq.frame, j)
             if tl.paused or pos >= seq.duration:
+                if tl.paused and (sync := self.sync) is not None:
+                    sync.pause(os.path.basename(str(seq.path)))
                 await asyncio.sleep(step)
             else:  # wake at the next frame boundary, allowing for the timeline running fast
                 await asyncio.sleep(max(0.001, ((i + 1) * step - pos) / (1 + SLEW_RATE if tl._slew else 1)))

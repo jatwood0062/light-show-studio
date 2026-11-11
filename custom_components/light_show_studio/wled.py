@@ -162,8 +162,8 @@ class WledController(C9Controller):
         self._keepalive = None
         if self._closed or not (self._on and self._last is not None):
             return
-        if self.show_mode and not any(any(c) for c in self._last):
-            return  # a show that ended on black: let the strip go back to its own look
+        if self.show_mode and (self._wire_raw is None or not any(any(c) for c in self._last)):
+            return  # no show picture (an old effect frame), or a show that ended on black: the strip goes back to its own look
         # a held or paused show picture is kept up too: WLED drops realtime mode after 2.5 s without a frame
         every = self._keepalive_every()
         if time.monotonic() - self._last_sent >= every - 0.1:

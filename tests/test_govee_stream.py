@@ -124,3 +124,28 @@ async def test_a_sequencer_frame_that_comes_too_soon_is_delayed_not_dropped():
     assert ctl.frame[0] == (30, 0, 0)
     assert lan.kinds().count("frame") == 2
     ctl.shutdown()
+
+
+@aio
+async def test_keepalive_never_puts_back_the_picture_from_before_an_off(monkeypatch):
+    monkeypatch.setattr(controller, "KEEPALIVE", 0.02)
+    lan = Lan()
+    ctl = Light(FakeHass(), lan)
+    ctl._hw_frame(RED)
+    ctl._hard_off()
+    ctl.is_on = True  # back on (a show is about to start) before the keep-alive fires
+    await asyncio.sleep(0.06)
+    assert lan.kinds().count("frame") == 1
+    ctl.shutdown()
+
+
+@aio
+async def test_twenty_ms_show_frames_all_get_through():
+    lan = Lan()
+    ctl = Light(FakeHass(), lan)
+    ctl.enable_show()
+    for i in range(1, 11):
+        ctl.show_external(bytes([i, 0, 0] * 3))
+        await asyncio.sleep(0.02)
+    assert lan.kinds().count("frame") == 10
+    ctl.shutdown()

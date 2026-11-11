@@ -271,9 +271,9 @@ def _opt(entry: ConfigEntry, key: str, default):
 def _set_fpp_sync(hass: HomeAssistant, entry: ConfigEntry | None) -> None:
     """FPP MultiSync from the show player, when the player's option asks for it."""
     sequencer = hass.data[SEQUENCER_KEY]
-    if sequencer.sync is not None:
-        sequencer.sync.close()
+    if (old := sequencer.sync) is not None:
         sequencer.sync = None
+        hass.loop.call_later(0.5, old.close)  # after a show being stopped has told the remotes
     if entry is not None and _opt(entry, CONF_FPP_SYNC, False):
         try:
             targets = parse_targets(_opt(entry, CONF_FPP_REMOTES, ""))

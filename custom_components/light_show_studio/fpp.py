@@ -31,9 +31,10 @@ def sync_packet(action: int, name: str, frame: int = 0, seconds: float = 0.0) ->
     return b"FPPD" + struct.pack("<BH", 0x01, len(body)) + body
 
 
-def due(frame: int) -> bool:
-    """FPP's own pace: every 4th frame for the first 32, then every 10th (frame 0 always)."""
-    return frame % 4 == 0 if frame <= 32 else frame % 10 == 0
+def due(frame: int, last: int | None) -> bool:
+    """FPP's own pace, counted from the last sync sent: 4 frames apart for the first 32, then 10. The first frame,
+    and any jump backwards (a loop, a seek), is sent at once."""
+    return last is None or frame < last or frame - last >= (4 if frame <= 32 else 10)
 
 
 def parse_targets(text: str) -> list[str]:
@@ -71,14 +72,20 @@ class FppSync:
                 _LOGGER.debug("FPP sync to %s failed: %s", host, err)
 
     def start(self, name: str) -> None:
+        """Get the remotes ready. They start playing at the first sync, which says where the show really is (a
+        light delay or a speaker can make that later than now, or not frame 0)."""
         self._last = None
         self._send(sync_packet(OPEN, name))
-        self._send(sync_packet(START, name))
 
     def frame(self, name: str, frame: int, seconds: float) -> None:
-        if frame != self._last and due(frame):
+        if due(frame, self._last):
             self._last = frame
             self._send(sync_packet(SYNC, name, frame, seconds))
+
+    def pause(self, name: str) -> None:
+        """MultiSync has no pause: stop the remotes; the first sync after resuming starts them at the right frame."""
+        if self._last is not None:
+            self.stop(name)
 
     def stop(self, name: str) -> None:
         self._send(sync_packet(STOP, name))
