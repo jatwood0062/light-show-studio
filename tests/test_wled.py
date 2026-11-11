@@ -67,3 +67,9 @@ def test_rgbw_flag_still_sends_rgb():
 
 def test_format_mac():
     assert wl.format_mac("AABBCCDDEEFF") == "aa:bb:cc:dd:ee:ff"
+
+
+def test_sequence_number_goes_in_every_packet():
+    pkts = wl.ddp_packets([(9, 8, 7)] * 600, seq=7)
+    assert [_header(p)[1] for p in pkts] == [7, 7]
+    assert _header(wl.ddp_packets([(1, 2, 3)], seq=16)[0])[1] == 0  # 4 bits only

@@ -215,4 +215,4 @@ class SequencePlayer:
             if tl.paused or pos >= seq.duration:
                 await asyncio.sleep(step)
             else:  # wake at the next frame boundary, allowing for the timeline running fast
-                await asyncio.sleep(max(0.001, ((i + 1) * step - pos) / (1 + SLEW_RATE)))
+                await asyncio.sleep(max(0.001, ((i + 1) * step - pos) / (1 + SLEW_RATE if tl._slew else 1)))

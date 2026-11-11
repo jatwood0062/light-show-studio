@@ -30,13 +30,14 @@ NET_ERRORS = (aiohttp.ClientError, TimeoutError, ValueError)
 
 
 # --- pure helpers (no Home Assistant needed) -----------------------------------
-def ddp_packets(colours: list[Colour], rgbw: bool = False, offset: int = 0) -> list[bytes]:
+def ddp_packets(colours: list[Colour], rgbw: bool = False, offset: int = 0, seq: int = 0) -> list[bytes]:
     """Colours -> DDP packets (RGB 8-bit). WLED converts to RGBW itself, so `rgbw` changes nothing: DDP data
     type 0x01 is always 3 bytes per LED, and `offset` (the first device LED to write) is counted in LEDs, so the
     byte offset is offset * 3 for RGB and RGBW strips alike. Device LEDs before `offset` are never touched.
 
     Header: flags (0x40 = version 1, +0x01 PUSH on the last packet only), sequence 0, data type 0x01,
-    destination 0x01, byte offset (uint32 BE), data length (uint16 BE).
+    destination 0x01, byte offset (uint32 BE), data length (uint16 BE). `seq` (1-15, 0 = none) lets WLED throw
+    away a late packet from an older frame instead of mixing it into this one.
     """
     data = b"".join(bytes(c) for c in colours)
     base = max(0, int(offset)) * 3
@@ -45,7 +46,7 @@ def ddp_packets(colours: list[Colour], rgbw: bool = False, offset: int = 0) -> l
     for n, off in enumerate(offsets):
         chunk = data[off : off + MAX_DATA]
         flags = 0x41 if n == len(offsets) - 1 else 0x40
-        packets.append(struct.pack(">BBBBIH", flags, 0, 0x01, 0x01, base + off, len(chunk)) + chunk)
+        packets.append(struct.pack(">BBBBIH", flags, seq & 0x0F, 0x01, 0x01, base + off, len(chunk)) + chunk)
     return packets
 
 
@@ -83,6 +84,7 @@ class WledController(C9Controller):
         self._on = False
         self._last: list[Colour] | None = None
         self._last_sent = 0.0
+        self._seq = 0  # DDP sequence number, 1-15
         self._pending: asyncio.TimerHandle | None = None
         self._keepalive: asyncio.TimerHandle | None = None
         self._power_task: asyncio.Task | None = None
@@ -137,7 +139,8 @@ class WledController(C9Controller):
     # --- streaming ---------------------------------------------------------------
     def _send(self, frame: list[Colour]) -> None:
         self._last_sent = time.monotonic()
-        for pkt in ddp_packets(frame, self.rgbw, self.offset):
+        self._seq = self._seq % 15 + 1
+        for pkt in ddp_packets(frame, self.rgbw, self.offset, self._seq):
             try:
                 self._sock.sendto(pkt, (self.host, DDP_PORT))
             except OSError:
@@ -157,8 +160,11 @@ class WledController(C9Controller):
 
     def _tick(self) -> None:
         self._keepalive = None
-        if self._closed or self.show_mode or not (self._on and self._last is not None):  # shows stream their own frames; idle, the strip goes back to its own look
+        if self._closed or not (self._on and self._last is not None):
             return
+        if self.show_mode and not any(any(c) for c in self._last):
+            return  # a show that ended on black: let the strip go back to its own look
+        # a held or paused show picture is kept up too: WLED drops realtime mode after 2.5 s without a frame
         every = self._keepalive_every()
         if time.monotonic() - self._last_sent >= every - 0.1:
             self._send(self._last)

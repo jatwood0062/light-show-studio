@@ -93,6 +93,7 @@ def _breathe(t, n, base):
     return [_scale(base, 0.15 + 0.85 * (0.5 + 0.5 * math.sin(t * 2)))] * n
 
 
+@functools.lru_cache(maxsize=1 << 16)  # pure, and the same for every frame of a slot: computed once, not every frame
 def event_window(i: int, k: int, seed: int, slot: float, prob: float, dmin: float, dmax: float):
     """(start, duration, peak 0.55-1, hash 0-1) in seconds from the start of slot k for bulb i, or None when the
     slot holds no event. Never longer than the slot, so events never overlap."""
@@ -111,7 +112,7 @@ def event_at(t: float, i: int, seed: int, slot: float, prob: float, dmin: float,
     probability `prob`; the event lasts a random dmin..dmax seconds and starts at a random moment inside the slot,
     with a random peak. Gaps between a bulb's events are therefore irregular (about slot / prob apart on average)
     and bulbs never line up. Returns (progress 0-1 through the event, peak, extra hash) or None when resting."""
-    x = t / slot + _hash(i, seed)
+    x = t / slot + _offset(i, seed)
     k = math.floor(x)
     w = event_window(i, k, seed, slot, prob, dmin, dmax)
     if w is None:
@@ -119,6 +120,11 @@ def event_at(t: float, i: int, seed: int, slot: float, prob: float, dmin: float,
     start, dur, peak, h = w
     s = (x - k) * slot - start
     return (s / dur, peak, h) if 0.0 <= s < dur else None
+
+
+@functools.lru_cache(maxsize=1 << 16)
+def _offset(i: int, seed: int) -> float:
+    return _hash(i, seed)
 
 
 def twinkle_level(t: float, i: int, seed: int = 0) -> float:
@@ -151,7 +157,7 @@ def _fire(t, n, base):
     of t: the same t always gives the same frame, however often frames are drawn."""
     out = []
     for i in range(n):
-        off = _hash(i, 91) * 997.0
+        off = _offset(i, 91) * 997.0
         heat = 0.6 * _vnoise(t * 8.0 + off, 92) + 0.4 * _vnoise(i * 0.45 - t * 4.0, 93)
         tone = _vnoise(t * 5.0 + off * 0.5, 94)
         heat = max(0.0, min(1.0, (heat - 0.5) * 1.6 + 0.5))
@@ -290,8 +296,8 @@ def _starfield(t, n, base):
     """Dark night with occasional stars that flash up and fade slowly."""
     out = []
     for i in range(n):
-        period = 4.0 + 5.0 * _hash(i, 41)
-        x = t / period + _hash(i, 42)
+        period = 4.0 + 5.0 * _offset(i, 41)
+        x = t / period + _offset(i, 42)
         k = int(x)
         u = x - k
         v = 0.0
@@ -601,8 +607,8 @@ def _vnoise(x: float, seed: int = 0) -> float:
     i = math.floor(x)
     f = x - i
     u = f * f * (3 - 2 * f)
-    a = _hash(i, seed)
-    return a + (_hash(i + 1, seed) - a) * u
+    a = _offset(i, seed)
+    return a + (_offset(i + 1, seed) - a) * u
 
 
 def _vnoise2(x: float, y: float, seed: int = 0) -> float:
@@ -610,11 +616,14 @@ def _vnoise2(x: float, y: float, seed: int = 0) -> float:
     ix, iy = math.floor(x), math.floor(y)
     fx, fy = x - ix, y - iy
     ux, uy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
-    s = seed + 31 * iy
-    a, b = _hash(ix, s), _hash(ix + 1, s)
-    c, d = _hash(ix, s + 31), _hash(ix + 1, s + 31)
+    a, b, c, d = _corners(ix, seed + 31 * iy)
     top = a + (b - a) * ux
     return top + (c + (d - c) * ux - top) * uy
+
+
+@functools.lru_cache(maxsize=1 << 14)  # a lattice cell's corners repeat for many pixels and frames
+def _corners(ix: int, s: int) -> tuple[float, float, float, float]:
+    return _hash(ix, s), _hash(ix + 1, s), _hash(ix, s + 31), _hash(ix + 1, s + 31)
 
 
 def _smooth(x: float) -> float:

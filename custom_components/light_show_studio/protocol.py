@@ -72,12 +72,16 @@ class GoveeLan:
         self.host = valid_ipv4(host)  # ValueError for anything but a LAN address
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setblocking(False)
+        self.dropped = 0  # packets that couldn't be sent
 
-    def send(self, payload: bytes) -> None:
+    def send(self, payload: bytes) -> bool:
+        """False when the packet couldn't leave (no route to the light, buffer full): UDP, so the next frame replaces it."""
         try:
             self._sock.sendto(payload, (self.host, CMD_PORT))
         except (BlockingIOError, OSError):
-            pass  # UDP: a dropped frame is replaced by the next one
+            self.dropped += 1
+            return False
+        return True
 
     def close(self) -> None:
         self._sock.close()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Callable
 
@@ -16,6 +17,9 @@ from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg,
 
 SCAN_RESEND = (0.05, 0.15)  # seconds after a scan frame at which it is sent once more (UDP may lose it)
 RESEND_AFTER = 1.0  # an unchanged frame is sent again after this long (a light may have dropped it)
+REARM_EVERY = 2.0  # realtime mode is switched on again this often while frames flow (a light can drop out of it)
+KEEPALIVE = 1.0  # a still picture is sent again this often...
+KEEP_FOR = 10.0  # ...for this long after it last changed (a lost UDP packet can't leave the wrong picture up)
 SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive the string
 
 
@@ -59,6 +63,13 @@ class C9Controller:
         self.bulb_colour: list[Colour] = [self.colour] * bulbs
         self.bulb_level: list[int] = [255] * bulbs
         self._realtime = False
+        self._armed_at = 0.0  # when realtime mode was last switched on
+        self._hw_last: list[Colour] | None = None  # the last per-bulb frame put on the wire, for the keep-alive
+        self._hw_sent = 0.0
+        self._hw_changed = 0.0  # when the frame on the wire last changed
+        self._keep_handle: asyncio.TimerHandle | None = None
+        self._ext_latest: bytes | None = None  # a sequencer frame that came too soon after the last, sent when due
+        self._ext_handle: asyncio.TimerHandle | None = None
         self._task: asyncio.Task | None = None
         self._flush_handle: asyncio.TimerHandle | None = None
         self._listeners: list[Callable[[], None]] = []
@@ -106,11 +117,33 @@ class C9Controller:
 
     def _hw_frame(self, frame: list[Colour]) -> None:
         """Show a per-bulb frame that is already scaled by the brightness."""
+        now = time.monotonic()
         if not self._realtime:
             self.lan.send(brightness_msg(100))  # the string's own dimmer would dim every frame
-            self.lan.send(realtime_msg(True))
-            self._realtime = True
+        if not self._realtime or now - self._armed_at >= REARM_EVERY:
+            # switched on again every few seconds, not just once: a light that dropped out of realtime mode (a lost
+            # packet, a command from another app) ignores every frame until it is, which looks like a freeze
+            self._realtime = self.lan.send(realtime_msg(True)) is not False
+            self._armed_at = now
         self.lan.send(colours_msg(frame))
+        if frame != self._hw_last:
+            self._hw_changed = now
+        self._hw_last, self._hw_sent = frame, now
+        if self._keep_handle is None:
+            self._keep_handle = self.hass.loop.call_later(KEEPALIVE, self._keep_alive)
+
+    def _keep_alive(self) -> None:
+        """Send a still picture again for a while: UDP can lose the one frame a still look or a held show sends."""
+        self._keep_handle = None
+        if not self.is_on or self._hw_last is None or self._identifying or self._scanning:
+            return
+        now = time.monotonic()
+        if now - self._hw_changed > KEEP_FOR:
+            return  # long enough: the light has it (and another app may take the light over)
+        if now - self._hw_sent >= KEEPALIVE - 0.05:
+            self._hw_frame(self._hw_last)  # schedules the next check
+        else:
+            self._keep_handle = self.hass.loop.call_later(KEEPALIVE, self._keep_alive)
 
     def _hw_close(self) -> None:
         self.lan.close()
@@ -296,10 +329,11 @@ class C9Controller:
         # Effect time runs at the speed setting; accumulating it lets the speed change smoothly mid-effect.
         # Re-rendering the same effect (or changing a Pattern's colours or motion) keeps the clock running, so
         # nothing jumps back to the start.
-        t = self._fx_t if self.effect == self._fx_effect else 0.0
+        t = self._fx_t if self.effect == self._fx_effect else self._peer_clock()
         self._fx_effect = self.effect
         step = 1 / FPS
-        last = due = time.monotonic()
+        last = time.monotonic()
+        due = math.floor(last / step) * step  # every light ticks on the same beat, so their frames go out together
         while True:
             now = time.monotonic()
             t += min(now - last, 0.25) * patterns.speed_factor(self.speed)  # a long stall doesn't leap ahead
@@ -319,8 +353,25 @@ class C9Controller:
             due += step
             wait = due - time.monotonic()
             if wait < -step:
-                due, wait = time.monotonic(), 0.0
+                due = math.floor(time.monotonic() / step) * step
+                wait = 0.0
             await asyncio.sleep(max(0.0, wait))
+
+    def _peer_clock(self) -> float:
+        """Where another light running the same look has got to, so strings started together stay in step
+        (a chase across several strings moves as one); 0 when none is."""
+        try:
+            entries = self.hass.config_entries.async_loaded_entries(DOMAIN)
+        except AttributeError:
+            return 0.0
+        look = (self.effect, self.pattern, self.pattern_effect, self.speed)
+        for entry in entries:
+            peer = getattr(entry, "runtime_data", None)
+            if (peer is not self and isinstance(peer, C9Controller) and peer._task is not None
+                    and (peer.effect, peer.pattern, peer.pattern_effect, peer.speed) == look
+                    and peer._fx_effect == peer.effect):
+                return peer._fx_t
+        return 0.0
 
     def _stop_animation(self) -> None:
         if self._task:
@@ -686,8 +737,16 @@ class C9Controller:
             return
         if not self.show_mode or not self.is_on:
             return  # an effect or colour was picked, or the light was turned off; ignore the sequencer
-        if now - self._ext_sent < 0.8 / EXTERNAL_MAX_FPS:  # slack for jitter, or 25 ms shows lose every other frame
+        wait = 0.8 / EXTERNAL_MAX_FPS - (now - self._ext_sent)  # slack for jitter, or 25 ms shows lose every other frame
+        if wait > 0:  # too soon after the last: keep the newest and send it when due, never drop it
+            self._ext_latest = bytes(rgb)
+            if self._ext_handle is None:
+                self._ext_handle = self.hass.loop.call_later(wait, self._ext_flush)
             return
+        if self._ext_handle is not None:
+            self._ext_handle.cancel()
+            self._ext_handle = None
+        self._ext_latest = None
         if now - self._ext_sent > 2:  # a new show (or the first frame after a pause)
             self._stop_animation()
             self._realtime = False  # re-arm realtime mode in case the string dropped it
@@ -704,6 +763,12 @@ class C9Controller:
         data = raw[0].ljust(n, b"\0")
         self._send_frame(list(zip(data[0::3], data[1::3], data[2::3])), raw=raw)
 
+    def _ext_flush(self) -> None:
+        self._ext_handle = None
+        rgb, self._ext_latest = self._ext_latest, None
+        if rgb is not None:
+            self.show_external(rgb)
+
     def shutdown(self) -> None:
         self._zones.clear()
         self._scanning = False
@@ -711,7 +776,8 @@ class C9Controller:
         self._stop_animation()
         if self._identify_task:  # don't let a flash wake a light that's being removed
             self._identify_task.cancel()
-        for handle in (self._flush_handle, self._whole_handle, self._resume_handle, self._off_handle):
+        for handle in (self._flush_handle, self._whole_handle, self._resume_handle, self._off_handle,
+                       self._keep_handle, self._ext_handle):
             if handle:
                 handle.cancel()
         self._hw_close()

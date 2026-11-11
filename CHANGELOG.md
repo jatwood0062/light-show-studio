@@ -4,6 +4,28 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.6.5] - 2026-11-11
+
+### Fixed
+- Govee strings freezing mid-effect or mid-show: realtime mode was switched on once and never again, so a light
+  that dropped out of it (a lost packet, a command from another app) ignored every frame. It is now switched on
+  again every 2 seconds while frames flow, and retried at once if the packet couldn't be sent.
+- Show frames lost on Govee strings, WLED and Twinkly: a frame arriving less than 20 ms after the previous one was
+  thrown away (common with xLights live output and while a show catches up with its speaker), and if it was the
+  last frame the light stayed on the wrong picture. The newest frame is now held and sent as soon as it's due.
+- A still picture (a colour, a settled fade, a held show frame) was sent once; if that packet was lost the light kept
+  the wrong picture. Govee strings now resend it every second for 10 seconds.
+- WLED and Twinkly dropped back to their own effect when a show paused or held its last picture (WLED leaves realtime
+  mode after 2.5 s without a frame). A held show picture is now kept up; a show ending on black still lets go.
+- Strings running the same effect drifted out of step (each kept its own clock and beat). All lights now tick on one
+  shared beat, and a light starting an effect another light is already running picks up its timing.
+
+### Changed
+- DDP packets to WLED carry a sequence number, so a late packet from an older frame can't tear the current one.
+- Twinkle, Sparkle, Confetti, Noise Drift, Storm Flash, Fire and Starfield draw 1.5-2.5x faster (per-bulb values that
+  never change between frames are worked out once), which matters on large WLED zones on a Raspberry Pi.
+- The show player wakes once per frame instead of several times unless it is catching up with its speaker.
+
 ## [2.6.4] - 2026-11-10
 
 ### Fixed
