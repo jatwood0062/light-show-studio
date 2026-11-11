@@ -4,6 +4,13 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.7.2] - 2026-11-11
+
+### Fixed
+- Govee strings flickering, even on a steady pattern: 2.6.5 switched realtime mode on again every 2 seconds while
+  frames flowed, and the string restarts realtime mode (a visible blink) each time. It is now switched on again only
+  when frames resume after a pause of 2 seconds or more, which still brings back a light that dropped out while idle.
+
 ## [2.7.1] - 2026-11-11
 
 ### Fixed

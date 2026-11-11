@@ -17,7 +17,8 @@ from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg,
 
 SCAN_RESEND = (0.05, 0.15)  # seconds after a scan frame at which it is sent once more (UDP may lose it)
 RESEND_AFTER = 1.0  # an unchanged frame is sent again after this long (a light may have dropped it)
-REARM_EVERY = 2.0  # realtime mode is switched on again this often while frames flow (a light can drop out of it)
+REARM_AFTER = 2.0  # realtime mode is switched on again when frames resume after a gap this long (not while they flow:
+# the light restarts realtime mode on every "on", which shows as a flicker)
 KEEPALIVE = 1.0  # a still picture is sent again this often...
 KEEP_FOR = 10.0  # ...for this long after it last changed (a lost UDP packet can't leave the wrong picture up)
 SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive the string
@@ -120,9 +121,9 @@ class C9Controller:
         now = time.monotonic()
         if not self._realtime:
             self.lan.send(brightness_msg(100))  # the string's own dimmer would dim every frame
-        if not self._realtime or now - self._armed_at >= REARM_EVERY:
-            # switched on again every few seconds, not just once: a light that dropped out of realtime mode (a lost
-            # packet, a command from another app) ignores every frame until it is, which looks like a freeze
+        if not self._realtime or now - self._hw_sent >= REARM_AFTER:
+            # switched on again after a pause, not just once: a light that dropped out of realtime mode while idle
+            # (a lost packet, a command from another app) ignores every frame until it is, which looks like a freeze
             self._realtime = self.lan.send(realtime_msg(True)) is not False
             self._armed_at = now
         self.lan.send(colours_msg(frame))

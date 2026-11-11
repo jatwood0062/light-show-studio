@@ -57,19 +57,20 @@ RED = [(255, 0, 0)] * 3
 
 
 @aio
-async def test_realtime_mode_is_armed_again_while_frames_flow(monkeypatch):
+async def test_realtime_mode_is_armed_again_only_after_a_pause(monkeypatch):
     lan = Lan()
     ctl = Light(FakeHass(), lan)
     now = [100.0]
     monkeypatch.setattr(controller.time, "monotonic", lambda: now[0])
     ctl._hw_frame(RED)
     assert lan.kinds() == ["brightness", "arm", "frame"]
-    now[0] += 0.5
+    for _ in range(10):  # frames flowing: never re-armed (the light flickers on every arm)
+        now[0] += 0.5
+        ctl._hw_frame(RED)
+    assert lan.kinds()[3:] == ["frame"] * 10
+    now[0] += controller.REARM_AFTER
     ctl._hw_frame(RED)
-    assert lan.kinds()[3:] == ["frame"]
-    now[0] += controller.REARM_EVERY
-    ctl._hw_frame(RED)
-    assert lan.kinds()[4:] == ["arm", "frame"]  # re-armed, no brightness reset
+    assert lan.kinds()[13:] == ["arm", "frame"]  # after a pause: re-armed, no brightness reset
     ctl.shutdown()
 
 
