@@ -91,6 +91,8 @@
         "data": {
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
           "gap": "Pause between shows (seconds)",
+          "fpp_sync": "Sync show controllers that store the show themselves (FPP MultiSync: Falcon Player remotes, ESPixelStick)",
+          "fpp_remotes": "...only to these controller IPs (optional, comma separated; empty = every remote on the network)",
           "allowed_sources": "Only accept xLights / sequencer data from these IPs (optional, comma separated; empty = any device on your home network)"
         }
       }
@@ -117,6 +119,8 @@
           "default_transition": "Fade in / out and between looks, in seconds (0 = instant)",
           "audio_offset": "Light delay in seconds (+ later, - earlier)",
           "gap": "Pause between shows (seconds)",
+          "fpp_sync": "Sync show controllers that store the show themselves (FPP MultiSync: Falcon Player remotes, ESPixelStick)",
+          "fpp_remotes": "...only to these controller IPs (optional, comma separated; empty = every remote on the network)",
           "allowed_sources": "Only accept xLights / sequencer data from these IPs (optional, comma separated; empty = any device on your home network)",
           "device_offset": "WLED: first LED on the controller (0 = the start; use when other LEDs come first)",
           "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)"

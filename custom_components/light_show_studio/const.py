@@ -15,6 +15,8 @@ CONF_TYPE = "type"  # "light" (default) or "player"
 TYPE_PLAYER = "player"
 CONF_SPEAKERS = "speakers"  # ordered list of media players; the first leads
 CONF_AUDIO_OFFSET = "audio_offset"
+CONF_FPP_SYNC = "fpp_sync"  # player option: send FPP MultiSync so show controllers holding the show play in step
+CONF_FPP_REMOTES = "fpp_remotes"  # ...to these IPs (comma separated; empty = multicast to all)
 CONF_ALLOWED_SOURCES = "allowed_sources"  # player option: comma separated IPs / networks allowed to send DDP / E1.31 ("" = any LAN address)
 CONF_GAP = "gap"  # where this string's slice begins in the xLights output
 FLUSH_DELAY = 0.05  # coalesce many bulb changes (e.g. a scene) into one frame

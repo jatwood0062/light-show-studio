@@ -4,6 +4,16 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-11
+
+### Added
+- FPP MultiSync master: shows can now play on controllers that store the show themselves (Falcon Player remotes,
+  ESPixelStick in FPP remote mode, WLED builds with .fseq playback). Light Show Studio tells them which show is playing
+  and where it has got to (FPP's own pace: every 4th frame at first, then every 10th); they draw every frame locally,
+  so Wi-Fi delays can't make them stutter. Turn it on in the Light Show Player's options ("Sync show controllers that
+  store the show themselves"), optionally listing the controllers' IPs (default: multicast to every remote). Each
+  controller needs a copy of the .fseq with the same file name.
+
 ## [2.6.5] - 2026-11-11
 
 ### Fixed

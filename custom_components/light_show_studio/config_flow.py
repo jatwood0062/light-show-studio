@@ -10,6 +10,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .fpp import parse_targets
 from .const import (
     CONF_ALLOWED_SOURCES,
     CONF_AUDIO_OFFSET,
@@ -18,6 +19,8 @@ from .const import (
     CONF_DEFAULT_TRANSITION,
     CONF_DEVICE_ID,
     CONF_DEVICE_OFFSET,
+    CONF_FPP_REMOTES,
+    CONF_FPP_SYNC,
     CONF_GAP,
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
@@ -84,12 +87,21 @@ def _sources(value: Any) -> str:
     return ", ".join(str(n.network_address) if n.prefixlen == 32 else str(n) for n in nets)
 
 
+def _fpp_remotes(text: str) -> str:
+    try:
+        return ", ".join(parse_targets(str(text)))
+    except ValueError as err:
+        raise vol.Invalid(str(err)) from err
+
+
 def _player_schema(cur: dict[str, Any]) -> vol.Schema:
     """Speakers and the between-shows look are chosen in the app; the timing and who may send live here."""
     return vol.Schema({
         vol.Optional(CONF_ALLOWED_SOURCES, default=cur.get(CONF_ALLOWED_SOURCES, "")): _sources,
         vol.Required(CONF_AUDIO_OFFSET, default=cur.get(CONF_AUDIO_OFFSET, 0.0)): vol.Coerce(float),
         vol.Required(CONF_GAP, default=cur.get(CONF_GAP, 3.0)): vol.All(vol.Coerce(float), vol.Range(min=0, max=120)),
+        vol.Required(CONF_FPP_SYNC, default=cur.get(CONF_FPP_SYNC, False)): bool,
+        vol.Optional(CONF_FPP_REMOTES, default=cur.get(CONF_FPP_REMOTES, "")): _fpp_remotes,
     })
 
 

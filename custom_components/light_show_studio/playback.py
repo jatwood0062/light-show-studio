@@ -6,6 +6,7 @@ can be re-anchored to a speaker's reported position, so the lights stay on the m
 from __future__ import annotations
 
 import asyncio
+import os
 import logging
 import math
 import time
@@ -105,6 +106,7 @@ class SequencePlayer:
         self.fade_in = 0.0  # seconds the next play() fades in from black; used up by that play()
         self._fade = 0.0
         self._fade_t0 = 0.0
+        self.sync = None  # an fpp.FppSync: show controllers holding the show themselves play it in step
 
     @property
     def current(self) -> asyncio.Task | None:
@@ -172,14 +174,23 @@ class SequencePlayer:
         ahead = max(1, int(PREFETCH_SECONDS / step))
         self.frames_shown = self.frames_skipped = 0
         _LOGGER.info("Playing %s: %d frames at %d ms", seq.path, seq.frames, seq.step_ms)
+        sync, name = self.sync, os.path.basename(str(seq.path))
+        if sync is not None:
+            sync.start(name)
         try:
             await self._frames(seq, loop, tl, hold, ev, step, ahead)
         except asyncio.CancelledError:
+            if sync is not None:
+                sync.stop(name)
             raise
         except Exception as err:  # noqa: BLE001  OSError, zstd errors: stop cleanly instead of dying silently
             _LOGGER.warning("Stopped %s: can't read frames: %s", seq.path, err)
             ev.call_later(0.1, self.output, b"")  # after the external-frame rate limit
+            if sync is not None:
+                sync.stop(name)
             return
+        if sync is not None:
+            sync.stop(name)
         _LOGGER.info("Finished %s (%d frames skipped)", seq.path, self.frames_skipped)
 
     async def _frames(self, seq: FseqFile, loop: bool, tl: Timeline, hold: bool,
@@ -203,6 +214,8 @@ class SequencePlayer:
                     data = await ev.run_in_executor(None, seq.frame, i)
                 self.last_frame = data
                 self.output(self._faded(data))
+                if (sync := self.sync) is not None:
+                    sync.frame(os.path.basename(str(seq.path)), i, max(0.0, pos))
                 await self._lead_frames(seq, i, step, ev, led)
                 self.frames_shown += 1
                 if last >= 0 and i > last + 1:

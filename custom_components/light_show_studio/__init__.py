@@ -24,6 +24,8 @@ from .const import (
     CONF_BULBS,
     CONF_DEFAULT_TRANSITION,
     CONF_DEVICE_ID,
+    CONF_FPP_REMOTES,
+    CONF_FPP_SYNC,
     CONF_DEVICE_OFFSET,
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
@@ -60,6 +62,7 @@ from .pattern_store import PatternStore
 from .patternpreview import PreviewManager
 from .receiver import PixelReceiver
 from .scheduler import async_setup_scheduler
+from .fpp import FppSync, parse_targets
 from .showplayer import async_setup_player, async_unload_player
 from .twinkly import TwinklyController, async_gestalt
 from .wled import WledController, async_info, fits
@@ -265,9 +268,25 @@ def _opt(entry: ConfigEntry, key: str, default):
     return entry.options.get(key, entry.data.get(key, default))
 
 
+def _set_fpp_sync(hass: HomeAssistant, entry: ConfigEntry | None) -> None:
+    """FPP MultiSync from the show player, when the player's option asks for it."""
+    sequencer = hass.data[SEQUENCER_KEY]
+    if sequencer.sync is not None:
+        sequencer.sync.close()
+        sequencer.sync = None
+    if entry is not None and _opt(entry, CONF_FPP_SYNC, False):
+        try:
+            targets = parse_targets(_opt(entry, CONF_FPP_REMOTES, ""))
+        except ValueError as err:
+            _LOGGER.warning("FPP sync: %s; sending to every remote instead", err)
+            targets = []
+        sequencer.sync = FppSync(targets)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
     if entry.data.get(CONF_TYPE) == TYPE_PLAYER:
         await async_setup_player(hass, entry)
+        _set_fpp_sync(hass, entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLAYER_PLATFORMS)
         entry.async_on_unload(entry.add_update_listener(_reload_on_change(entry)))
         return True
@@ -343,6 +362,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
         ok = await hass.config_entries.async_unload_platforms(entry, PLAYER_PLATFORMS)
         if ok:
             await async_unload_player(hass, entry)
+            _set_fpp_sync(hass, None)
         return ok
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
