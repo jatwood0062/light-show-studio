@@ -939,6 +939,7 @@ class LightShowStudioPanel extends HTMLElement {
             <div class="serr areas-err" role="alert" hidden></div>
             <div class="alist"></div>
             <section class="asec mypats" aria-label="My patterns" hidden></section>
+            <section class="asec looks" aria-label="Looks" hidden></section>
             <div class="box empty no-lights" hidden><span class="eic">${svg(PANEL_ICON.bulb)}</span><div class="et">No lights yet</div>
               <div class="ed">Add a Wi-Fi light strip and it will show up here with a live preview.</div>
               <button class="btn" type="button">${svg(PANEL_ICON.add)}Add a light</button></div>
@@ -1039,6 +1040,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._aErr = q(".areas-err");
     this._aList = q(".alist");
     this._myPats = q(".mypats");
+    this._looksEl = q(".looks");
     this._scenesEl = q(".scenes");
     this._addLight.onclick = q(".no-lights .btn").onclick = () => this._navigate(INTEGRATION_PATH);
     this._sunPill = q(".sunpill");
@@ -1128,6 +1130,7 @@ class LightShowStudioPanel extends HTMLElement {
     if (id !== "map") this._closeScan();
     if (id === "areas" || id === "map") this._loadStrands();
     if (id === "areas" || id === "map" || id === "schedule") this._loadUserPatterns();
+    if (id === "areas") this._loadLooks();
     if (id === "areas") {
       this._loadMap();
       this._loadSchedules();
@@ -5260,6 +5263,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._manage.hidden = none;
     this._scenesEl.hidden = !strands || none;
     this._renderMyPats();
+    this._renderLooks();
     if (!strands || none) {
       this._aList.textContent = "";
       this._homeSig = null;
@@ -7209,6 +7213,126 @@ class LightShowStudioPanel extends HTMLElement {
       grid.append(card);
     }
     box.append(grid);
+  }
+
+  // --- saved looks (what every light shows now, under a name) and the settings backup, on Areas ---------------------
+  async _loadLooks() {
+    if (!this._hass || this._lkOld) return;
+    try {
+      this._lk = (await this._hass.callWS({ type: "light_show_studio/looks/list" })).looks;
+      this._lkErr = "";
+    } catch (err) {
+      if (err?.code === "unknown_command" || /unknown command/i.test(String(err?.message || err))) this._lkOld = true;
+      else this._lkErr = this._err(err, "Couldn't load your looks.");
+    }
+    this._renderLooks();
+  }
+
+  async _lookCmd(cmd, name, fallback, done) {
+    try {
+      const r = await this._hass.callWS({ type: `light_show_studio/looks/${cmd}`, name });
+      this._lkErr = "";
+      if (done) this._toast(done(r), 6000);
+    } catch (err) {
+      this._lkErr = this._ctlErr(err, fallback);
+    }
+    this._lkConfirm = null;
+    await this._loadLooks();
+  }
+
+  _renderLooks() {
+    const box = this._looksEl;
+    if (!box) return;
+    const list = this._lk || [];
+    const admin = this._isAdmin();
+    const sig = JSON.stringify([list, this._lkErr, this._lkOld, admin, this._lkConfirm, !!this._strands?.length]);
+    if (sig === this._lkSig) return;
+    this._lkSig = sig;
+    box.textContent = "";
+    box.hidden = !!this._lkOld || !this._strands?.length;
+    if (box.hidden) return;
+    const head = this._el("div", "ahead");
+    const an = this._el("div", "an");
+    an.append(this._el("h2", "", "Looks"));
+    head.append(an);
+    if (admin) {
+      const sb = this._btn("Save current look…", "btn alt sm", () => {
+        const n = (window.prompt("Name this look (a look with the same name is replaced):", "") || "").trim();
+        if (n) this._lookCmd("save", n.slice(0, 64), "Couldn't save the look.");
+      });
+      sb.dataset.fk = "save-look";
+      head.append(sb);
+    }
+    box.append(head);
+    if (this._lkErr) box.append(this._el("div", "serr", this._lkErr));
+    if (!list.length) box.append(this._el("div", "muted", "Save what every light shows right now and bring it back later, from here or from an automation (light_show_studio.apply_look)."));
+    const grid = this._el("div", "lcgrid" + (list.length > 1 ? " two" : ""));
+    grid.setAttribute("role", "list");
+    for (const k of list) {
+      const card = this._el("div", "lc mp");
+      card.setAttribute("role", "listitem");
+      const t = this._el("div", "lc-open");
+      const n = k.lights.length;
+      t.append(this._el("span", "lc-n", k.name), this._el("span", "lc-s", `${n} light${n === 1 ? "" : "s"}, ${k.on} on${k.zones ? ` · ${k.zones} zone${k.zones === 1 ? "" : "s"}` : ""}`));
+      const acts = this._el("div", "sacts");
+      if (this._lkConfirm === k.name) {
+        acts.append(this._el("span", "muted", `Delete "${k.name}"?`), this._btn("Delete", "btn sm warnb", () => this._lookCmd("delete", k.name, "Couldn't delete it.")), this._btn("Cancel", "btn alt sm", () => {
+          this._lkConfirm = null;
+          this._renderLooks();
+        }));
+      } else {
+        const ap = this._btn("Apply", "btn alt sm", () => this._lookCmd("apply", k.name, "Couldn't apply the look.", (r) => (r.skipped.length ? `Applied "${k.name}" to ${r.applied.length} light${r.applied.length === 1 ? "" : "s"}; ${r.skipped.length} left alone (missing, in a zone or playing a show).` : `Applied "${k.name}".`)));
+        ap.setAttribute("aria-label", `Apply ${k.name}`);
+        acts.append(ap);
+        if (admin) {
+          const del = this._btn("Delete", "btn alt sm danger", () => {
+            this._lkConfirm = k.name;
+            this._renderLooks();
+          });
+          del.setAttribute("aria-label", `Delete ${k.name}`);
+          acts.append(del);
+        }
+      }
+      card.append(t, acts);
+      grid.append(card);
+    }
+    box.append(grid);
+    if (admin) {
+      const row = this._el("div", "inl");
+      row.style.marginTop = "12px";
+      row.append(this._el("span", "muted", "Settings backup (map, patterns, schedules, playlists, looks):"), this._btn("Export settings", "btn alt sm", () => this._exportSettings()), this._btn("Import settings", "btn alt sm", () => this._importSettings()));
+      box.append(row);
+    }
+  }
+
+  async _exportSettings() {
+    try {
+      const doc = await this._hass.callWS({ type: "light_show_studio/backup/export" });
+      const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" })), download: `light-show-studio-settings-${new Date().toISOString().slice(0, 10)}.json` });
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } catch (err) {
+      this._toast(this._err(err, "Couldn't export the settings."));
+    }
+  }
+
+  _importSettings() {
+    const inp = Object.assign(document.createElement("input"), { type: "file", accept: ".json,application/json" });
+    inp.onchange = async () => {
+      const file = inp.files?.[0];
+      if (!file) return;
+      try {
+        const doc = JSON.parse(await file.text());
+        if (!window.confirm(`Replace your map, patterns, schedules, playlists and looks with the ones in ${file.name}? Running zones stop.`)) return;
+        const r = await this._hass.callWS({ type: "light_show_studio/backup/import", backup: doc });
+        this._toast(`Imported ${r.imported.length} part${r.imported.length === 1 ? "" : "s"} of the settings.${r.restart_required ? " Restart Home Assistant so the schedules pick up their times." : ""}`);
+        this._loadLooks();
+        this._loadUserPatterns();
+      } catch (err) {
+        this._toast(err instanceof SyntaxError ? "That file is not a settings file." : this._err(err, "Couldn't import the settings."));
+      }
+    };
+    inp.click();
   }
 
   async _renamePattern(p) {

@@ -196,3 +196,43 @@ stop_zone:
       example: Porch
       selector:
         text:
+
+save_look:
+  fields:
+    name:
+      required: true
+      example: Christmas Eve
+      selector:
+        text:
+    entity_id:
+      example: light.porch_string
+      selector:
+        entity:
+          multiple: true
+          filter:
+            integration: light_show_studio
+            domain: light
+
+apply_look:
+  fields:
+    name:
+      required: true
+      example: Christmas Eve
+      selector:
+        text:
+    transition:
+      example: 2
+      selector:
+        number:
+          min: 0
+          max: 1800
+          step: 0.1
+          unit_of_measurement: s
+
+delete_look:
+  fields:
+    name:
+      required: true
+      example: Christmas Eve
+      selector:
+        text:
