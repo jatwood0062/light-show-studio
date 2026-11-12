@@ -104,7 +104,8 @@ async def async_scan(timeout: float = 2.5) -> dict[str, dict] | None:
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
         sock.sendto(_wrap("scan", {"account_topic": "reserve"}), SCAN_ADDR)
         loop = asyncio.get_running_loop()
-        end = loop.time() + timeout
+        asked = loop.time()
+        end = asked + timeout
         while (left := end - loop.time()) > 0:
             try:
                 data, (src, _port) = await asyncio.wait_for(loop.sock_recvfrom(sock, 2048), left)
@@ -122,7 +123,8 @@ async def async_scan(timeout: float = 2.5) -> dict[str, dict] | None:
                 ip = d["ip"]
                 # the reply may only speak for the address it came from, never redirect to another
                 if ip == src and is_lan_ipv4(ip):
-                    found[ip] = {"sku": str(d.get("sku", ""))[:32], "device": str(d.get("device", ""))[:64]}
+                    found[ip] = {"sku": str(d.get("sku", ""))[:32], "device": str(d.get("device", ""))[:64],
+                                 "ms": (loop.time() - asked) * 1000}  # how long the reply took (health check)
             except Exception:  # noqa: BLE001
                 continue
     except OSError:

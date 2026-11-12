@@ -38,6 +38,8 @@ def record_latency(ctl: object, ms: float) -> None:
         ctl.latency_peak_ms = max(ms, peak * 0.85)
     except AttributeError:
         pass
+    if (stats := getattr(ctl, "stats", None)) is not None:
+        stats.latency_ms = ms
 
 
 class HealthMonitor:
@@ -117,6 +119,8 @@ class HealthMonitor:
                     and entry.data.get(CONF_MAC) != mac:
                 self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_MAC: mac})
             if host in found:
+                if (ms := found[host].get("ms")) is not None:
+                    record_latency(ctl, ms)
                 ctl.mark_seen()
                 if not device and (dev := found[host].get("device")):
                     self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_DEVICE_ID: dev})

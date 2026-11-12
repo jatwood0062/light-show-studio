@@ -144,7 +144,9 @@ class WledController(C9Controller):
             try:
                 self._sock.sendto(pkt, (self.host, DDP_PORT))
             except OSError:
+                self.stats.frame(False, self._last_sent)
                 return  # UDP: the next frame replaces it
+        self.stats.frame(True, self._last_sent)
 
     def _send_pending(self) -> None:
         self._pending = None

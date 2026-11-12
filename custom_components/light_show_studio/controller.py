@@ -13,6 +13,7 @@ from .effects import ANIMATED, EFFECTS
 from . import fade, patterns
 from .patterns import PATTERN
 from .hosts import valid_ipv4
+from .stats import LinkStats
 from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
 
 SCAN_RESEND = (0.05, 0.15)  # seconds after a scan frame at which it is sent once more (UDP may lose it)
@@ -44,6 +45,7 @@ class C9Controller:
         self.hass = hass
         self.host = valid_ipv4(host)  # only LAN addresses; ValueError otherwise
         self.lan = self._make_link(host)
+        self.stats = LinkStats()  # delivery health, shown as diagnostic sensors
         self.bulbs = bulbs
         self.show_lead_ms = 0  # -500..500: this light gets .fseq frames for t + lead (set by the integration from the option)
         self.segmented = segmented  # False: the light takes one colour, the frame's average
@@ -126,7 +128,7 @@ class C9Controller:
             # (a lost packet, a command from another app) ignores every frame until it is, which looks like a freeze
             self._realtime = self.lan.send(realtime_msg(True)) is not False
             self._armed_at = now
-        self.lan.send(colours_msg(frame))
+        self.stats.frame(self.lan.send(colours_msg(frame)) is not False, now)
         if frame != self._hw_last:
             self._hw_changed = now
         self._hw_last, self._hw_sent = frame, now
@@ -374,6 +376,7 @@ class C9Controller:
                 due = math.floor(time.monotonic() / step) * step
                 wait = 0.0
             await asyncio.sleep(max(0.0, wait))
+            self.stats.woke(time.monotonic() - due, step)
 
     def _peer_clock(self) -> float | None:
         """Where another light running the same look has got to, so strings started together stay in step
@@ -763,6 +766,8 @@ class C9Controller:
         # pass untouched even when a frame is a little late; only real bursts (live xLights over Wi-Fi) are merged
         wait = 0.5 / EXTERNAL_MAX_FPS - (now - self._ext_sent)
         if wait > 0:  # too soon after the last: keep the newest and send it when due, never drop it
+            if self._ext_latest is not None:
+                self.stats.merge()  # the one that was waiting is never shown
             self._ext_latest = bytes(rgb)
             if self._ext_handle is None:
                 self._ext_handle = self.hass.loop.call_later(wait, self._ext_flush)

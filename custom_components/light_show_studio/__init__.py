@@ -69,7 +69,7 @@ from .twinkly import TwinklyController, async_gestalt
 from .wled import WledController, async_info, fits
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = [Platform.LIGHT]
+PLATFORMS = [Platform.LIGHT, Platform.SENSOR]
 PLAYER_PLATFORMS = [Platform.MEDIA_PLAYER, Platform.SWITCH, Platform.SENSOR]
 FRONTEND_URL = "/light_show_studio"
 CARDS = ("light-show-studio-card.js", "light-show-studio-player-card.js")
