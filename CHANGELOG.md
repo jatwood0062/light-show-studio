@@ -4,6 +4,15 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.8.1] - 2026-11-11
+
+### Fixed
+- Fast effects on Govee strings no longer stall for ~0.2 s when Home Assistant is busy: steady effects are now drawn on their own thread instead of Home Assistant's event loop (fades still run on the loop and hand over when they finish).
+
+### Changed
+- Faster Govee packet building (no JSON encoding or per-bulb copies on every frame).
+
+
 ## [2.8.0] - 2026-11-11
 
 ### Added
