@@ -621,6 +621,55 @@ class C9Controller:
             return
         self._schedule_flush()
 
+    # --- saved looks (see looks.py) ----------------------------------------
+    def snapshot(self) -> dict:
+        """What this light is set to now, as plain JSON: what async_restore needs to bring it back."""
+        snap: dict = {"on": self.is_on and self._off_handle is None, "brightness": self.brightness,
+                      "colour": list(self.colour), "effect": self.effect, "pattern": self.pattern,
+                      "pattern_effect": self.pattern_effect, "speed": self.speed, "show_mode": self.show_mode,
+                      "custom": self.custom, "zone": bool(self._zones)}
+        if self.custom:
+            snap["bulbs"] = {"colours": [list(c) for c in self.bulb_colour], "levels": list(self.bulb_level)}
+        return snap
+
+    async def async_restore(self, snap: dict, transition: float | None = None) -> bool:
+        """Bring a snapshot() back through the ordinary commands, so fades and state updates behave. False when
+        the light was left alone because a show is playing on it."""
+        if self.is_on and self.show_mode and time.monotonic() - self._ext_seen <= 2:
+            return False
+        if not snap.get("on"):
+            await self.async_turn_off(transition)
+            return True
+        brightness = max(0, min(255, int(snap.get("brightness", self.brightness))))
+        self.speed = max(1, min(100, int(snap.get("speed", self.speed))))
+        self.pattern = patterns.canonical(snap.get("pattern") or "") or self.pattern
+        if snap.get("pattern_effect"):
+            self.pattern_effect = patterns.light_effect(snap["pattern_effect"])
+        colour = tuple(snap["colour"]) if snap.get("colour") else self.colour
+        effect, bulbs = snap.get("effect"), snap.get("bulbs")
+        if snap.get("show_mode"):
+            self.brightness = brightness
+            self.enable_show()
+        elif snap.get("custom") and bulbs:
+            self.release_scan()
+            self.release_zone()
+            self.colour = colour
+            self._seed_bulbs()
+            for i, (c, level) in enumerate(zip(bulbs["colours"][:self.bulbs], bulbs["levels"])):
+                self.bulb_colour[i], self.bulb_level[i] = tuple(c), level
+            self.brightness = brightness
+            self._render()  # ends an effect that was running, so turning on below draws the bulbs
+            await self.async_turn_on(brightness=brightness, transition=transition)
+        elif effect == PATTERN:
+            self.colour = colour
+            await self.async_set_pattern(self.pattern, self.pattern_effect, brightness=brightness, transition=transition)
+        elif effect in EFFECTS:
+            self.colour = colour
+            await self.async_turn_on(brightness=brightness, effect=effect, transition=transition)
+        else:
+            await self.async_turn_on(brightness=brightness, colour=colour, transition=transition)
+        return True
+
     # --- music sync (see musicmanager): a music session holds the light like a zone ------------
     @property
     def music(self) -> dict | None:

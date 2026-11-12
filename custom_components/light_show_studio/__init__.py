@@ -14,7 +14,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady, HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.typing import ConfigType
@@ -60,6 +60,8 @@ from .mask import parse_mask
 from .outputs import normalize_speakers
 from .playback import SequencePlayer
 from . import fade, patterns, upload, websocket, ws_light_schedules, ws_map, ws_music, ws_patterns, ws_schedule, ws_shows
+from . import ws_backup, ws_looks
+from .looks import async_setup_looks
 from .musicmanager import MusicManager
 from .pattern_store import PatternStore
 from .patternpreview import PreviewManager
@@ -103,6 +105,9 @@ START_ZONE_SCHEMA = vol.All(vol.Schema({
     vol.Optional("speed"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
     vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION)),
 }), cv.has_at_least_one_key("zone", "area"))
+SAVE_LOOK_SCHEMA = vol.Schema({vol.Required("name"): _NAME, vol.Optional("entity_id"): cv.entity_ids})
+APPLY_LOOK_SCHEMA = vol.Schema({vol.Required("name"): _NAME,
+                                vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION))})
 STOP_ZONE_SCHEMA = vol.All(vol.Schema({vol.Exclusive("zone", "target"): _NAME, vol.Exclusive("area", "target"): _NAME,
                                        vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION))}),
                            cv.has_at_least_one_key("zone", "area"))
@@ -148,6 +153,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     ws_light_schedules.async_register(hass)
     ws_patterns.async_register(hass)
     ws_music.async_register(hass)
+    ws_looks.async_register(hass)
+    ws_backup.async_register(hass)
     user_store = hass.data[USER_PATTERNS_KEY] = PatternStore(hass)  # your own patterns: before the map and the schedules
     await user_store.async_load()                                    # (zones and schedules refer to them by name)
     scheduler = await async_setup_scheduler(hass)  # playlists + schedules, loaded once
@@ -157,6 +164,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     zones.default_fade = fade.DEFAULT_TRANSITION  # zones fade in and out unless told otherwise
     await zones.async_load()
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: zones.async_stop_all())
+    looks = await async_setup_looks(hass, zones)  # named snapshots of what the lights show
     music = hass.data[MUSIC_KEY] = MusicManager(hass, zones)  # phone microphone -> lights, per connection
     preview = hass.data[PREVIEW_KEY] = PreviewManager(hass, zones)  # unsaved patterns shown live while they are made
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, lambda _event: music.stop_all())
@@ -218,7 +226,35 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             return
         await zones.async_stop_zone(call.data["zone"], call.data.get("transition"))
 
-    # all four drive lights or the player without a per-light check, so they are admin-only
+    async def save_look(call: ServiceCall) -> None:
+        entries = None
+        if "entity_id" in call.data:  # only these lights: their config entries
+            registry = er.async_get(hass)
+            entries = {e.config_entry_id for i in call.data["entity_id"]
+                       if (e := registry.async_get(i)) is not None and e.platform == DOMAIN and e.config_entry_id}
+            if not entries:
+                raise ServiceValidationError("None of those entities are Light Show Studio lights")
+        try:
+            await looks.async_save_current(call.data["name"], entries)
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    async def apply_look(call: ServiceCall) -> None:
+        try:
+            await looks.async_apply(call.data["name"], call.data.get("transition"))
+        except KeyError as err:
+            raise ServiceValidationError(f"No look called {call.data['name']}") from err
+
+    async def delete_look(call: ServiceCall) -> None:
+        try:
+            await looks.async_delete(call.data["name"])
+        except KeyError as err:
+            raise ServiceValidationError(f"No look called {call.data['name']}") from err
+
+    # these drive lights or the player without a per-light check, so they are admin-only
+    async_register_admin_service(hass, DOMAIN, "save_look", save_look, schema=SAVE_LOOK_SCHEMA)
+    async_register_admin_service(hass, DOMAIN, "apply_look", apply_look, schema=APPLY_LOOK_SCHEMA)
+    async_register_admin_service(hass, DOMAIN, "delete_look", delete_look, schema=vol.Schema({vol.Required("name"): _NAME}))
     async_register_admin_service(hass, DOMAIN, "start_zone", start_zone, schema=START_ZONE_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "stop_zone", stop_zone, schema=STOP_ZONE_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "play_sequence", play, schema=PLAY_SCHEMA)
