@@ -4,6 +4,29 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-11-11
+
+### Added
+- Frames are sent from a dedicated output thread, so lights keep their timing when Home Assistant is busy (turn
+  it off with `OUTPUT_THREAD` in output.py if needed). Commands and frames for a light stay in order.
+- Motion blur for fast effects on strings (speed about 65 and up): each frame blends in the moment half a frame
+  earlier, so a fast chase glides instead of jumping and a late frame shows as a smear, not a jump.
+- Diagnostic sensors per light: Frame rate, Longest gap and Failed sends (plus Late frames and Merged frames,
+  disabled by default), updated every 10 seconds. WLED/Twinkly send errors are counted; Govee reply time recorded.
+- Bulbs to keep off: per light ("Bulbs to keep off", e.g. 3, 7-12, 40, or `light_show_studio.set_mask`), for one
+  pattern (`set_pattern` `off_bulbs`), and "Keep these lights off" in light schedules. Identify and scan ignore it.
+- Saved looks: save what the lights show under a name and apply it later (Areas tab, or `save_look`,
+  `apply_look`, `delete_look`).
+- Export / import settings (map, patterns, schedules, playlists, looks) and Home Assistant diagnostics with
+  addresses redacted.
+- Music mode can follow a speaker: show-library songs are analysed once (cached as `<song>.lssa`) and lights react
+  to them with no phone microphone (`music_follow`, `music_stop`).
+- New effects: Bouncing Balls, Ripples, Pulse Wave, Ember Glow, Rainbow Comet, Stack, Carousel; new pattern
+  effects Bounce, Carousel, Scanner. None flashes faster than 3 times a second.
+
+### Changed
+- Effects draw 2-8x faster with identical output (nearly all under 1 ms for 1054 pixels).
+
 ## [2.7.3] - 2026-11-11
 
 ### Added
