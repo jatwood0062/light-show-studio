@@ -59,10 +59,10 @@ from .mapmanager import MapManager
 from .mask import parse_mask
 from .outputs import normalize_speakers
 from .playback import SequencePlayer
-from . import fade, patterns, upload, websocket, ws_light_schedules, ws_map, ws_music, ws_patterns, ws_schedule, ws_shows
+from . import fade, music_engine, patterns, upload, websocket, ws_light_schedules, ws_map, ws_music, ws_music_follow, ws_patterns, ws_schedule, ws_shows
 from . import ws_backup, ws_looks
 from .looks import async_setup_looks
-from .musicmanager import MusicManager
+from .musicmanager import MusicError, MusicManager
 from .pattern_store import PatternStore
 from .patternpreview import PreviewManager
 from .receiver import PixelReceiver
@@ -108,6 +108,18 @@ START_ZONE_SCHEMA = vol.All(vol.Schema({
 SAVE_LOOK_SCHEMA = vol.Schema({vol.Required("name"): _NAME, vol.Optional("entity_id"): cv.entity_ids})
 APPLY_LOOK_SCHEMA = vol.Schema({vol.Required("name"): _NAME,
                                 vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION))})
+_REFS = vol.All(cv.ensure_list, [_NAME], vol.Length(max=64))
+MUSIC_FOLLOW_SCHEMA = vol.All(vol.Schema({
+    vol.Required("media_player"): cv.entity_domain("media_player"),  # the speaker that plays a song of the show library
+    vol.Optional("lights", default=list): _REFS,  # light entities (or config entry ids)
+    vol.Optional("areas", default=list): _REFS,  # areas of the map, by name or id
+    vol.Optional("pattern"): vol.All(cv.string, patterns.valid_pattern),
+    vol.Optional("effect", default=music_engine.PULSE): vol.In(music_engine.EFFECTS),
+    vol.Optional("sensitivity", default=music_engine.DEFAULT_SENSITIVITY): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+    vol.Optional("song"): vol.All(cv.string, vol.Length(min=1, max=512), _no_nul),  # a library song, when the speaker's id can't be matched
+    vol.Optional("offset", default=0.0): vol.All(vol.Coerce(float), vol.Range(min=-10, max=10)),
+}), cv.has_at_least_one_key("lights", "areas"))
+MUSIC_STOP_SCHEMA = vol.Schema({vol.Optional("lights", default=list): _REFS, vol.Optional("areas", default=list): _REFS})
 STOP_ZONE_SCHEMA = vol.All(vol.Schema({vol.Exclusive("zone", "target"): _NAME, vol.Exclusive("area", "target"): _NAME,
                                        vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION))}),
                            cv.has_at_least_one_key("zone", "area"))
@@ -155,6 +167,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     ws_music.async_register(hass)
     ws_looks.async_register(hass)
     ws_backup.async_register(hass)
+    ws_music_follow.async_register(hass)
     user_store = hass.data[USER_PATTERNS_KEY] = PatternStore(hass)  # your own patterns: before the map and the schedules
     await user_store.async_load()                                    # (zones and schedules refer to them by name)
     scheduler = await async_setup_scheduler(hass)  # playlists + schedules, loaded once
@@ -255,6 +268,33 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async_register_admin_service(hass, DOMAIN, "save_look", save_look, schema=SAVE_LOOK_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "apply_look", apply_look, schema=APPLY_LOOK_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "delete_look", delete_look, schema=vol.Schema({vol.Required("name"): _NAME}))
+    def light_entries(refs: list[str]) -> list[str]:
+        """Light entity ids -> the config entries they belong to (anything else is taken as an entry id)."""
+        from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
+        reg = er.async_get(hass)
+        out: list[str] = []
+        for ref in refs:
+            ent = reg.async_get(ref) if "." in ref else None
+            if "." in ref and (ent is None or ent.platform != DOMAIN or not ent.config_entry_id):
+                raise ServiceValidationError(f"{ref} is not a Light Show Studio light")
+            out.append(ent.config_entry_id if ent else ref)
+        return list(dict.fromkeys(out))
+
+    async def music_follow(call: ServiceCall) -> None:
+        d = call.data
+        try:
+            await music.async_follow(d["media_player"], light_entries(d["lights"]), d["areas"], pattern=d.get("pattern"),
+                                     effect=d["effect"], sensitivity=d["sensitivity"], song=d.get("song"),
+                                     offset=d["offset"])
+        except MusicError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    async def music_stop(call: ServiceCall) -> None:
+        music.stop(None, light_entries(call.data["lights"]), call.data["areas"])
+
+    # these drive lights or the player without a per-light check, so they are admin-only
+    async_register_admin_service(hass, DOMAIN, "music_follow", music_follow, schema=MUSIC_FOLLOW_SCHEMA)
+    async_register_admin_service(hass, DOMAIN, "music_stop", music_stop, schema=MUSIC_STOP_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "start_zone", start_zone, schema=START_ZONE_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "stop_zone", stop_zone, schema=STOP_ZONE_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "play_sequence", play, schema=PLAY_SCHEMA)

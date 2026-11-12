@@ -251,3 +251,76 @@ delete_look:
       example: Christmas Eve
       selector:
         text:
+
+music_follow:
+  fields:
+    media_player:
+      required: true
+      example: media_player.living_room
+      selector:
+        entity:
+          domain: media_player
+    lights:
+      example: light.porch_string
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - integration: light_show_studio
+              domain: light
+    areas:
+      example: Porch
+      selector:
+        text:
+          multiple: true
+    pattern:
+      example: Warm White
+      selector:
+        text:
+    effect:
+      default: Pulse
+      selector:
+        select:
+          options:
+            - Pulse
+            - Beat Chase
+            - Spectrum
+            - Flash
+            - Beat Scatter
+            - Gravity Drop
+            - Beat Shell
+    sensitivity:
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 100
+          mode: slider
+    song:
+      example: Carol of the Bells/Carol of the Bells.mp3
+      selector:
+        text:
+    offset:
+      default: 0
+      selector:
+        number:
+          min: -10
+          max: 10
+          step: 0.05
+          unit_of_measurement: s
+
+music_stop:
+  fields:
+    lights:
+      example: light.porch_string
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - integration: light_show_studio
+              domain: light
+    areas:
+      example: Porch
+      selector:
+        text:
+          multiple: true
