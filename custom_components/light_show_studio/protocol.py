@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
+import itertools
 import json
+import operator
 import socket
 import struct
 
@@ -30,10 +33,7 @@ Colour = tuple[int, int, int]
 
 def _frame(cmd: int, data: bytes) -> bytes:
     body = bytes([0xBB]) + struct.pack(">H", len(data)) + bytes([cmd]) + data
-    cs = 0
-    for b in body:
-        cs ^= b
-    return body + bytes([cs])
+    return body + bytes([functools.reduce(operator.xor, body)])
 
 
 def _wrap(cmd: str, data: dict) -> bytes:
@@ -59,9 +59,10 @@ def realtime_msg(on: bool) -> bytes:
 
 
 def colours_msg(colours: list[Colour], blend: bool = False) -> bytes:
-    rgb = b"".join(bytes(c) for c in colours)
+    rgb = bytes(itertools.chain.from_iterable(colours))  # (one bytes object, not one per bulb)
     pkt = _frame(CMD_COLORS, bytes([0 if blend else 1, len(colours)]) + rgb)
-    return _wrap("razer", {"pt": base64.b64encode(pkt).decode()})
+    # the same bytes _wrap makes: base64 needs no JSON escaping, so the hot path skips json.dumps
+    return b'{"msg":{"cmd":"razer","data":{"pt":"%s"}}}' % base64.b64encode(pkt)
 
 
 class GoveeLan:

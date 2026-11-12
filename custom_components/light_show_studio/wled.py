@@ -76,6 +76,7 @@ async def async_info(session: aiohttp.ClientSession, ip: str) -> dict[str, Any]:
 
 class WledController(C9Controller):
     UDP_PORT = DDP_PORT
+    THREADED = False  # sends are timed by loop callbacks (rate cap, keep-alive): effects stay on the loop
 
     def __init__(self, hass: HomeAssistant, host: str, bulbs: int, rgbw: bool = False, offset: int = 0) -> None:
         super().__init__(hass, host, bulbs, True)  # always takes a frame per LED

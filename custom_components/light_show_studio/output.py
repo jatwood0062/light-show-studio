@@ -5,10 +5,14 @@ thread only owns the sockets and the ports' queues, never hass or controller sta
 submission order: `control()` packets (turn on/off, brightness, realtime arm) always go out in order, and a
 `submit()`ted frame replaces the frame before it when that one has not left yet (newest wins, counted as
 coalesced), but never jumps over a control packet. A port that fails (OSError) counts the failure and moves on;
-no port waits for another. `OUTPUT_THREAD = False` leaves every light on its direct sends."""
+no port waits for another. `OUTPUT_THREAD = False` leaves every light on its direct sends.
+
+A second daemon thread, the `RenderDriver`, renders steady effects: each light's `RenderJob` is ticked on the shared
+1/FPS beat (the loop only starts and stops jobs), so a busy event loop cannot delay a frame."""
 from __future__ import annotations
 
 import logging
+import math
 import socket
 import threading
 import time
@@ -22,6 +26,106 @@ OUTPUT_THREAD = True  # False: no thread, every light sends directly from the ev
 OUTPUT_KEY = f"{DOMAIN}_output"
 IDLE = 0.5  # seconds the thread sleeps with nothing queued (a submit wakes it at once)
 SPIN = 0.002  # the last stretch before a due time is waited out in a tight loop, for the timing
+
+
+class RenderJob:
+    """One light's steady animation. `tick(job, now, due)` renders and submits a frame and returns the seconds to
+    the next one (None: done). Ticks run under `lock`, so `cancel()` returns only when no frame is in flight."""
+
+    def __init__(self, tick: Any, step: float) -> None:
+        self.tick = tick
+        self.step = step
+        self.lock = threading.Lock()
+        self.live = True
+        self.first = True  # the first tick is due "now", not on a beat it could be late for
+        self.last = self.due = 0.0  # (time.monotonic) previous tick, and when the next is due
+
+    def cancel(self) -> None:
+        """From any thread: no frame is submitted after this returns (a render in flight is waited for, briefly)."""
+        self.live = False
+        if self.lock.acquire(timeout=0.2):
+            self.lock.release()
+
+
+class RenderDriver:
+    """Ticks every job on a fixed beat shared by all lights (the `math.floor(now / step) * step` grid), so their
+    frames go out together. Its own thread, apart from the sockets': a slow render never holds a due send."""
+
+    def __init__(self) -> None:
+        self._jobs: list[RenderJob] = []
+        self._lock = threading.Lock()
+        self._event = threading.Event()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="light_show_studio render", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        thread, self._thread = self._thread, None
+        self._stop.set()
+        self._event.set()
+        if thread is not None:
+            thread.join(timeout)
+
+    def add(self, job: RenderJob) -> None:
+        now = time.monotonic()
+        job.last, job.due = now, math.floor(now / job.step) * job.step
+        with self._lock:
+            self._jobs.append(job)
+        self._event.set()
+
+    def remove(self, job: RenderJob) -> None:
+        job.cancel()
+        with self._lock:
+            if job in self._jobs:
+                self._jobs.remove(job)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._event.clear()
+            with self._lock:
+                jobs = list(self._jobs)
+            nxt = None
+            for job in jobs:
+                if job.due <= time.monotonic():
+                    self._tick(job)
+                if job.live and (nxt is None or job.due < nxt):
+                    nxt = job.due
+            if nxt is None:
+                self._event.wait(IDLE)
+            elif (left := nxt - time.monotonic()) > 0:
+                self._event.wait(left)
+
+    def _tick(self, job: RenderJob) -> None:
+        with job.lock:
+            if not job.live:
+                return
+            now = time.monotonic()
+            try:
+                step = job.tick(job, now, job.due)
+            except Exception:  # noqa: BLE001  one bad light must not stop the others
+                _LOGGER.exception("Render error")
+                step = None
+            job.first, job.last = False, now
+            if step is None:
+                job.live = False
+            else:
+                job.due += step
+                if job.due - time.monotonic() < -step:  # fell behind: start the beat again from now
+                    job.due = math.floor(time.monotonic() / step) * step
+        if not job.live:
+            with self._lock:
+                if job in self._jobs:
+                    self._jobs.remove(job)
 
 
 class OutputPort:
@@ -104,6 +208,7 @@ class OutputThread:
         self._event = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.driver: RenderDriver | None = None if sync else RenderDriver()  # (sync=True: effects render on the loop)
 
     def open_port(self, addr: tuple[str, int], stats: Any = None) -> OutputPort:
         port = OutputPort(self, addr, stats)
@@ -122,9 +227,13 @@ class OutputThread:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="light_show_studio output", daemon=True)
         self._thread.start()
+        if self.driver is not None:
+            self.driver.start()
 
     def stop(self, timeout: float = 2.0) -> None:
         """Stop and join the thread (blocking: call it from an executor)."""
+        if self.driver is not None:
+            self.driver.stop(timeout)
         thread, self._thread = self._thread, None
         self._stop.set()
         self._event.set()

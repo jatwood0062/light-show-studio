@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import threading
 import time
 from collections.abc import Callable
 
@@ -14,6 +15,7 @@ from . import fade, patterns
 from .patterns import PATTERN
 from .hosts import valid_ipv4
 from .stats import LinkStats
+from .output import RenderJob
 from .protocol import CMD_PORT, Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
 
 SCAN_RESEND = (0.05, 0.15)  # seconds after a scan frame at which it is sent once more (UDP may lose it)
@@ -28,6 +30,9 @@ SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive
 BLUR_FROM = 1.5  # speed factor (about speed 65) from which fast effects get motion blur
 BLUR_MAX_BULBS = 300  # strings, not big strips: two renders a frame are cheap for 50 bulbs
 STATEFUL = {"Fireworks"}  # effects that draw from random state: rendering twice a frame would double their events
+
+
+_STATEFUL_LOCK = threading.Lock()  # Fireworks' state is shared: the render thread and the loop never draw it at once
 
 
 def _blend(a: list[Colour], b: list[Colour]) -> list[Colour]:
@@ -56,6 +61,9 @@ class C9Controller:
         self.lan = self._make_link(host)
         self.stats = LinkStats()  # delivery health, shown as diagnostic sensors
         self.port = None  # this light's port on the output thread (output.py), None = send directly
+        self._driver = None  # the output thread's RenderDriver: steady effects render there, not on the event loop
+        self._job: RenderJob | None = None  # this light's running render job
+        self._frames_pending = False  # a frame-listener call is already queued on the loop (one per burst)
         self.bulbs = bulbs
         self.show_lead_ms = 0  # -500..500: this light gets .fseq frames for t + lead (set by the integration from the option)
         self.segmented = segmented  # False: the light takes one colour, the frame's average
@@ -116,8 +124,7 @@ class C9Controller:
         self._wire: tuple[list[Colour], float] | None = None  # the last frame sent to the light, and when
         self._wire_raw: tuple[bytes, int] | None = None  # ...and the sequencer bytes + brightness it was made from
         self._zone_dirty = False  # a zone frame is waiting to be sent (several zones on one light make one send)
-        self._base_key: tuple | None = None
-        self._base: list[Colour] = []
+        self._base_cache: tuple[tuple, list[Colour]] | None = None  # (key, colours), one attribute so threads see both
         self._last_raw: list[Colour] = []  # the last effect frame before the brightness setting and any fade-in/out
         self._off_handle: asyncio.TimerHandle | None = None
         # bulbs (0-based) kept dark: `mask` under everything this light shows but identify and a camera scan (the
@@ -127,6 +134,7 @@ class C9Controller:
 
     # --- hardware hooks (a subclass for another brand overrides these) ----
     UDP_PORT = CMD_PORT  # where this light's frames go (a subclass for another brand sets its own)
+    THREADED = True  # steady effects may render on the output thread (needs _hw_push); False: always on the loop
 
     def _make_link(self, host: str) -> GoveeLan | None:
         return GoveeLan(host)
@@ -134,6 +142,7 @@ class C9Controller:
     def use_output(self, thread) -> None:
         """Send this light's packets from the dedicated output thread (output.py)."""
         self.port = thread.open_port((self.host, self.UDP_PORT), self.stats)
+        self._driver = thread.driver
         if self.lan is not None:
             self.lan.port = self.port
 
@@ -142,7 +151,12 @@ class C9Controller:
 
     def _hw_frame(self, frame: list[Colour]) -> None:
         """Show a per-bulb frame that is already scaled by the brightness."""
-        now = time.monotonic()
+        self._hw_push(frame, time.monotonic())
+        if self._keep_handle is None:
+            self._keep_handle = self.hass.loop.call_later(KEEPALIVE, self._keep_alive)
+
+    def _hw_push(self, frame: list[Colour], now: float) -> None:
+        """Put the frame on the wire. Thread-safe (the render thread calls it): no timers, no hass."""
         if not self._realtime:
             self.lan.send(brightness_msg(100))  # the string's own dimmer would dim every frame
         if not self._realtime or now - self._hw_sent >= REARM_AFTER:
@@ -156,8 +170,6 @@ class C9Controller:
         if frame != self._hw_last:
             self._hw_changed = now
         self._hw_last, self._hw_sent = frame, now
-        if self._keep_handle is None:
-            self._keep_handle = self.hass.loop.call_later(KEEPALIVE, self._keep_alive)
 
     def _keep_alive(self) -> None:
         """Send a still picture again for a while: UDP can lose the one frame a still look or a held show sends."""
@@ -227,6 +239,12 @@ class C9Controller:
 
     # --- rendering -------------------------------------------------------
     def _base_frame(self, t: float) -> list[Colour]:
+        if self.effect in STATEFUL:
+            with _STATEFUL_LOCK:
+                return self._draw(t)
+        return self._draw(t)
+
+    def _draw(self, t: float) -> list[Colour]:
         if self.effect == PATTERN:
             base = None
             if patterns.light_effect(self.pattern_effect) != patterns.CHASE:  # (Chase must see no base: it looks the same)
@@ -242,9 +260,10 @@ class C9Controller:
         """The pattern's colours along the string, worked out once (again when a user pattern changes)."""
         name = patterns.canonical(self.pattern) or patterns.DEFAULT_PATTERN
         key = (name, self.bulbs, self.entry_id, patterns.user_epoch())
-        if self._base_key != key:
-            self._base_key, self._base = key, patterns.base_colours(name, self.bulbs, self.entry_id)
-        return self._base
+        cache = self._base_cache
+        if cache is None or cache[0] != key:
+            cache = self._base_cache = (key, patterns.base_colours(name, self.bulbs, self.entry_id))
+        return cache[1]
 
     def _send_frame(self, frame: list[Colour], scaled: bool = True, fx: bool = False,
                     raw: tuple[bytes, int] | None = None) -> None:
@@ -256,11 +275,8 @@ class C9Controller:
         if not self.segmented:
             self._send_whole(frame)
             return
-        if scaled and self.brightness != 255:
-            f = self.brightness / 255
-            frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
-        if scaled and (self.mask or self.look_mask):  # (a scan frame is not scaled, and must show every bulb)
-            frame = self._masked(frame, fx)
+        if scaled:
+            frame = self._shown(frame, fx)
         now = time.monotonic()
         wire = self._wire
         if wire is not None and now - wire[1] < RESEND_AFTER and wire[0] == frame:
@@ -269,6 +285,16 @@ class C9Controller:
         self._hw_frame(frame)
         self._set_frame(frame)
         self._wire, self._wire_raw = (frame, now), raw
+
+    def _shown(self, frame: list[Colour], fx: bool) -> list[Colour]:
+        """The frame with the brightness setting and the masks applied (a scan frame is neither: it must show every
+        bulb)."""
+        if self.brightness != 255:
+            f = self.brightness / 255
+            frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
+        if self.mask or self.look_mask:
+            frame = self._masked(frame, fx)
+        return frame
 
     def _masked(self, frame: list[Colour], fx: bool) -> list[Colour]:
         """The frame with the masked bulbs black (the pattern's own mask only under this light's pattern)."""
@@ -289,7 +315,7 @@ class C9Controller:
             pass
         elif self._zones:
             self._resend_zone()
-        elif not self.show_mode and (self._task is None or self._task.done()):
+        elif not self.show_mode and not self._animating():
             self._render()  # (a running animation, or the next sequencer frame, picks it up by itself)
         self._notify()
 
@@ -364,7 +390,9 @@ class C9Controller:
         self._stop_animation()
         if not self.is_on or self.show_mode or self._zones or self._scanning:
             return  # in show mode the sequencer's frames are the picture; with a zone, the zone's; a scan, its own
-        if self._is_animated() or self._transitioning():
+        if self._is_animated() and not self._transitioning() and self._threadable():
+            self._start_job()
+        elif self._is_animated() or self._transitioning():
             self._task = self.hass.async_create_background_task(self._animate(), "light_show_studio effect")
         else:
             self._send_frame(self._base_frame(0), fx=True)
@@ -386,12 +414,22 @@ class C9Controller:
         def _go() -> None:
             self._resume_handle = None
             if self.is_on and not self.show_mode and not self._zones and not self._identifying and not self._scanning \
-                    and self._task is None and self._is_animated():
+                    and not self._animating() and self._is_animated():
                 self._render()
         if self._resume_handle is None:
             self._resume_handle = self.hass.loop.call_later(delay, _go)
 
-    async def _animate(self) -> None:
+    def _animating(self) -> bool:
+        """An effect is running, on the render thread or as a loop task."""
+        return (self._job is not None and self._job.live) or (self._task is not None and not self._task.done())
+
+    def _threadable(self) -> bool:
+        """Steady effects can render on the output thread (not for whole-light colour or the loop-timed WLED /
+        Twinkly sends); fades stay on the loop, which owns the fade state."""
+        return (self.THREADED and self.segmented and self.port is not None
+                and self._driver is not None and self._driver.running)
+
+    def _clock_start(self) -> float:
         # Effect time runs at the speed setting; accumulating it lets the speed change smoothly mid-effect.
         # Re-rendering the same effect (or changing a Pattern's colours or motion) keeps the clock running, so
         # nothing jumps back to the start.
@@ -400,6 +438,63 @@ class C9Controller:
         peer = self._peer_clock()
         t = peer if peer is not None else (self._fx_t if self.effect == self._fx_effect else 0.0)
         self._fx_effect = self.effect
+        return t
+
+    def _start_job(self) -> None:
+        self._fx_t = self._clock_start()
+        self._job = RenderJob(self._job_tick, 1 / FPS)
+        self._driver.add(self._job)
+
+    def _job_tick(self, job: RenderJob, now: float, due: float) -> float | None:
+        """One frame of the steady effect, on the render thread: no hass, no timers, no HA state writes (the loop
+        starts and stops the job; it reads the look's attributes, each a single value, as the loop path did)."""
+        step = 1 / FPS
+        if not self._is_animated() or self._transitioning() or not self.segmented:
+            self._on_loop(self._render)  # a fade or a still look: back to the loop, which owns the fade state
+            return None
+        if not job.first:
+            self.stats.woke(now - due, step)
+        sf = patterns.speed_factor(self.speed)
+        self._fx_t = t = self._fx_t + min(now - job.last, 0.25) * sf  # a long stall doesn't leap ahead
+        frame = self._blurred(t, step, sf)
+        self._last_raw = frame
+        frame = self._shown(frame, True)
+        if not job.live:  # stopped while rendering: nothing goes out after the stop
+            return None
+        now = time.monotonic()
+        wire = self._wire
+        if wire is None or now - wire[1] >= RESEND_AFTER or wire[0] != frame:
+            self._hw_push(frame, now)
+            self.frame, self._wire, self._wire_raw = frame, (frame, now), None
+            self._frames_changed()
+        return step
+
+    def _blurred(self, t: float, step: float, sf: float) -> list[Colour]:
+        if sf >= BLUR_FROM and self.bulbs <= BLUR_MAX_BULBS and self.effect not in STATEFUL:
+            # fast motion: blend the moment half a frame earlier in, a light motion blur, so a chase that moves
+            # several bulbs a frame glides instead of jumping (and one late frame shows as a smear, not a jump)
+            return _blend(self._base_frame(t), self._base_frame(t - 0.5 * step * sf))
+        return self._base_frame(t)
+
+    def _on_loop(self, fn: Callable[[], None]) -> None:
+        try:
+            self.hass.loop.call_soon_threadsafe(fn)
+        except RuntimeError:  # the loop is closed: shutting down
+            pass
+
+    def _frames_changed(self) -> None:
+        """Tell frame listeners (the card preview) on the loop, once per burst: they may touch HA, so never here."""
+        if self._frame_listeners and not self._frames_pending:
+            self._frames_pending = True
+            self._on_loop(self._notify_frames)
+
+    def _notify_frames(self) -> None:
+        self._frames_pending = False
+        for cb in list(self._frame_listeners):
+            cb()
+
+    async def _animate(self) -> None:
+        t = self._clock_start()
         step = 1 / FPS
         last = time.monotonic()
         due = math.floor(last / step) * step  # every light ticks on the same beat, so their frames go out together
@@ -409,13 +504,12 @@ class C9Controller:
             last = now
             self._fx_t = t
             sf = patterns.speed_factor(self.speed)
-            if sf >= BLUR_FROM and self.bulbs <= BLUR_MAX_BULBS and self.effect not in STATEFUL:
-                # fast motion: blend the moment half a frame earlier in, a light motion blur, so a chase that moves
-                # several bulbs a frame glides instead of jumping (and one late frame shows as a smear, not a jump)
-                frame = _blend(self._base_frame(t), self._base_frame(t - 0.5 * step * sf))
-            else:
-                frame = self._base_frame(t)
-            self._send_frame(frame, fx=True)
+            self._send_frame(self._blurred(t, step, sf), fx=True)
+            if self._is_animated() and not self._transitioning() and self._threadable():
+                # any fade has finished: from here the render thread carries the effect (same clock)
+                self._task = None
+                self._start_job()
+                return
             if not self._is_animated():
                 if not self._transitioning():  # a still look has finished fading in / blending: nothing more to send
                     if self._task is asyncio.current_task():
@@ -444,13 +538,19 @@ class C9Controller:
         look = (self.effect, self.pattern, self.pattern_effect, self.speed)
         for entry in entries:
             peer = getattr(entry, "runtime_data", None)
-            if (peer is not self and isinstance(peer, C9Controller) and peer._task is not None
+            if (peer is not self and isinstance(peer, C9Controller) and peer._animating()
                     and (peer.effect, peer.pattern, peer.pattern_effect, peer.speed) == look
                     and peer._fx_effect == peer.effect):
                 return peer._fx_t
         return None
 
     def _stop_animation(self) -> None:
+        if self._job is not None:
+            job, self._job = self._job, None
+            if self._driver is not None:
+                self._driver.remove(job)  # waits out a frame being rendered: none goes out after this
+            else:
+                job.cancel()
         if self._task:
             self._task.cancel()
             self._task = None
@@ -533,8 +633,7 @@ class C9Controller:
             self._ramp = fade.Ramp(resumed, 1.0, dur, now) if dur > 0 and resumed < 1 else None
         if blend_from is not None and (colour is not None or effect is not None) and not self.show_mode:
             self._xf = fade.Xfade(blend_from, dur, now)  # the old picture dissolves into the new look
-        if colour is None and effect is None and self._task is not None and not self._task.done() \
-                and resumed is None:
+        if colour is None and effect is None and self._animating() and resumed is None:
             self._notify()  # brightness only, or "on" again: the running effect picks it up next frame; don't restart it
             return
         self._render()
@@ -572,7 +671,7 @@ class C9Controller:
             now = self._now()
             current = self._ramp.level(now) if self._ramp is not None else 1.0
             self._ramp, self._xf = fade.Ramp(current, 0.0, dur, now), None
-            if self._task is None or self._task.done():
+            if not self._animating():
                 self._render()
             self._off_handle = self.hass.loop.call_later(dur + 0.02, self._finish_off)
             self._notify()

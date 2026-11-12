@@ -191,6 +191,7 @@ class TwinklyClient:
 
 class TwinklyController(C9Controller):
     UDP_PORT = RT_PORT
+    THREADED = False  # sends are timed by loop callbacks (arming, rate cap, keep-alive): effects stay on the loop
 
     def __init__(self, hass: HomeAssistant, host: str, bulbs: int, profile: str = "RGB",
                  frame_rate: float | None = None) -> None:

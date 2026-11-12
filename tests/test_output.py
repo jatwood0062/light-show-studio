@@ -3,6 +3,7 @@ them, one port failing does not stop another, and the thread starts and stops cl
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import socket
 import time
@@ -166,3 +167,84 @@ async def test_wled_ddp_packets_go_out_on_the_port_and_count_as_sent():
     ctl.shutdown()
     assert ctl.port.submit([b"x"]) is False  # shutdown closes the port
     sink.close()
+
+
+# --- effects render on the output thread ---------------------------------------------------------
+def _threaded_light(bulbs=20):
+    """A real Govee controller on a started output thread; every frame handed to its port is timed."""
+    th = out.OutputThread()
+    th.start()
+    ctl = tz.controller.C9Controller(tz.FakeHass(), "192.168.1.10", bulbs, True)
+    ctl.use_output(th)
+    ctl.is_on, ctl.show_mode = True, False
+    stamps = []
+    real = ctl.port.submit
+
+    def submit(packets, due=None):
+        stamps.append(time.monotonic())
+        return real(packets, due)
+
+    ctl.port.submit = submit
+    return th, ctl, stamps
+
+
+def _max_gap(stamps, start, end):
+    inside = [t for t in stamps if start <= t <= end]
+    return max(b - a for a, b in zip(inside, inside[1:]))
+
+
+@aio
+async def test_a_blocked_event_loop_does_not_stall_an_animated_light():
+    th, ctl, stamps = _threaded_light()
+    try:
+        ctl.speed = 80
+        await ctl.async_turn_on(effect="Rainbow Flow", transition=0)  # (a smooth one: every frame differs)
+        assert ctl._job is not None and ctl._task is None  # rendering on the thread, not as a loop task
+        await asyncio.sleep(0.3)
+        start = time.monotonic()
+        time.sleep(0.3)  # something slow on the event loop
+        await asyncio.sleep(0.3)
+        assert len(stamps) > 10
+        assert _max_gap(stamps, start, start + 0.3) < 0.08
+        assert ctl.frame != [(0, 0, 0)] * ctl.bulbs and ctl._fx_t > 0.5  # the card's frame and the clock kept going
+    finally:
+        ctl.shutdown()
+        th.stop()
+
+
+@aio
+async def test_stopping_or_changing_a_threaded_effect_takes_effect_at_once():
+    th, ctl, stamps = _threaded_light()
+    try:
+        await ctl.async_set_pattern("Classic Multicolor", "Chase", 50, transition=0)
+        await asyncio.sleep(0.2)
+        first = ctl._job
+        await ctl.async_set_pattern("Candy Cane", "Twinkle", None, transition=0)  # a new look: a fresh job
+        assert ctl._job is not first and not first.live
+        n = len(stamps)
+        await asyncio.sleep(0.15)
+        assert len(stamps) > n  # the new look is rendering
+        await ctl.async_turn_off(transition=0)
+        assert ctl._job is None
+        n = len(stamps)
+        await asyncio.sleep(0.2)
+        assert len(stamps) == n  # nothing after off
+        assert ctl.frame == [(0, 0, 0)] * ctl.bulbs
+    finally:
+        ctl.shutdown()
+        th.stop()
+
+
+@aio
+async def test_a_fade_runs_on_the_loop_then_the_thread_takes_the_effect_over():
+    th, ctl, stamps = _threaded_light()
+    try:
+        await ctl.async_set_pattern("Classic Multicolor", "Chase", 50, transition=0)
+        await asyncio.sleep(0.1)
+        await ctl.async_set_pattern("Candy Cane", None, None, transition=0.2)
+        assert ctl._job is None and ctl._task is not None  # the fade is the loop's
+        await asyncio.sleep(0.5)
+        assert ctl._xf is None and ctl._job is not None and ctl._job.live and ctl._task is None
+    finally:
+        ctl.shutdown()
+        th.stop()
