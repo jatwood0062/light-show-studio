@@ -1,7 +1,6 @@
 """Saved looks (controller snapshot / restore, the store, the websocket commands) and the settings backup."""
 from __future__ import annotations
 
-import asyncio
 import copy
 
 import pytest

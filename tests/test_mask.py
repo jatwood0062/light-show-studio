@@ -1,7 +1,6 @@
 """Bulb masks: the parser, and the controller keeping masked bulbs dark (plain pytest, no Home Assistant)."""
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 from pathlib import Path
 

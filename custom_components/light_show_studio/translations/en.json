@@ -251,6 +251,44 @@
         }
       }
     },
+    "save_look": {
+      "name": "Save look",
+      "description": "Save what the lights show now under a name, to bring back later (a look with that name is replaced).",
+      "fields": {
+        "name": {
+          "name": "Name",
+          "description": "What to call the look."
+        },
+        "entity_id": {
+          "name": "Lights",
+          "description": "Only save these lights. Leave empty to save every light and the running zones."
+        }
+      }
+    },
+    "apply_look": {
+      "name": "Apply look",
+      "description": "Bring a saved look back on the lights. A light a show is playing on is left alone.",
+      "fields": {
+        "name": {
+          "name": "Name",
+          "description": "The look to apply."
+        },
+        "transition": {
+          "name": "Transition",
+          "description": "Seconds to fade to the look."
+        }
+      }
+    },
+    "delete_look": {
+      "name": "Delete look",
+      "description": "Delete a saved look.",
+      "fields": {
+        "name": {
+          "name": "Name",
+          "description": "The look to delete."
+        }
+      }
+    },
     "music_follow": {
       "name": "Music: follow a speaker",
       "description": "Make lights react to the song a speaker is playing, with no microphone. Works for songs of the show library (the media folder's xlights folder): the song is analysed once, then the lights follow the speaker's position. Ends when the speaker stops or plays something else.",

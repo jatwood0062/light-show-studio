@@ -473,7 +473,7 @@ async def test_starting_again_swaps_the_session_and_stop_ends_it(hass, d):
     assert list(music.sessions) == [res["session"]] and music.sessions[res["session"]] is not session
     assert not follow.active and not follow.tick()  # the old follower lets go
     assert music.view()[0]["follow"] == SPEAKER and music.view()[0]["effect"] == "Spectrum"
-    assert music.stop_follows(["e2"]) == 0 and music.stop_follows(["e1"]) == 1 and not music.sessions
+    assert music.stop(None, ["e2"]) == 0 and music.stop(None, ["e1"]) == 1 and not music.sessions
 
 
 # --- the websocket commands -------------------------------------------------------------------------------------------

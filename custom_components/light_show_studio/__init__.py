@@ -239,6 +239,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             return
         await zones.async_stop_zone(call.data["zone"], call.data.get("transition"))
 
+    # the services below drive lights or the player without a per-light check, so they are admin-only
     async def save_look(call: ServiceCall) -> None:
         entries = None
         if "entity_id" in call.data:  # only these lights: their config entries
@@ -264,13 +265,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         except KeyError as err:
             raise ServiceValidationError(f"No look called {call.data['name']}") from err
 
-    # these drive lights or the player without a per-light check, so they are admin-only
     async_register_admin_service(hass, DOMAIN, "save_look", save_look, schema=SAVE_LOOK_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "apply_look", apply_look, schema=APPLY_LOOK_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "delete_look", delete_look, schema=vol.Schema({vol.Required("name"): _NAME}))
+
     def light_entries(refs: list[str]) -> list[str]:
         """Light entity ids -> the config entries they belong to (anything else is taken as an entry id)."""
-        from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
         reg = er.async_get(hass)
         out: list[str] = []
         for ref in refs:
@@ -292,7 +292,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def music_stop(call: ServiceCall) -> None:
         music.stop(None, light_entries(call.data["lights"]), call.data["areas"])
 
-    # these drive lights or the player without a per-light check, so they are admin-only
     async_register_admin_service(hass, DOMAIN, "music_follow", music_follow, schema=MUSIC_FOLLOW_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "music_stop", music_stop, schema=MUSIC_STOP_SCHEMA)
     async_register_admin_service(hass, DOMAIN, "start_zone", start_zone, schema=START_ZONE_SCHEMA)
