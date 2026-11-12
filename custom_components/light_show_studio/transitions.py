@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable, Sequence
+from itertools import chain
 
 from .fade import scale_bytes
 
@@ -39,7 +40,11 @@ def blend(a: bytes, b: bytes, k: float) -> bytes:
     k = _clamp(k)
     n = max(len(a), len(b))
     a, b = bytes(a).ljust(n, b"\0"), bytes(b).ljust(n, b"\0")
-    return bytes(int(x + (y - x) * k) for x, y in zip(a, b))
+    if k <= 0.0:
+        return a
+    if k >= 1.0:
+        return b
+    return bytes([int(x + (y - x) * k) for x, y in zip(a, b)])
 
 
 def default_effect(effects: Sequence[str]) -> str:
@@ -60,10 +65,15 @@ def effect_buffer(subs: Iterable[tuple[int, int, object]], effect_fn: Callable, 
         if bulbs <= 0 or start < 0 or start >= len(buf):
             continue
         try:
-            cols = effect_fn(t, bulbs, colour)
-            out = bytearray()
-            for c in list(cols)[:bulbs]:
-                out += bytes(max(0, min(255, int(v))) for v in c[:3])
+            cols = list(effect_fn(t, bulbs, colour))[:bulbs]
+            try:  # the usual case, in one go: every colour is three whole numbers 0-255
+                if set(map(len, cols)) - {3}:
+                    raise ValueError
+                out = bytearray(chain.from_iterable(cols))
+            except (TypeError, ValueError):  # anything else: clamp and trim colour by colour
+                out = bytearray()
+                for c in cols:
+                    out += bytes(max(0, min(255, int(v))) for v in c[:3])
         except Exception:  # noqa: BLE001  a bad effect must not stop the show queue
             _LOGGER.debug("Intermission effect failed", exc_info=True)
             continue

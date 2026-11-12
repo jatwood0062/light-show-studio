@@ -4,7 +4,6 @@ STILL effects are drawn once; the rest are animated by the coordinator.
 """
 from __future__ import annotations
 
-import colorsys
 import functools
 import math
 import random
@@ -32,8 +31,27 @@ GOLD_WHITE_C9 = [(255, 140, 0), (255, 200, 140)]
 
 
 def _hsv(h: float, s: float = 1.0, v: float = 1.0) -> Colour:
-    r, g, b = colorsys.hsv_to_rgb(h % 1.0, s, v)
-    return int(r * 255), int(g * 255), int(b * 255)
+    # colorsys.hsv_to_rgb written out: the same arithmetic (so the same colours) without the extra call
+    h = h % 1.0
+    if s == 0.0:
+        return int(v * 255), int(v * 255), int(v * 255)
+    i = int(h * 6.0)
+    f = (h * 6.0) - i
+    p = v * (1.0 - s)
+    q = v * (1.0 - s * f)
+    k = v * (1.0 - s * (1.0 - f))
+    i = i % 6
+    if i == 0:
+        return int(v * 255), int(k * 255), int(p * 255)
+    if i == 1:
+        return int(q * 255), int(v * 255), int(p * 255)
+    if i == 2:
+        return int(p * 255), int(v * 255), int(k * 255)
+    if i == 3:
+        return int(p * 255), int(q * 255), int(v * 255)
+    if i == 4:
+        return int(k * 255), int(p * 255), int(v * 255)
+    return int(v * 255), int(p * 255), int(q * 255)
 
 
 def _scale(c: Colour, f: float) -> Colour:
@@ -70,12 +88,16 @@ def _candy_spin(t, n, base):
     like a rotating candy cane rather than bulbs jumping."""
     stripe, speed = 3.0, 16.0  # bulbs per stripe, bulbs per second
     out = []
+    append = out.append
+    shift = t * speed
     for i in range(n):
-        pos = ((i - t * speed) / stripe) % 2.0  # 0-1 red, 1-2 white
-        edge = min(pos % 1.0, 1 - pos % 1.0)  # distance to nearest stripe edge
+        pos = ((i - shift) / stripe) % 2.0  # 0-1 red, 1-2 white
+        e = pos % 1.0
+        edge = min(e, 1 - e)  # distance to nearest stripe edge
         mix = 0.5 + min(edge * 2.5, 0.5)  # 0.5 at the edge, 1.0 in the middle
         a, b = (RED, WHITE) if pos < 1 else (WHITE, RED)
-        out.append(tuple(int(x * mix + y * (1 - mix)) for x, y in zip(a, b)))
+        rest = 1 - mix
+        append((int(a[0] * mix + b[0] * rest), int(a[1] * mix + b[1] * rest), int(a[2] * mix + b[2] * rest)))
     return out
 
 
@@ -127,6 +149,37 @@ def _offset(i: int, seed: int) -> float:
     return _hash(i, seed)
 
 
+@functools.lru_cache(maxsize=64)
+def _offsets(n: int, seed: int) -> tuple[float, ...]:
+    """_offset(i, seed) for bulbs 0..n-1, kept: a frame reads them in one go."""
+    return tuple(_offset(i, seed) for i in range(n))
+
+
+def events_row(t: float, n: int, seed: int, slot: float, prob: float, dmin: float, dmax: float) -> list:
+    """event_at for every bulb 0..n-1 in one pass (exactly the same values): None, or (progress, peak, hash)."""
+    x0 = t / slot
+    floor, window = math.floor, event_window
+    out = []
+    append = out.append
+    for i, off in enumerate(_offsets(n, seed)):
+        x = x0 + off
+        k = floor(x)
+        w = window(i, k, seed, slot, prob, dmin, dmax)
+        if w is None:
+            append(None)
+            continue
+        s = (x - k) * slot - w[0]
+        append((s / w[1], w[2], w[3]) if 0.0 <= s < w[1] else None)
+    return out
+
+
+@functools.lru_cache(maxsize=8)
+def _xu(n: int) -> tuple[float, ...]:
+    """Bulb positions in units of _unit(n): i / u for every bulb (what the flowing effects measure along)."""
+    u = _unit(n)
+    return tuple(i / u for i in range(n))
+
+
 def twinkle_level(t: float, i: int, seed: int = 0) -> float:
     """0-1: how far bulb i is brightened above its resting level right now. Few bulbs (about one in five) are
     swelling at any moment, each for 0.7-1.5 s at a random time; the rest hold still."""
@@ -148,7 +201,24 @@ TWINKLE_FLOOR = 0.32  # bulbs rest here and swell up to full
 
 
 def _twinkle(t, n, base):
-    return [_scale(base, TWINKLE_FLOOR + (1 - TWINKLE_FLOOR) * twinkle_level(t, i, 5)) for i in range(n)]
+    rest = _scale(base, TWINKLE_FLOOR + (1 - TWINKLE_FLOOR) * 0.0)
+    sin, pi = math.sin, math.pi
+    return [rest if ev is None else _scale(base, TWINKLE_FLOOR + (1 - TWINKLE_FLOOR) * (ev[1] * sin(pi * ev[0]) ** 2))
+            for ev in events_row(t, n, 6, 3.0, 0.6, 0.7, 1.5)]  # twinkle_level(t, i, 5) for every bulb
+
+
+@functools.lru_cache(maxsize=8)
+def _fire_offsets(n: int) -> tuple[float, ...]:
+    return tuple(_offset(i, 91) * 997.0 for i in range(n))
+
+
+# Fire's noise: for each of its three seeds, lattice point -> (the noise there, the noise at the next point)
+_fire_lattice: tuple[dict[int, tuple[float, float]], ...] = ({}, {}, {})
+
+
+def _fire_pair(k: int, which: int) -> tuple[float, float]:
+    pair = _fire_lattice[which][k] = (_offset(k, 92 + which), _offset(k + 1, 92 + which))
+    return pair
 
 
 def _fire(t, n, base):
@@ -156,13 +226,41 @@ def _fire(t, n, base):
     along the string, so flames seem to lick upward) instead of a fresh random number every frame. A pure function
     of t: the same t always gives the same frame, however often frames are drawn."""
     out = []
-    for i in range(n):
-        off = _offset(i, 91) * 997.0
-        heat = 0.6 * _vnoise(t * 8.0 + off, 92) + 0.4 * _vnoise(i * 0.45 - t * 4.0, 93)
-        tone = _vnoise(t * 5.0 + off * 0.5, 94)
+    append = out.append
+    floor = math.floor
+    for d in _fire_lattice:
+        if len(d) > 1 << 15:
+            d.clear()
+    flicker, lick, tint = (d.get for d in _fire_lattice)
+    pair_of = _fire_pair
+    t8, t4, t5 = t * 8.0, t * 4.0, t * 5.0
+    last, along = None, (0.0, 0.0)
+    for i, off in enumerate(_fire_offsets(n)):  # the three _vnoise calls, written out
+        x = t8 + off
+        k = floor(x)
+        f = x - k
+        pair = flicker(k) or pair_of(k, 0)
+        a = pair[0]
+        heat = a + (pair[1] - a) * (f * f * (3 - 2 * f))
+        x = i * 0.45 - t4
+        k = floor(x)
+        f = x - k
+        if k != last:  # the noise along the string: neighbours share a lattice cell
+            along = lick(k) or pair_of(k, 1)
+            last = k
+        a = along[0]
+        heat = 0.6 * heat + 0.4 * (a + (along[1] - a) * (f * f * (3 - 2 * f)))
+        x = t5 + off * 0.5
+        k = floor(x)
+        f = x - k
+        pair = tint(k) or pair_of(k, 2)
+        a = pair[0]
+        tone = a + (pair[1] - a) * (f * f * (3 - 2 * f))
         heat = max(0.0, min(1.0, (heat - 0.5) * 1.6 + 0.5))
         tone = max(0.0, min(1.0, (tone - 0.5) * 1.6 + 0.5))
-        out.append(_hsv(0.02 + tone * 0.06, 1, 0.55 + heat * 0.45))
+        v = 0.55 + heat * 0.45
+        # _hsv(0.02 + tone * 0.06, 1, v): the hue stays in the first sixth of the wheel, so red is v and blue is 0
+        append((int(v * 255), int(v * (1.0 - (1.0 - (0.02 + tone * 0.06) * 6.0)) * 255), 0))
     return out
 
 
@@ -245,15 +343,14 @@ def _particles(t: float, n: int, speed: float, spacing: float, seed: int, margin
 def _twinkler(colour, slot: float, prob: float, floor: float, seed: int, dmin: float = 0.6, dmax: float = 1.8):
     """Each bulb keeps its own colour and, at random moments, swells up from `floor` and settles again;
     `colour(r, v)` picks the shade from the bulb's fixed hash r and the level v. Only a few bulbs at once."""
+    @functools.lru_cache(maxsize=8)
+    def resting(n):  # what every bulb shows between its events: the same every frame
+        return tuple(colour(r, floor) for r in _offsets(n, seed + 5))
+
     def fx(t, n, base):
-        out = []
-        for i in range(n):
-            v = floor
-            ev = event_at(t, i, seed, slot, prob, dmin, dmax)
-            if ev is not None:
-                v = floor + (1 - floor) * ev[1] * math.sin(math.pi * ev[0]) ** 2
-            out.append(colour(_hash(i, seed + 5), v))
-        return out
+        sin, pi = math.sin, math.pi
+        return [rest if ev is None else colour(r, floor + (1 - floor) * ev[1] * sin(pi * ev[0]) ** 2)
+                for r, rest, ev in zip(_offsets(n, seed + 5), resting(n), events_row(t, n, seed, slot, prob, dmin, dmax))]
     return fx
 
 
@@ -286,26 +383,45 @@ def _sparkle(t, n, base):
     """Base colour with quick white glints that pop at random bulbs and moments, then fade."""
     dim = _scale(base, 0.75)
     out = []
-    for i in range(n):
-        m = sparkle_level(t, i, 7)
-        out.append(_lerp(dim, WHITE, m) if m > 0 else dim)
+    append = out.append
+    for ev in events_row(t, n, 9, 1.2, 0.4, 0.15, 0.45):  # sparkle_level(t, i, 7) for every bulb
+        if ev is None:
+            append(dim)
+            continue
+        u, peak, _ = ev
+        m = (0.7 + 0.3 * peak) * (u / 0.1 if u < 0.1 else (1 - (u - 0.1) / 0.9) ** 2)
+        append(_lerp(dim, WHITE, m) if m > 0 else dim)
     return out
+
+
+@functools.lru_cache(maxsize=8)
+def _star_clocks(n: int) -> tuple[tuple[float, float], ...]:
+    return tuple((4.0 + 5.0 * _offset(i, 41), _offset(i, 42)) for i in range(n))
+
+
+@functools.lru_cache(maxsize=1 << 14)
+def _star(i: int, k: int):
+    """The colour of bulb i's star in its slot k, or None when that slot has no star."""
+    if _hash(i, k + 4242) < 0.13:
+        return _lerp((190, 210, 255), (255, 235, 200), _hash(i, k + 77))
+    return None
 
 
 def _starfield(t, n, base):
     """Dark night with occasional stars that flash up and fade slowly."""
+    night = (0, 0, 6)
     out = []
-    for i in range(n):
-        period = 4.0 + 5.0 * _offset(i, 41)
-        x = t / period + _offset(i, 42)
+    append = out.append
+    star_of = _star
+    for i, (period, off) in enumerate(_star_clocks(n)):
+        x = t / period + off
         k = int(x)
+        star = star_of(i, k)
+        if star is None:
+            append(night)
+            continue
         u = x - k
-        v = 0.0
-        if _hash(i, k + 4242) < 0.13:
-            v = min(u / 0.05, 1.0) * (1 - u) ** 2
-        tint = _hash(i, k + 77)
-        star = _lerp((190, 210, 255), (255, 235, 200), tint)
-        out.append(_lerp((0, 0, 6), star, v))
+        append(_lerp(night, star, min(u / 0.05, 1.0) * (1 - u) ** 2))
     return out
 
 
@@ -379,14 +495,19 @@ def _aurora(t, n, base):
 
 
 def _lava(t, n, base):
-    u = _unit(n)
     out = []
-    for i in range(n):
-        x = i / u
-        v = (math.sin(x * 0.33 + t * 0.30) + math.sin(x * 0.17 - t * 0.23) + math.sin(x * 0.58 + t * 0.41)) / 6 + 0.5
+    append = out.append
+    sin = math.sin
+    t1, t2, t3 = t * 0.30, t * 0.23, t * 0.41
+    for x in _xu(n):
+        v = (sin(x * 0.33 + t1) + sin(x * 0.17 - t2) + sin(x * 0.58 + t3)) / 6 + 0.5
         v = max(0.0, min(1.0, v * 1.15 - 0.05))
-        c = _lerp((70, 0, 0), (255, 60, 0), v * 2) if v < 0.5 else _lerp((255, 60, 0), (255, 160, 15), (v - 0.5) * 2)
-        out.append(c)
+        if v < 0.5:  # _lerp((70, 0, 0), (255, 60, 0), v * 2)
+            m = v * 2
+            append((int(70 + 185 * m), int(60 * m), 0))
+        else:  # _lerp((255, 60, 0), (255, 160, 15), (v - 0.5) * 2)
+            m = (v - 0.5) * 2
+            append((255, int(60 + 100 * m), int(15 * m)))
     return out
 
 
@@ -394,12 +515,9 @@ def _red_blue(t, n, base):
     """Soft red/blue alternation (about 0.8 swaps per second, crossfaded, never a hard strobe)."""
     block = max(2, n // 6)
     s = math.sin(2 * math.pi * 0.8 * t)
-    out = []
-    for i in range(n):
-        sign = 1 if (i // block) % 2 == 0 else -1
-        a = 0.5 + 0.5 * max(-1.0, min(1.0, s * sign * 1.6))
-        out.append(_lerp(BLUE, RED, a))
-    return out
+    even = _lerp(BLUE, RED, 0.5 + 0.5 * max(-1.0, min(1.0, s * 1 * 1.6)))
+    odd = _lerp(BLUE, RED, 0.5 + 0.5 * max(-1.0, min(1.0, s * -1 * 1.6)))
+    return [even if (i // block) % 2 == 0 else odd for i in range(n)]
 
 
 def _color_wipe(t, n, base):
@@ -445,13 +563,15 @@ def _rainbow_breathe(t, n, base):
 
 def _peppermint_swirl(t, n, base):
     """Red and white stripes that bend and slide, so they read as a twisting peppermint."""
-    u = _unit(n)
     out = []
-    for i in range(n):
-        x = i / u
-        pos = x / 2.6 - t * 0.9 + 0.45 * math.sin(x / 7.0 + t * 0.7)
-        m = max(0.0, min(1.0, 0.5 + 0.9 * math.cos(2 * math.pi * pos)))
-        out.append(_lerp(WHITE, RED, m))
+    append = out.append
+    sin, cos, tau = math.sin, math.cos, 2 * math.pi
+    slide, bend = t * 0.9, t * 0.7
+    for x in _xu(n):
+        pos = x / 2.6 - slide + 0.45 * sin(x / 7.0 + bend)
+        m = max(0.0, min(1.0, 0.5 + 0.9 * cos(tau * pos)))
+        g = int(255 + -255 * m)  # _lerp(WHITE, RED, m)
+        append((255, g, g))
     return out
 
 
@@ -621,6 +741,30 @@ def _vnoise2(x: float, y: float, seed: int = 0) -> float:
     return top + (c + (d - c) * ux - top) * uy
 
 
+def _vnoise2_row(xs, y: float, seed: int = 0) -> list[float]:
+    """_vnoise2(x, y, seed) for every x in xs (the same values): what depends only on y is worked out once, and a
+    lattice cell's corners are looked up once per cell instead of once per bulb."""
+    iy = math.floor(y)
+    fy = y - iy
+    uy = fy * fy * (3 - 2 * fy)
+    s = seed + 31 * iy
+    floor, corners = math.floor, _corners
+    last = None
+    a = b = c = d = 0.0
+    out = []
+    append = out.append
+    for x in xs:
+        ix = floor(x)
+        if ix != last:
+            a, b, c, d = corners(ix, s)
+            last = ix
+        fx = x - ix
+        ux = fx * fx * (3 - 2 * fx)
+        top = a + (b - a) * ux
+        append(top + (c + (d - c) * ux - top) * uy)
+    return out
+
+
 @functools.lru_cache(maxsize=1 << 14)  # a lattice cell's corners repeat for many pixels and frames
 def _corners(ix: int, s: int) -> tuple[float, float, float, float]:
     return _hash(ix, s), _hash(ix + 1, s), _hash(ix, s + 31), _hash(ix + 1, s + 31)
@@ -637,34 +781,48 @@ def gradient_flow(t: float, n: int, pal: Palette, speed: float = 0.07) -> list[C
     strips). `speed` is loops per second."""
     k = 1.0 / (36.0 * _unit(n))
     shift = t * speed
+    if pal.wrap:  # pal.at, written out
+        lut, size = pal._lut, pal.SIZE  # noqa: SLF001
+        return [lut[int(((i * k - shift) % 1.0) * size) % size] for i in range(n)]
     at = pal.at
     return [at(i * k - shift) for i in range(n)]
 
 
 def plasma(t: float, n: int, pal: Palette) -> list[Colour]:
     """A sine-sum plasma field, coloured through the palette: soft blobs of colour that swell and slide."""
-    u = _unit(n)
     sin = math.sin
     drift = t * 0.03
-    out = []
-    for i in range(n):
-        x = i / u
-        s = (sin(x * 0.21 + t * 0.9) + sin(x * 0.083 - t * 0.55 + 1.3) + sin(x * 0.047 + t * 0.31 + 2.1)
-             + sin(x * 0.06 + sin(x * 0.13 + t * 0.7) * 1.6 + t * 0.25))
-        out.append(pal.at(0.5 + 0.5 * s / 3.2 + drift))
-    return out
+    t1, t2, t3, t4, t5 = t * 0.9, t * 0.55, t * 0.31, t * 0.7, t * 0.25
+    vals = [0.5 + 0.5 * (sin(x * 0.21 + t1) + sin(x * 0.083 - t2 + 1.3) + sin(x * 0.047 + t3 + 2.1)
+                         + sin(x * 0.06 + sin(x * 0.13 + t4) * 1.6 + t5)) / 3.2 + drift for x in _xu(n)]
+    if pal.wrap:  # pal.at, written out
+        lut, size = pal._lut, pal.SIZE  # noqa: SLF001
+        return [lut[int((v % 1.0) * size) % size] for v in vals]
+    return [pal.at(v) for v in vals]
+
+
+@functools.lru_cache(maxsize=8)
+def _drift_xs(n: int) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    xs = _xu(n)
+    return tuple(x / 9.0 for x in xs), tuple(x / 3.7 + 17.0 for x in xs)
 
 
 def noise_drift(t: float, n: int, pal: Palette) -> list[Colour]:
     """Colour drifting through the palette on slow, smooth value noise (two octaves), so patches of the palette
     grow, slide and melt into each other."""
-    u = _unit(n)
-    out = []
-    for i in range(n):
-        x = i / u
-        v = 0.65 * _vnoise2(x / 9.0, t * 0.18, 201) + 0.35 * _vnoise2(x / 3.7 + 17.0, t * 0.31, 202)
-        out.append(pal.at((v - 0.5) * 1.7 + 0.5 + t * 0.012))
-    return out
+    wide, fine = _drift_xs(n)
+    shift = t * 0.012
+    vals = [(0.65 * a + 0.35 * b - 0.5) * 1.7 + 0.5 + shift
+            for a, b in zip(_vnoise2_row(wide, t * 0.18, 201), _vnoise2_row(fine, t * 0.31, 202))]
+    if pal.wrap:  # pal.at, written out
+        lut, size = pal._lut, pal.SIZE  # noqa: SLF001
+        return [lut[int((v % 1.0) * size) % size] for v in vals]
+    return [pal.at(v) for v in vals]
+
+
+@functools.lru_cache(maxsize=8)
+def _storm_xs(n: int) -> tuple[float, ...]:
+    return tuple(i / 6.0 for i in range(n))
 
 
 def storm_flash(t: float, n: int, dark: Colour, flash: Colour, seed: int = 0) -> list[Colour]:
@@ -694,8 +852,16 @@ def storm_flash(t: float, n: int, dark: Colour, flash: Colour, seed: int = 0) ->
                 pulses.append((amp * peak, centre, max(0.5, reach)))
     glow = max((p[0] for p in pulses), default=0.0) * 0.2
     out = []
-    for i in range(n):
-        sky = 0.75 + 0.5 * _vnoise2(i / 6.0, t * 0.25, 221)
+    skies = _vnoise2_row(_storm_xs(n), t * 0.25, 221)
+    if not pulses:  # no strike: just the rolling sky
+        d0, d1, d2 = dark
+        for nz in skies:
+            sky = 0.75 + 0.5 * nz
+            out.append((max(0, min(255, int(d0 * sky))), max(0, min(255, int(d1 * sky))),
+                        max(0, min(255, int(d2 * sky)))))
+        return out
+    for i, nz in enumerate(skies):
+        sky = 0.75 + 0.5 * nz
         v = glow
         for amp, centre, reach in pulses:
             d = abs(i - centre)
@@ -713,17 +879,24 @@ def confetti(t: float, n: int, cols: list[Colour], bg: list[Colour] | None = Non
     (`bg`, one colour per bulb, default near black). Each pop picks its own colour from `cols` (a rainbow hue when
     `cols` is empty)."""
     out = []
-    for i in range(n):
+    append = out.append
+    count = len(cols)
+    for i, ev in enumerate(events_row(t, n, seed + 301, 1.6, 0.45, 0.6, 1.3)):
         back = bg[i] if bg is not None else (2, 2, 6)
-        ev = event_at(t, i, seed + 301, 1.6, 0.45, 0.6, 1.3)
         if ev is None:
-            out.append(back)
+            append(back)
             continue
         u, peak, h = ev
         v = peak * (u / 0.07 if u < 0.07 else (1 - (u - 0.07) / 0.93) ** 2)
-        c = cols[int(h * len(cols)) % len(cols)] if cols else _hsv(h)
-        out.append(_lerp(back, c, v))
+        c = cols[int(h * count) % count] if cols else _hsv(h)
+        append(_lerp(back, c, v))
     return out
+
+
+@functools.lru_cache(maxsize=16)
+def _dissolve_times(n: int, key: int, fill: float, hold_end: float, drain: float) -> tuple[tuple[float, float], ...]:
+    """When each bulb fills in and when it drains, for one round (the same for every frame of the round)."""
+    return tuple((_hash(i, key + 401) * fill, hold_end + _hash(i, key + 402) * drain) for i in range(n))
 
 
 def dissolve(t: float, n: int, base: list[Colour], seed: int = 0, period: float = 12.0) -> list[Colour]:
@@ -733,12 +906,19 @@ def dissolve(t: float, n: int, base: list[Colour], seed: int = 0, period: float 
     q = t - cyc * period
     fill, hold_end, drain = 4.5, 6.5, 4.5  # seconds: filling takes up to 4.5, draining runs 6.5 .. 11
     out = []
-    for i in range(n):
-        a = _hash(i, cyc * 2 + seed + 401) * fill
-        d = hold_end + _hash(i, cyc * 2 + seed + 402) * drain
-        v = _smooth((q - a) / 0.4) * (1.0 - _smooth((q - d) / 0.4))
+    append = out.append
+    for i, (a, d) in enumerate(_dissolve_times(n, cyc * 2 + seed, fill, hold_end, drain)):
+        x = (q - a) / 0.4  # _smooth((q - a) / 0.4) * (1.0 - _smooth((q - d) / 0.4)), written out
+        if x <= 0.0:
+            f = 0.03
+        else:
+            v = 1.0 if x >= 1.0 else x * x * (3 - 2 * x)
+            x = (q - d) / 0.4
+            if x > 0.0:
+                v = v * (1.0 - (1.0 if x >= 1.0 else x * x * (3 - 2 * x)))
+            f = max(0.0, min(1.0, 0.03 + 0.97 * v))
         c = base[i]
-        out.append(_scale(c, 0.03 + 0.97 * v))
+        append((int(c[0] * f), int(c[1] * f), int(c[2] * f)))
     return out
 
 
@@ -757,12 +937,26 @@ def sunrise_ramp(t: float, n: int, base: list[Colour], duration: float = 60.0, h
     else:
         level = 1.0 - _smooth((q - duration - hold) / fall)
     top = max(1, n - 1)
+    lead = level * 1.35
+    e0, e1, e2 = EMBER
+    m_dark, f_dark = (1.0 - 0.0) ** 1.5 * 0.85, max(0.0, min(1.0, 0.02 + 0.98 * 0.0 ** 1.8))  # not yet reached
+    m_full, f_full = (1.0 - 1.0) ** 1.5 * 0.85, max(0.0, min(1.0, 0.02 + 0.98 * 1.0 ** 1.8))  # fully up
     out = []
+    append = out.append
     for i in range(n):
-        local = max(0.0, min(1.0, level * 1.35 - 0.35 * i / top))
-        warm = (1.0 - local) ** 1.5 * 0.85
-        c = _lerp(base[i], EMBER, warm)
-        out.append(_scale(c, 0.02 + 0.98 * local ** 1.8))
+        local = lead - 0.35 * i / top
+        if local >= 1.0:
+            m, f = m_full, f_full
+        elif local <= 0.0:
+            m, f = m_dark, f_dark
+        else:
+            m = (1.0 - local) ** 1.5 * 0.85  # how far towards the ember colour
+            f = max(0.0, min(1.0, 0.02 + 0.98 * local ** 1.8))
+        c = base[i]
+        r, g, b = int(c[0] + (e0 - c[0]) * m), int(c[1] + (e1 - c[1]) * m), int(c[2] + (e2 - c[2]) * m)
+        if not (0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255):
+            r, g, b = max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b))
+        append((int(r * f), int(g * f), int(b * f)))
     return out
 
 
@@ -807,6 +1001,202 @@ def _dissolve_fx(t, n, base):
 
 def _sunrise_fx(t, n, base):
     return sunrise_ramp(t, n, [base] * n)
+
+
+# --- More effects ---------------------------------------------------------------------------------------------
+# Pure functions of t like the ones above, and gentle: shapes move and levels swell, nothing flashes on and off
+# (no bulb goes dark-bright-dark faster than about twice a second).
+BALL_COLOURS = [(255, 30, 20), (255, 170, 0), (0, 120, 255)]
+GRAD_EMBER = Palette([(0.0, (24, 0, 0)), (0.4, (140, 10, 0)), (0.75, (255, 55, 0)), (1.0, (255, 150, 30))], wrap=False)
+
+
+def _dots(n: int, dots, back: Colour = BLACK) -> list[Colour]:
+    """n pixels of `back` with soft dots of light added on top: each dot is (centre, radius, colour, level 0-1).
+    Only the pixels a dot touches are worked on."""
+    out = [back] * n
+    acc: dict[int, list[float]] = {}
+    for x, w, col, g in dots:
+        for i in range(max(0, int(x - w)), min(n, int(x + w) + 2)):
+            v = (1 - abs(i - x) / w) * g
+            if v > 0:
+                px = acc.get(i)
+                if px is None:
+                    px = acc[i] = [float(back[0]), float(back[1]), float(back[2])]
+                px[0] += col[0] * v
+                px[1] += col[1] * v
+                px[2] += col[2] * v
+    for i, px in acc.items():
+        out[i] = _rgb(px[0], px[1], px[2])
+    return out
+
+
+@functools.lru_cache(maxsize=16)
+def _ball_plan(b: int):
+    """Ball b's round: (start, length, height 0-1) of each bounce, each lower and shorter than the last, then how
+    long the round takes (with a short rest on the ground) and where in it the ball is at t = 0."""
+    first, height = 2.2 + 0.8 * _hash(b, 501), 0.65 + 0.35 * _hash(b, 502)
+    plan, at = [], 0.0
+    for k in range(4):
+        keep = 0.55 ** k
+        plan.append((at, first * math.sqrt(keep), height * keep))
+        at += first * math.sqrt(keep)
+    return tuple(plan), at + 0.5, _hash(b, 503)
+
+
+def _bouncing_balls(t, n, base):
+    """Three coloured balls thrown up from the start of the string: each falls back, bounces lower and lower,
+    rests a moment and is thrown again, every ball in its own time. (On a long strip they rise part of the way.)"""
+    u = _unit(n)
+    size = 1.6 * u
+    top = max(0.0, min(n - 1 - size, 45.0 * u))
+    dots = []
+    for b, col in enumerate(BALL_COLOURS):
+        plan, cycle, phase = _ball_plan(b)
+        q = (t + phase * cycle) % cycle
+        y = 0.0
+        for start, length, height in plan:
+            if start <= q < start + length:
+                p = (q - start) / length
+                y = top * height * 4 * p * (1 - p)
+                break
+        dots.append((y, size, col, 1.0))
+    return _dots(n, dots)
+
+
+def _ripples(t, n, base):
+    """Drops landing at random places: from each, two soft wave fronts run outward along the string and fade,
+    over a faint glow of the base colour."""
+    u = _unit(n)
+    slot, life = 0.9, 2.6  # a drop may land in every slot; its rings last this long
+    speed, width = 9.0 * u, 2.2 * u
+    back, tint = _scale(base, 0.07), _lerp(base, WHITE, 0.3)
+    newest = math.floor(t / slot)
+    level: dict[int, float] = {}
+    for k in range(newest - 3, newest + 1):
+        if _hash(k, 521) >= 0.75:
+            continue
+        age = t - (k + 0.5 * _hash(k, 522)) * slot
+        if not 0.0 <= age < life:
+            continue
+        centre = _hash(k, 523) * (n - 1)
+        gain = min(1.0, age / 0.2) * (1 - age / life) ** 1.5
+        reach = age * speed
+        for x in (centre - reach, centre + reach):
+            for i in range(max(0, int(x - width)), min(n, int(x + width) + 2)):
+                v = (1 - abs(i - x) / width) * gain
+                if v > level.get(i, 0.0):
+                    level[i] = v
+    out = [back] * n
+    for i, v in level.items():
+        out[i] = _lerp(back, tint, v)
+    return out
+
+
+def _pulse_wave(t, n, base):
+    """Soft pulses of the base colour running from the middle of the string out to both ends, about one every two
+    seconds, their crests a little lighter. A smooth swell, never a flash."""
+    mid, k, shift = (n - 1) / 2, 0.42 / _unit(n), t * 3.0
+    b0, b1, b2 = base
+    c0, c1, c2 = _lerp(base, WHITE, 0.35)
+    sin = math.sin
+    out = []
+    append = out.append
+    for i in range(n):
+        v = 0.5 + 0.5 * sin(abs(i - mid) * k - shift)
+        v *= v
+        w = v * v  # only the crest lightens
+        f = 0.06 + 0.94 * v
+        append((int((b0 + (c0 - b0) * w) * f), int((b1 + (c1 - b1) * w) * f), int((b2 + (c2 - b2) * w) * f)))
+    return out
+
+
+@functools.lru_cache(maxsize=8)
+def _ember_xs(n: int) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    xs = _xu(n)
+    return tuple(x / 4.5 for x in xs), tuple(x / 1.6 + 9.0 for x in xs)
+
+
+def _ember_glow(t, n, base):
+    """A bed of coals: deep red that slowly brightens and dims in drifting patches, and now and then one ember
+    flares orange and settles again. Much slower and calmer than Fire."""
+    bed, fine = _ember_xs(n)
+    lut, top = GRAD_EMBER._lut, Palette.SIZE - 1  # noqa: SLF001
+    sin, pi = math.sin, math.pi
+    out = []
+    append = out.append
+    for a, b, ev in zip(_vnoise2_row(bed, t * 0.2, 531), _vnoise2_row(fine, t * 0.45, 532),
+                        events_row(t, n, 533, 5.0, 0.3, 1.2, 2.8)):
+        v = 0.08 + 0.62 * (0.6 * a + 0.4 * b)
+        if ev is not None:
+            v += 0.45 * ev[1] * sin(pi * ev[0]) ** 2
+        append(lut[int((v if v < 1.0 else 1.0) * top + 0.5)])
+    return out
+
+
+def _rainbow_comet(t, n, base):
+    """A comet with a white head and a long rainbow tail looping along the string (two on a long strip); the
+    tail's colours drift as it flies."""
+    u = _unit(n)
+    tail = 14.0 * u
+    span = n + tail
+    count = max(1, int(n / (45.0 * u)))
+    hue, head_len = t * 0.08, 1.5 * u
+    out = [BLACK] * n
+    for j in range(count):
+        head = (t * 13.0 * u + j * span / count) % span
+        for i in range(max(0, int(head - tail)), min(n, int(head) + 2)):
+            d = head - i
+            if d < 0:  # the pixel just ahead of the head fades in, so the head glides instead of stepping
+                if d > -1:
+                    out[i] = _scale(WHITE, 1 + d)
+            elif d < tail:
+                c = _hsv(hue + 0.5 * j + 0.75 * d / tail, 1.0, (1 - d / tail) ** 2)
+                out[i] = _lerp(c, WHITE, 1 - d / head_len) if d < head_len else c
+    return out
+
+
+def _stack(t, n, base):
+    """Blocks of light fly in from the far end one after another and stack up from the start until the string is
+    full; it holds, fades away and begins again."""
+    blocks = max(1, min(10, n))
+    size = n / blocks
+    fly, hold, fade = 0.7, 1.6, 1.4  # seconds: per block, full, fading out
+    q = t % (blocks * fly + hold + fade)
+    landed = min(blocks, int(q // fly))
+    gain = 1.0 if landed < blocks else 1.0 - _smooth((q - blocks * fly - hold) / fade)
+    shades = (_scale(base, gain), _scale(_lerp(base, WHITE, 0.45), gain))
+    edge = landed * size
+    out = [shades[min(blocks - 1, int(i / size)) % 2] if i < edge else BLACK for i in range(n)]
+    if landed < blocks:
+        p = (q - landed * fly) / fly
+        pos = edge + (n - edge) * (1 - p * p)  # falls faster and faster towards the stack
+        col = shades[landed % 2]
+        for i in range(max(0, int(pos)), min(n, int(pos + size) + 1)):
+            v = min(1.0, i - pos + 1, pos + size - i)
+            if v > 0 and i >= edge:
+                out[i] = _scale(col, v)
+    return out
+
+
+def _carousel(t, n, base):
+    """Blocks of the classic colours that move along one block at a time: a quick, eased slide, then a pause."""
+    w = 4.0 * _unit(n)  # bulbs per block
+    cols, count = CLASSIC, len(CLASSIC)
+    x = t / 1.6
+    k = math.floor(x)
+    shift = (k + _smooth((x - k) / 0.4)) * w
+    soft = 0.8 / w  # the part of a block that blends into the next one
+    edge = 1.0 - soft
+    floor = math.floor
+    out = []
+    append = out.append
+    for i in range(n):
+        p = (i + shift) / w
+        b = floor(p)
+        e = p - b
+        a = cols[b % count]
+        append(_lerp(a, cols[(b + 1) % count], _smooth((e - edge) / soft)) if e > edge else a)
+    return out
 
 
 STILL = {
@@ -875,6 +1265,13 @@ ANIMATED = {
     "Confetti": _confetti_fx,
     "Dissolve": _dissolve_fx,
     "Sunrise Ramp": _sunrise_fx,
+    "Bouncing Balls": _bouncing_balls,
+    "Ripples": _ripples,
+    "Pulse Wave": _pulse_wave,
+    "Ember Glow": _ember_glow,
+    "Rainbow Comet": _rainbow_comet,
+    "Stack": _stack,
+    "Carousel": _carousel,
 }
 
 EFFECTS = {**STILL, **ANIMATED}

@@ -9,6 +9,7 @@ Nothing here needs Home Assistant, so it is easy to test.
 """
 from __future__ import annotations
 
+import functools
 import math
 from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
@@ -29,6 +30,14 @@ _LUT = 4096  # steps in the ripple / breathe lookup tables (a step is far below 
 _RING = [(0.5 + 0.5 * math.cos(_TAU * k / _LUT)) ** 4 for k in range(_LUT + 1)]  # a ripple ring's profile
 _SWELL = [(0.5 + 0.5 * math.sin(_TAU * (-k / _LUT))) ** 1.5 * 0.92 + 0.08 for k in range(_LUT + 1)]  # breathe, by -phase
 _CELL = 0.12  # snow: size of the grid cells pixels are filed in
+
+
+@functools.lru_cache(maxsize=1024)
+def _flake(f: int, gi: int) -> tuple[float, float, float, float, float]:
+    """What never changes about snowflake f of area gi: its start, speed, x, z and the phase of its sway."""
+    hash_ = patterns._hash  # noqa: SLF001
+    h = hash_(f, 11 + gi)
+    return h, 0.10 + 0.15 * hash_(f, 12), hash_(f, 13), hash_(f, 14), h * _TAU
 
 
 class _Group:
@@ -134,28 +143,29 @@ class MapEffects:
     def snowfall(self, t: float) -> list[Colour]:
         """Flakes falling in y with a little sideways drift; a pixel glows as a flake passes near it."""
         glow = [0.0] * self.n
-        hash_ = patterns._hash  # noqa: SLF001
         r2 = FLAKE_RADIUS * FLAKE_RADIUS
         sin = math.sin
+        sway = t * 0.7
         for g in self.groups:
             flakes = min(MAX_FLAKES, max(6, len(g.idx) // 15))
             cells, lo, span = g.cells, g.lo, g.span
+            get = cells.get
+            xs, ys, zs, idx, gi = g.xs, g.ys, g.zs, g.idx, g.index
             for f in range(flakes):
-                h = hash_(f, 11 + g.index)
-                speed = 0.10 + 0.15 * hash_(f, 12)
+                h, speed, hx, hz, phase = _flake(f, gi)
                 fall = (t * speed + h) % 1.15
                 fy = lo[1] + span[1] * (1.05 - fall)
-                fx = lo[0] + span[0] * hash_(f, 13) + 0.05 * sin(t * 0.7 + h * _TAU)
-                fz = lo[2] + span[2] * hash_(f, 14)
+                fx = lo[0] + span[0] * hx + 0.05 * sin(sway + phase)
+                fz = lo[2] + span[2] * hz
                 cx, cy, cz = int(fx // _CELL), int(fy // _CELL), int(fz // _CELL)
-                for dx in (-1, 0, 1):
-                    for dy in (-1, 0, 1):
-                        for dz in (-1, 0, 1):
-                            for j in cells.get((cx + dx, cy + dy, cz + dz), ()):
-                                d2 = (g.xs[j] - fx) ** 2 + (g.ys[j] - fy) ** 2 + (g.zs[j] - fz) ** 2
+                for dx in (cx - 1, cx, cx + 1):
+                    for dy in (cy - 1, cy, cy + 1):
+                        for dz in (cz - 1, cz, cz + 1):
+                            for j in get((dx, dy, dz), ()):
+                                d2 = (xs[j] - fx) ** 2 + (ys[j] - fy) ** 2 + (zs[j] - fz) ** 2
                                 if d2 < r2:
                                     v = 1 - d2 / r2
-                                    i = g.idx[j]
+                                    i = idx[j]
                                     if v > glow[i]:
                                         glow[i] = v
         out = []
@@ -193,7 +203,10 @@ class MapEffects:
         """Random bursts: a shell of light expanding from a point in 3D, in a colour of the pattern, fading."""
         hash_ = patterns._hash  # noqa: SLF001
         pal, k = self.palette, len(self.palette)
-        out = [(int(c[0] * 0.04), int(c[1] * 0.04), int(c[2] * 0.04)) for c in self.base]
+        dim = self.__dict__.get("_dim")  # the faint pattern behind the bursts: the same every frame
+        if dim is None or dim[0] is not self.base or len(dim[1]) != len(self.base):
+            dim = self._dim = (self.base, [(int(c[0] * 0.04), int(c[1] * 0.04), int(c[2] * 0.04)) for c in self.base])
+        out = list(dim[1])
         level = [0.0] * self.n
         newest = int(t // FIREWORK_EVERY)
         sqrt, exp = math.sqrt, math.exp
