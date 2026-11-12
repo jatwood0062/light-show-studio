@@ -24,6 +24,16 @@ def _palette(fx):
     return palette_for(tuple(fx.palette))
 
 
+def _kept(g, key: str, build):
+    """Numbers for one area that are the same every frame, worked out once and kept on the group (and worked out
+    again if its points are replaced)."""
+    hit = getattr(g, key, None)
+    if hit is None or hit[0] is not g.xs or hit[1] != len(g.xs):
+        hit = (g.xs, len(g.xs), build(g))
+        setattr(g, key, hit)
+    return hit[2]
+
+
 def gradient_axis(fx, t: float) -> list[Colour]:
     """The pattern's colours as a gradient along the zone's direction (set the axis to up for a gradient by
     height; with a centre point it runs outward from it), scrolling slowly."""
@@ -31,8 +41,20 @@ def gradient_axis(fx, t: float) -> list[Colour]:
     k = len(fx.palette)
     span = (k - 1) / k if k > 1 else 1.0  # first colour at one end, last colour at the other (a looping palette
     shift = t * 0.07  # would otherwise end where it began); scrolling wraps round through the gap
-    at = pal.at
-    return [at(u * span - shift) for u in fx.u]
+    lut, size = pal._lut, pal.SIZE  # noqa: SLF001  (pal.at for a looping palette, written out)
+    return [lut[int(((u * span - shift) % 1.0) * size) % size] for u in fx.u]
+
+
+def _plasma_rows(g) -> list[tuple[int, float, float, float, float]]:
+    """For every pixel of an area: its index and the part of each of the four waves that does not change."""
+    xs, ys, zs = g.xs, g.ys, g.zs
+    x0, y0, z0 = min(xs), min(ys), min(zs)
+    m = max(max(xs) - x0, max(ys) - y0, max(zs) - z0, 1e-6)  # one scale for all three axes
+    rows = []
+    for j, x, y, z in zip(g.idx, xs, ys, zs):
+        x, y, z = (x - x0) / m, (y - y0) / m, (z - z0) / m
+        rows.append((j, x * 6.5, y * 8.5, z * 7.0, math.sqrt((x - 0.5) ** 2 + (y - 0.5) ** 2 + (z - 0.5) ** 2) * 11.0))
+    return rows
 
 
 def plasma_field(fx, t: float) -> list[Colour]:
@@ -40,19 +62,30 @@ def plasma_field(fx, t: float) -> list[Colour]:
     and coloured through the pattern's gradient. Each area is scaled to fit, so the blobs look alike in a small
     and a large room."""
     out = [(0, 0, 0)] * fx.n
-    at = _palette(fx).at
-    sin, sqrt = math.sin, math.sqrt
+    pal = _palette(fx)
+    lut, size = pal._lut, pal.SIZE  # noqa: SLF001  (pal.at for a looping palette, written out)
+    sin = math.sin
     drift = t * 0.03
+    t8, t6, t5, t9 = t * 0.8, t * 0.6, t * 0.5, t * 0.9
     for g in fx.groups:
-        xs, ys, zs = g.xs, g.ys, g.zs
-        x0, y0, z0 = min(xs), min(ys), min(zs)
-        m = max(max(xs) - x0, max(ys) - y0, max(zs) - z0, 1e-6)  # one scale for all three axes
-        for j, x, y, z in zip(g.idx, xs, ys, zs):
-            x, y, z = (x - x0) / m, (y - y0) / m, (z - z0) / m
-            s = (sin(x * 6.5 + t * 0.8) + sin(y * 8.5 - t * 0.6 + 1.7) + sin(z * 7.0 + t * 0.5 + 0.6)
-                 + sin(sqrt((x - 0.5) ** 2 + (y - 0.5) ** 2 + (z - 0.5) ** 2) * 11.0 - t * 0.9))
-            out[j] = at(0.5 + 0.5 * s / 3.2 + drift)
+        for j, a, b, c, r in _kept(g, "_plasma_rows", _plasma_rows):
+            s = sin(a + t8) + sin(b - t6 + 1.7) + sin(c + t5 + 0.6) + sin(r - t9)
+            out[j] = lut[int(((0.5 + 0.5 * s / 3.2 + drift) % 1.0) * size) % size]
     return out
+
+
+_ARMS, _TWIST, _SPIN, _SOFT = 3, 4.5, 0.12, 0.14  # stripes round, turns of climb (x3), turns a second, edge blend
+
+
+def _helix_rows(g) -> list[tuple[int, float]]:
+    """For every pixel of an area: its index and where it sits in the stripes before they turn (angle and height)."""
+    xs, ys, zs = g.xs, g.ys, g.zs
+    cx, cz = (min(xs) + max(xs)) / 2, (min(zs) + max(zs)) / 2
+    y0 = min(ys)
+    yspan = max(max(ys) - y0, 1e-6)
+    atan2 = math.atan2
+    # whole-number arms around, so the seam where the angle wraps is invisible
+    return [(j, atan2(z - cz, x - cx) / _TAU * _ARMS - (y - y0) / yspan * _TWIST) for j, x, y, z in zip(g.idx, xs, ys, zs)]
 
 
 def candy_helix(fx, t: float) -> list[Colour]:
@@ -63,23 +96,21 @@ def candy_helix(fx, t: float) -> list[Colour]:
     if len(cols) < 2:
         cols = CANDY
     k = len(cols)
-    arms, twist, spin, soft = 3, 4.5, 0.12, 0.14
+    soft = _SOFT
+    edge = 1.0 - soft
+    turn = t * _SPIN
     out = [(0, 0, 0)] * fx.n
-    atan2 = math.atan2
     for g in fx.groups:
-        xs, ys, zs = g.xs, g.ys, g.zs
-        cx, cz = (min(xs) + max(xs)) / 2, (min(zs) + max(zs)) / 2
-        y0 = min(ys)
-        yspan = max(max(ys) - y0, 1e-6)
-        for j, x, y, z in zip(g.idx, xs, ys, zs):
-            # q counts stripes: whole-number arms around, so the seam where the angle wraps is invisible
-            q = atan2(z - cz, x - cx) / _TAU * arms - (y - y0) / yspan * twist + t * spin
-            f = (q % 1.0) * k
+        for j, q0 in _kept(g, "_helix_rows", _helix_rows):
+            f = ((q0 + turn) % 1.0) * k  # q counts stripes
             i = int(f)
             e = f - i  # position inside this stripe; blend into the next one near its end
-            m = _smooth((e - (1.0 - soft)) / soft) if e > 1.0 - soft else 0.0
-            a, b = cols[i % k], cols[(i + 1) % k]
-            out[j] = _lerp(a, b, m) if m > 0.0 else a
+            if e > edge:
+                m = _smooth((e - (1.0 - soft)) / soft)
+                a = cols[i % k]
+                out[j] = _lerp(a, cols[(i + 1) % k], m) if m > 0.0 else a
+            else:
+                out[j] = cols[i % k]
     return out
 
 

@@ -161,8 +161,8 @@ class ZonePlan:
             if self.override is not None:  # painted: the colours slide along the axis, in order
                 shift, ranked, list_at = t * 3.0, self.ranked, patterns.list_at
                 return [list_at(ranked, r - shift) for r in self.rank]
-            shift, name, colour_at = t * 3.0, self.pattern, patterns.colour_at
-            return [colour_at(name, p - shift, n) for p in self.pos]
+            shift = t * 3.0
+            return patterns.colours_at(self.pattern, [p - shift for p in self.pos], n)
         if effect == "Marquee":
             step, scale = int(t * 4) % 3, patterns.scale
             return [c if q % 3 == step else scale(c, 0.08) for c, q in zip(base, self.q)]
