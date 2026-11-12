@@ -46,4 +46,5 @@ MUSIC_KEY = f"{DOMAIN}_music"  # hass.data key of the MusicManager, made in asyn
 PREVIEW_KEY = f"{DOMAIN}_pattern_preview"  # hass.data key of the PreviewManager, made in async_setup
 CONF_DEFAULT_TRANSITION = "default_transition"  # seconds a light fades in / out / between looks (0 = instant)
 CONF_DEVICE_OFFSET = "device_offset"  # WLED: first LED on the controller this light writes (0-2039)
+CONF_MASK = "mask"  # every light: bulbs that stay dark under everything it shows, as text like "3,7-12,40" (1-based)
 CONF_SHOW_LEAD_MS = "show_lead_ms"  # every light: milliseconds (-500..500) its .fseq show frames are sent early (+) or late (-)

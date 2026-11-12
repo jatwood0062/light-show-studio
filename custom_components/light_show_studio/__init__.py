@@ -27,6 +27,7 @@ from .const import (
     CONF_FPP_REMOTES,
     CONF_FPP_SYNC,
     CONF_MAC,
+    CONF_MASK,
     CONF_DEVICE_OFFSET,
     CONF_LED_PROFILE,
     CONF_SEGMENTED,
@@ -55,6 +56,7 @@ from .hosts import valid_ipv4
 from .library import FSEQ_EXT, SHOW_PLAYER_KEY
 from .light_schedules import async_setup_light_scheduler
 from .mapmanager import MapManager
+from .mask import parse_mask
 from .outputs import normalize_speakers
 from .playback import SequencePlayer
 from . import fade, patterns, upload, websocket, ws_light_schedules, ws_map, ws_music, ws_patterns, ws_schedule, ws_shows
@@ -322,19 +324,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
     ctl.entry_id = entry.entry_id  # painted patterns find their pixels by it
     ctl.default_transition = fade.clean_seconds(_opt(entry, CONF_DEFAULT_TRANSITION, fade.DEFAULT_TRANSITION))
     ctl.show_lead_ms = max(-500, min(500, int(_opt(entry, CONF_SHOW_LEAD_MS, 0))))
+    ctl.mask = _mask_of(entry, ctl.bulbs)
     receiver: PixelReceiver = hass.data.setdefault(DOMAIN, PixelReceiver(hass))
     await receiver.subscribe(entry.entry_id, _opt(entry, CONF_START_PIXEL, 1), ctl.bulbs, ctl.show_external,
                              ctl.show_lead_ms)
     entry.async_on_unload(lambda: receiver.unsubscribe(entry.entry_id))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_apply_mask))  # the mask changes in place, without a reload
     entry.async_on_unload(entry.add_update_listener(_reload_on_change(entry)))
     return True
+
+
+def _mask_of(entry: ConfigEntry, bulbs: int) -> frozenset[int]:
+    """The bulbs the entry's `mask` option keeps dark (none when the stored text is not a mask)."""
+    try:
+        return parse_mask(_opt(entry, CONF_MASK, ""), bulbs)
+    except ValueError:
+        _LOGGER.warning("%s: ignoring the bulbs-to-keep-off setting %r", entry.title, _opt(entry, CONF_MASK, ""))
+        return frozenset()
+
+
+async def _apply_mask(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    ctl = getattr(entry, "runtime_data", None)
+    if isinstance(ctl, C9Controller) and (mask := _mask_of(entry, ctl.bulbs)) != ctl.mask:
+        ctl.set_mask(mask)
 
 
 # Changes the entry can make without a reload: a light's device id being filled in, and the player's
 # speakers / transition, which the websocket commands have already applied to the running player.
 _IN_PLACE_DATA = (CONF_DEVICE_ID, CONF_MAC)
-_IN_PLACE_OPTIONS = (CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT)
+_IN_PLACE_OPTIONS = (CONF_SPEAKERS, CONF_TRANSITION, CONF_TRANSITION_EFFECT, CONF_MASK)
 
 
 def _reload_on_change(entry: ConfigEntry):

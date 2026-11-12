@@ -22,10 +22,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import C9ConfigEntry
-from .const import CONF_BULB_ENTITIES, CONF_DEVICE_ID, CONF_SKU, CONF_START_PIXEL, CONF_TYPE, DOMAIN, TYPE_TWINKLY, TYPE_WLED
+from .const import CONF_BULB_ENTITIES, CONF_DEVICE_ID, CONF_MASK, CONF_SKU, CONF_START_PIXEL, CONF_TYPE, DOMAIN, TYPE_TWINKLY, TYPE_WLED
 from .controller import SHOW, C9Controller
 from .effects import EFFECT_LIST, EFFECTS
 from . import fade, patterns
+from .mask import clean_mask, format_mask, parse_mask
 from .patterns import PATTERN
 from .protocol import Colour
 
@@ -47,6 +48,13 @@ def _colour(value: Any) -> Colour:
     raise vol.Invalid("expected #rrggbb or [r, g, b]")
 
 
+def _mask(value: Any) -> str:
+    try:
+        return clean_mask(value)
+    except ValueError as err:
+        raise vol.Invalid(str(err)) from err
+
+
 SET_PIXELS_SCHEMA = {
     vol.Required("colors"): vol.All(cv.ensure_list, vol.Length(min=1, max=MAX_COLOURS), [_colour]),
     vol.Optional("repeat", default=True): cv.boolean,
@@ -58,6 +66,12 @@ SET_PATTERN_SCHEMA = {
     vol.Optional("effect"): vol.All(cv.string, patterns.valid_effect),  # on one light a map effect shows as its nearest string effect
     vol.Optional("speed"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
     vol.Optional("transition"): vol.All(vol.Coerce(float), vol.Range(min=0, max=fade.MAX_TRANSITION)),
+    vol.Optional("off_bulbs"): vol.All(vol.Any(str, int), _mask),  # bulbs kept dark while this pattern shows, "3, 7-12"
+}
+
+
+SET_MASK_SCHEMA = {
+    vol.Optional("bulbs", default=""): vol.All(vol.Any(str, int, None), _mask),  # bulbs kept dark always; empty clears
 }
 
 
@@ -80,6 +94,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry,
     platform = entity_platform.async_get_current_platform()
     platform.async_register_entity_service("set_pixels", SET_PIXELS_SCHEMA, "async_set_pixels")
     platform.async_register_entity_service("set_pattern", SET_PATTERN_SCHEMA, "async_set_pattern")
+    platform.async_register_entity_service("set_mask", SET_MASK_SCHEMA, "async_set_mask")
 
 
 class _Base(LightEntity):
@@ -115,6 +130,7 @@ class C9StringLight(_Base, RestoreEntity):
         super().__init__(ctl, device)
         self._attr_unique_id = f"{uid}_string"
         self._start = entry.options.get(CONF_START_PIXEL, entry.data.get(CONF_START_PIXEL, 1))
+        self._entry = entry
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -140,6 +156,11 @@ class C9StringLight(_Base, RestoreEntity):
             ctl.effect, ctl.show_mode = effect, False
         elif ctl.is_on:  # on with a plain colour
             ctl.show_mode = False
+        if effect == PATTERN and attrs.get("pattern_off_bulbs"):  # the dark bulbs the pattern was set with
+            try:
+                ctl.look_mask = parse_mask(attrs["pattern_off_bulbs"], ctl.bulbs)
+            except ValueError:
+                pass
         ctl.resume_after_restart()  # a moving effect froze when Home Assistant stopped: start it again
 
     @property
@@ -166,7 +187,8 @@ class C9StringLight(_Base, RestoreEntity):
                 "pattern": self.ctl.pattern, "pattern_effect": self.ctl.pattern_effect, "speed": self.ctl.speed,
                 "zone": self.ctl.zone, "scanning": self.ctl.scanning,
                 "pattern_list": patterns.pattern_names(), "pattern_effect_list": patterns.PATTERN_EFFECTS,
-                "music": self.ctl.music, "default_transition": self.ctl.default_transition}
+                "music": self.ctl.music, "default_transition": self.ctl.default_transition,
+                "mask": format_mask(self.ctl.mask), "pattern_off_bulbs": format_mask(self.ctl.look_mask)}
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.ctl.async_turn_on(kwargs.get(ATTR_BRIGHTNESS), kwargs.get(ATTR_RGB_COLOR),
@@ -179,8 +201,18 @@ class C9StringLight(_Base, RestoreEntity):
         await self.ctl.async_set_pixels(colors, repeat)
 
     async def async_set_pattern(self, pattern: str | None = None, effect: str | None = None,
-                                speed: int | None = None, transition: float | None = None) -> None:
-        await self.ctl.async_set_pattern(pattern, effect, speed, transition=transition)
+                                speed: int | None = None, transition: float | None = None,
+                                off_bulbs: str | None = None) -> None:
+        dark = None if off_bulbs is None else parse_mask(off_bulbs, self.ctl.bulbs)
+        await self.ctl.async_set_pattern(pattern, effect, speed, transition=transition, off_bulbs=dark)
+
+    async def async_set_mask(self, bulbs: str | None = "") -> None:
+        """Keep these bulbs dark under everything the light shows ("" = none). Stored in the entry's options;
+        the light follows at once (the entry's update listener applies it, without a reload)."""
+        text = clean_mask(bulbs, self.ctl.bulbs)
+        self.ctl.set_mask(parse_mask(text))
+        if self._entry.options.get(CONF_MASK, "") != text:
+            self.hass.config_entries.async_update_entry(self._entry, options={**self._entry.options, CONF_MASK: text})
 
 
 class C9BulbLight(_Base):

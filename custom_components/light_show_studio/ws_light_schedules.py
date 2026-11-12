@@ -13,7 +13,7 @@ from .light_schedules import LightScheduler
 
 P = "light_show_studio/light_schedules"
 ID = vol.All(str, vol.Length(min=1, max=64))
-_FIELDS = ("name", "enabled", "days", "start", "end", "date_from", "date_to", "targets", "look", "looks", "rotate", "holiday_looks",
+_FIELDS = ("name", "enabled", "days", "start", "end", "date_from", "date_to", "targets", "off_lights", "look", "looks", "rotate", "holiday_looks",
            "random_offset_min", "only_when", "fade_in_s", "fade_out_s")
 
 

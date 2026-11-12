@@ -178,6 +178,8 @@ LIGHT_SCHEDULE_FIELDS: dict[Any, Any] = {
     vol.Optional("date_from", default=None): vol.Any(None, _mmdd),
     vol.Optional("date_to", default=None): vol.Any(None, _mmdd),
     vol.Required("targets"): _targets,
+    # lights among the targets (or in their areas) the schedule turns off, instead of showing the look on them
+    vol.Optional("off_lights", default=list): vol.All([_ref], vol.Length(max=MAX_TARGETS), _unique),
     vol.Optional("look"): _LOOK,  # one look; or send `looks` (look is then looks[0])
     vol.Optional("looks", default=list): vol.All([_LOOK], vol.Length(max=MAX_LOOKS)),  # several looks, see `rotate`
     vol.Optional("rotate", default=None): _rotate,  # how `looks` take turns (2+ looks: default each night)
@@ -277,6 +279,19 @@ class _Plan:
 
     lights: list[str] = field(default_factory=list)  # entry ids, driven directly
     zones: list[str] = field(default_factory=list)  # area ids, driven as an area zone (lights only partly in them)
+    off: list[str] = field(default_factory=list)  # entry ids the schedule keeps off while its window is open
+
+
+def _units(plan: _Plan) -> list[str]:
+    """The plan as units: lights and area zones to show the look on, then ("unlit:") the lights to turn off -
+    last, so a light an area zone just lit goes dark again."""
+    return [f"light:{e}" for e in plan.lights] + [f"area:{a}" for a in plan.zones] + [f"unlit:{e}" for e in plan.off]
+
+
+def _twin(unit: str) -> str:
+    """The same light wanted the other way (on with a look / kept off); "" for an area. The latest window
+    that wants a light gets it, one way or the other."""
+    return "unlit:" + unit[6:] if unit.startswith("light:") else "light:" + unit[6:] if unit.startswith("unlit:") else ""
 
 
 class LightScheduler:
@@ -363,11 +378,13 @@ class LightScheduler:
     def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
         return next((s for s in self.schedules if s["id"] == schedule_id), None)
 
-    def _check_targets(self, targets: dict[str, Any]) -> None:
+    def _check_targets(self, targets: dict[str, Any], sched: dict[str, Any] | None = None) -> None:
         mgr = self.hass.data.get(MAP_KEY)
         if mgr is None:
             return
         known = {row["entry_id"] for row in mgr.lights()}
+        if sched is not None:  # a light to keep off that no longer exists is dropped too
+            sched["off_lights"] = [e for e in sched.get("off_lights") or [] if e in known]
         # a light removed since the schedule was made is dropped, not an error: the editor can't show it to untick
         if gone := [e for e in targets["lights"] if e not in known]:
             _LOGGER.info("Light schedule: dropping %d removed light(s)", len(gone))
@@ -380,7 +397,7 @@ class LightScheduler:
 
     async def async_save_schedule(self, schedule_id: str | None, data: dict[str, Any]) -> dict[str, Any]:
         sched = validate_light_schedule(data)
-        self._check_targets(sched["targets"])
+        self._check_targets(sched["targets"], sched)
         async with self._lock:
             if schedule_id:
                 old = self.get_schedule(schedule_id)
@@ -647,7 +664,10 @@ class LightScheduler:
                     lights.append(entry_id)
             elif loose:
                 lights.append(entry_id)
-        return _Plan(lights, zones)
+        # lights to keep off: only ones the schedule would otherwise light (directly, or through an area zone)
+        off = [e for e in dict.fromkeys(s.get("off_lights") or [])
+               if e in rows and (e in lights or runs_of.get(e, set()) & set(zones))]
+        return _Plan([e for e in lights if e not in off], zones, off)
 
     # --- applying and releasing ------------------------------------------------------
     @staticmethod
@@ -687,6 +707,8 @@ class LightScheduler:
         """Let go of a unit; turn it off when it is still as we left it."""
         if not off or mgr is None:
             return
+        if unit.startswith("unlit:"):
+            return  # a light the schedule kept off: it is off already, and stays as it is
         try:
             if not self._untouched(unit, own, mgr):
                 return
@@ -717,8 +739,9 @@ class LightScheduler:
         plan = self._plan(s, mgr.model, {r["entry_id"]: r for r in mgr.lights()})
         done = self._windows.setdefault(key, {"end": (now + KEEP).isoformat(), "stopped": False, "units": []})
         look = self._look_at(s, w or sm.Window(now, None, now.astimezone(self._tz).date()), now)[0]
-        for unit in [f"light:{e}" for e in plan.lights] + [f"area:{a}" for a in plan.zones]:
+        for unit in _units(plan):
             self._owned.pop(unit, None)  # whoever had it no longer turns it off
+            self._owned.pop(_twin(unit), None)
             if await self._apply_unit(unit, look, mgr, None, s["fade_in_s"]):
                 done["units"].append(unit)
         self._fire_started(s, key, None)
@@ -727,6 +750,16 @@ class LightScheduler:
                           fade_in: float = 0.0, fade_out: float = 0.0) -> bool:
         """Apply the look to a light or an area zone. False when it was skipped (not ready, or a show plays)."""
         try:
+            if unit.startswith("unlit:"):  # a light the schedule keeps off (at once: an area zone may just have lit it)
+                ctl = mgr.controller(unit[6:])
+                if ctl is None or self._in_show(ctl):
+                    self._retry = True
+                    return False
+                if ctl.is_on:
+                    await ctl.async_turn_off(0)
+                if own is not None:
+                    own.print = self._print(ctl)
+                return True
             if unit.startswith("light:"):
                 ctl = mgr.controller(unit[6:])
                 if ctl is None or self._in_show(ctl):
@@ -825,7 +858,8 @@ class LightScheduler:
                 s = self.get_schedule(sid)
                 plan = self._plan(s, model, rows)
                 look = self._look_at(s, w, now)[0]
-                for unit in [f"light:{e}" for e in plan.lights] + [f"area:{a}" for a in plan.zones]:
+                for unit in _units(plan):
+                    wants.pop(_twin(unit), None)  # a later window wants this light the other way
                     wants[unit] = _Want(sid, key, w.start, look, s["fade_in_s"], s["fade_out_s"])
         # 4. let go of units nobody wants any more
         for unit, own in list(self._owned.items()):
