@@ -25,6 +25,15 @@ KEEP_FOR = 10.0  # ...for this long after it last changed (a lost UDP packet can
 SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive the string
 
 
+BLUR_FROM = 1.5  # speed factor (about speed 65) from which fast effects get motion blur
+BLUR_MAX_BULBS = 300  # strings, not big strips: two renders a frame are cheap for 50 bulbs
+STATEFUL = {"Fireworks"}  # effects that draw from random state: rendering twice a frame would double their events
+
+
+def _blend(a: list[Colour], b: list[Colour]) -> list[Colour]:
+    return [((x[0] + y[0]) >> 1, (x[1] + y[1]) >> 1, (x[2] + y[2]) >> 1) for x, y in zip(a, b)]
+
+
 def _split(c: Colour) -> tuple[Colour, int]:
     """Colour -> (full-brightness colour, level 0-255)."""
     m = max(c)
@@ -388,7 +397,14 @@ class C9Controller:
             t += min(now - last, 0.25) * patterns.speed_factor(self.speed)  # a long stall doesn't leap ahead
             last = now
             self._fx_t = t
-            self._send_frame(self._base_frame(t), fx=True)
+            sf = patterns.speed_factor(self.speed)
+            if sf >= BLUR_FROM and self.bulbs <= BLUR_MAX_BULBS and self.effect not in STATEFUL:
+                # fast motion: blend the moment half a frame earlier in, a light motion blur, so a chase that moves
+                # several bulbs a frame glides instead of jumping (and one late frame shows as a smear, not a jump)
+                frame = _blend(self._base_frame(t), self._base_frame(t - 0.5 * step * sf))
+            else:
+                frame = self._base_frame(t)
+            self._send_frame(frame, fx=True)
             if not self._is_animated():
                 if not self._transitioning():  # a still look has finished fading in / blending: nothing more to send
                     if self._task is asyncio.current_task():

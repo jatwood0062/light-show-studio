@@ -164,3 +164,8 @@ async def test_a_light_that_comes_back_gets_realtime_mode_and_its_picture_again(
     ctl.mark_seen()
     assert lan.kinds()[3:] == ["brightness", "arm", "frame"]
     ctl.shutdown()
+
+
+def test_motion_blur_is_the_average_of_two_moments():
+    assert controller._blend([(200, 0, 10), (0, 0, 0)], [(100, 50, 11), (255, 255, 255)]) == [(150, 25, 10), (127, 127, 127)]
+    assert "Fireworks" in controller.STATEFUL
