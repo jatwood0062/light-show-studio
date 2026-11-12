@@ -128,6 +128,20 @@ class MusicManager:
         return {"session": sid, "lights": sorted(runner._claimed), "effect": effect, "pattern": name,  # noqa: SLF001
                 "sensitivity": sensitivity, "timeout": music_engine.TIMEOUT}
 
+    # --- follow a speaker (no microphone) ---------------------------------------------------------------
+    async def async_follow(self, entity_id: str, lights: list[str], areas: list[str], **options: Any) -> dict[str, Any]:
+        """Start a session fed from the analysis of the song a media player is playing (see music_follow)."""
+        from . import music_follow  # noqa: PLC0415  (it imports this module)
+        return await music_follow.async_follow(self, entity_id, lights, areas, **options)
+
+    def stop_follows(self, lights: list[str] | None = None, areas: list[str] | None = None) -> int:
+        """End the sessions that follow a speaker (all of them, or those with any of the lights / areas)."""
+        units = self._unit_set(lights or [], areas or []) if (lights or areas) else None
+        hit = [s for s in self.sessions.values() if "follow" in s.info and (units is None or s.units & units)]
+        for s in hit:
+            self.stop_session(s)
+        return len(hit)
+
     # --- frames -----------------------------------------------------------------------------------
     def _unit_set(self, lights: list[str], areas: list[str]) -> frozenset[tuple[str, str]]:
         out = {("light", e) for e in lights}

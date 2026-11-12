@@ -234,6 +234,58 @@
           "description": "An area whose pattern was started with the area field."
         }
       }
+    },
+    "music_follow": {
+      "name": "Music: follow a speaker",
+      "description": "Make lights react to the song a speaker is playing, with no microphone. Works for songs of the show library (the media folder's xlights folder): the song is analysed once, then the lights follow the speaker's position. Ends when the speaker stops or plays something else.",
+      "fields": {
+        "media_player": {
+          "name": "Speaker",
+          "description": "The media player that is playing the song."
+        },
+        "lights": {
+          "name": "Lights",
+          "description": "Whole lights to use. Give lights, areas or both."
+        },
+        "areas": {
+          "name": "Areas",
+          "description": "Areas of the map (names or ids): every run in them is used."
+        },
+        "pattern": {
+          "name": "Pattern",
+          "description": "Which colours the music moves. A built-in pattern or one of your own."
+        },
+        "effect": {
+          "name": "Effect",
+          "description": "How the lights react: Pulse, Beat Chase, Spectrum, Flash, Beat Scatter, Gravity Drop or Beat Shell."
+        },
+        "sensitivity": {
+          "name": "Sensitivity",
+          "description": "1 to 100; 50 is normal."
+        },
+        "song": {
+          "name": "Song",
+          "description": "A song in the show library (for example Show/Song.mp3). Only needed when the speaker doesn't report the library's own link, such as when another app plays the same file."
+        },
+        "offset": {
+          "name": "Offset",
+          "description": "Seconds to move the lights later (positive) or earlier (negative) against the speaker's reported position."
+        }
+      }
+    },
+    "music_stop": {
+      "name": "Music: stop",
+      "description": "Stop music mode (following a speaker or a phone's microphone). The lights go back to what they showed before.",
+      "fields": {
+        "lights": {
+          "name": "Lights",
+          "description": "Only stop music on these lights. Leave lights and areas empty to stop all."
+        },
+        "areas": {
+          "name": "Areas",
+          "description": "Only stop music in these areas."
+        }
+      }
     }
   }
 }
