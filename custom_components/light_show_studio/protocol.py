@@ -73,9 +73,13 @@ class GoveeLan:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setblocking(False)
         self.dropped = 0  # packets that couldn't be sent
+        self.port = None  # set by C9Controller.use_output: commands then go through the output thread (output.py), in order with the frames
 
     def send(self, payload: bytes) -> bool:
-        """False when the packet couldn't leave (no route to the light, buffer full): UDP, so the next frame replaces it."""
+        """False when the packet couldn't leave (no route to the light, buffer full): UDP, so the next frame replaces it.
+        Through the output thread the result is not known yet: True, and the port counts the failures."""
+        if self.port is not None:
+            return self.port.control([payload])
         try:
             self._sock.sendto(payload, (self.host, CMD_PORT))
         except (BlockingIOError, OSError):

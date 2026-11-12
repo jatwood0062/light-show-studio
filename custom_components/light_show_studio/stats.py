@@ -17,6 +17,7 @@ class LinkStats:
         self.merged = 0  # show frames that came too soon and were replaced by a newer one
         self.late = 0  # animation ticks that woke late
         self.latency_ms: float | None = None  # the last health check's reply time
+        self.port = None  # the output thread's port (output.py), whose failures and replaced frames count here too
         self._n = [0] * WINDOW
         self._gap = [0.0] * WINDOW
         self._wake = [0.0] * WINDOW
@@ -68,10 +69,12 @@ class LinkStats:
         # younger than that is measured over its own age (at least a second, so one frame isn't a huge rate)
         span = min(WINDOW - 1 + now % 1.0, now - self._start)
         n = sum(self._n)
+        port = self.port
         return {
             "fps": round(n / max(span, 1.0), 1) if n else 0.0,
             "gap_ms": round(max(self._gap) * 1000),
             "wake_ms": round(max(self._wake) * 1000),
-            "sent": self.sent, "failed": self.failed, "merged": self.merged, "late": self.late,
+            "sent": self.sent, "failed": self.failed + (port.failed if port else 0),
+            "merged": self.merged + (port.coalesced if port else 0), "late": self.late,
             "latency_ms": None if self.latency_ms is None else round(self.latency_ms),
         }

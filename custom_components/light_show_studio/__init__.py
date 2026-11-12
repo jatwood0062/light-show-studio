@@ -59,7 +59,7 @@ from .mapmanager import MapManager
 from .mask import parse_mask
 from .outputs import normalize_speakers
 from .playback import SequencePlayer
-from . import fade, music_engine, patterns, upload, websocket, ws_light_schedules, ws_map, ws_music, ws_music_follow, ws_patterns, ws_schedule, ws_shows
+from . import fade, music_engine, output, patterns, upload, websocket, ws_light_schedules, ws_map, ws_music, ws_music_follow, ws_patterns, ws_schedule, ws_shows
 from . import ws_backup, ws_looks
 from .looks import async_setup_looks
 from .musicmanager import MusicError, MusicManager
@@ -396,6 +396,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
         ctl.mark_seen()
     else:
         ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], bulbs, _opt(entry, CONF_SEGMENTED, True))
+    await output.async_attach(hass, ctl)  # its frames go out on the output thread
     ctl.entry_id = entry.entry_id  # painted patterns find their pixels by it
     ctl.default_transition = fade.clean_seconds(_opt(entry, CONF_DEFAULT_TRANSITION, fade.DEFAULT_TRANSITION))
     ctl.show_lead_ms = max(-500, min(500, int(_opt(entry, CONF_SHOW_LEAD_MS, 0))))
@@ -462,4 +463,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
         entry.runtime_data.shutdown()
+        await output.async_detach(hass, entry.runtime_data)
     return ok

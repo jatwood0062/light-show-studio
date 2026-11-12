@@ -75,6 +75,8 @@ async def async_info(session: aiohttp.ClientSession, ip: str) -> dict[str, Any]:
 
 
 class WledController(C9Controller):
+    UDP_PORT = DDP_PORT
+
     def __init__(self, hass: HomeAssistant, host: str, bulbs: int, rgbw: bool = False, offset: int = 0) -> None:
         super().__init__(hass, host, bulbs, True)  # always takes a frame per LED
         self.rgbw = rgbw
@@ -140,7 +142,12 @@ class WledController(C9Controller):
     def _send(self, frame: list[Colour]) -> None:
         self._last_sent = time.monotonic()
         self._seq = self._seq % 15 + 1
-        for pkt in ddp_packets(frame, self.rgbw, self.offset, self._seq):
+        pkts = ddp_packets(frame, self.rgbw, self.offset, self._seq)
+        if self.port is not None:  # the output thread sends them
+            self.port.submit(pkts)
+            self.stats.frame(True, self._last_sent)
+            return
+        for pkt in pkts:
             try:
                 self._sock.sendto(pkt, (self.host, DDP_PORT))
             except OSError:

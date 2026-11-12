@@ -190,6 +190,8 @@ class TwinklyClient:
 
 
 class TwinklyController(C9Controller):
+    UDP_PORT = RT_PORT
+
     def __init__(self, hass: HomeAssistant, host: str, bulbs: int, profile: str = "RGB",
                  frame_rate: float | None = None) -> None:
         super().__init__(hass, host, bulbs, True)  # always takes a frame per LED
@@ -253,7 +255,12 @@ class TwinklyController(C9Controller):
     # --- realtime mode --------------------------------------------------------
     def _send(self, frame: list[Colour]) -> None:
         self._last_sent = time.monotonic()
-        for pkt in build_packets(self.client.token_bytes, frame, self.profile):
+        pkts = build_packets(self.client.token_bytes, frame, self.profile)
+        if self.port is not None:  # the output thread sends them
+            self.port.submit(pkts)
+            self.stats.frame(True, self._last_sent)
+            return
+        for pkt in pkts:
             try:
                 self._sock.sendto(pkt, (self.host, RT_PORT))
             except OSError:

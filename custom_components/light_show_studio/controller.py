@@ -14,7 +14,7 @@ from . import fade, patterns
 from .patterns import PATTERN
 from .hosts import valid_ipv4
 from .stats import LinkStats
-from .protocol import Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
+from .protocol import CMD_PORT, Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
 
 SCAN_RESEND = (0.05, 0.15)  # seconds after a scan frame at which it is sent once more (UDP may lose it)
 RESEND_AFTER = 1.0  # an unchanged frame is sent again after this long (a light may have dropped it)
@@ -55,6 +55,7 @@ class C9Controller:
         self.host = valid_ipv4(host)  # only LAN addresses; ValueError otherwise
         self.lan = self._make_link(host)
         self.stats = LinkStats()  # delivery health, shown as diagnostic sensors
+        self.port = None  # this light's port on the output thread (output.py), None = send directly
         self.bulbs = bulbs
         self.show_lead_ms = 0  # -500..500: this light gets .fseq frames for t + lead (set by the integration from the option)
         self.segmented = segmented  # False: the light takes one colour, the frame's average
@@ -125,8 +126,16 @@ class C9Controller:
         self.look_mask: frozenset[int] = frozenset()
 
     # --- hardware hooks (a subclass for another brand overrides these) ----
+    UDP_PORT = CMD_PORT  # where this light's frames go (a subclass for another brand sets its own)
+
     def _make_link(self, host: str) -> GoveeLan | None:
         return GoveeLan(host)
+
+    def use_output(self, thread) -> None:
+        """Send this light's packets from the dedicated output thread (output.py)."""
+        self.port = thread.open_port((self.host, self.UDP_PORT), self.stats)
+        if self.lan is not None:
+            self.lan.port = self.port
 
     def _hw_power(self, on: bool) -> None:
         self.lan.send(turn_msg(on))
@@ -141,7 +150,9 @@ class C9Controller:
             # (a lost packet, a command from another app) ignores every frame until it is, which looks like a freeze
             self._realtime = self.lan.send(realtime_msg(True)) is not False
             self._armed_at = now
-        self.stats.frame(self.lan.send(colours_msg(frame)) is not False, now)
+        msg = colours_msg(frame)
+        # (through the output thread a newer frame replaces this one if it has not left yet)
+        self.stats.frame(self.port.submit([msg]) if self.port is not None else self.lan.send(msg) is not False, now)
         if frame != self._hw_last:
             self._hw_changed = now
         self._hw_last, self._hw_sent = frame, now
@@ -911,6 +922,8 @@ class C9Controller:
                        self._keep_handle, self._ext_handle):
             if handle:
                 handle.cancel()
+        if self.port is not None:
+            self.port.close()
         self._hw_close()
 
     # --- identify ----------------------------------------------------------
