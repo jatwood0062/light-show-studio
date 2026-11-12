@@ -1542,3 +1542,39 @@ async def test_ws_save_accepts_the_new_fields_and_view_reports_them(hass):
     assert v["random_offset_min"] == 20 and v["only_when"] == "away" and v["look"] == THREE[0]
     c = await _call(ws.ws_save, hass, {"type": "light_show_studio/light_schedules/save", **data(random_offset_min=99)})
     assert c.errors[0][0] == "invalid_format"
+
+
+# --- lights the schedule keeps off ----------------------------------------------------------------
+@aio
+async def test_off_lights_stay_off_while_the_window_is_open(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    mgr.ctls["e3"].is_on = True
+    await save(s, targets={"lights": ["e1", "e3"]}, off_lights=["e3", "nope"])
+    saved = s.schedules[0]
+    assert saved["off_lights"] == ["e3"]  # an unknown light is dropped, not an error
+    await advance(s, at(19))
+    assert mgr.ctls["e1"].is_on and mgr.ctls["e1"].pattern == "Warm White"
+    assert not mgr.ctls["e3"].is_on
+    await advance(s, at(22, 1))
+    assert not mgr.ctls["e3"].is_on  # left alone at the end
+
+
+@aio
+async def test_off_lights_that_are_not_targets_are_ignored(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    mgr.ctls["e3"].is_on = True
+    await save(s, targets={"lights": ["e1"]}, off_lights=["e3"])
+    await advance(s, at(19))
+    assert mgr.ctls["e3"].is_on  # not ours to touch
+
+
+@aio
+async def test_off_lights_in_an_area_target(hass):
+    mgr = world(hass)
+    s = new_scheduler(hass)
+    mgr.ctls["e3"].is_on = True
+    await save(s, targets={"areas": ["Living Room"]}, off_lights=["e3"])
+    await advance(s, at(19))
+    assert not mgr.ctls["e3"].is_on

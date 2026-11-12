@@ -23,6 +23,7 @@ from .const import (
     CONF_FPP_SYNC,
     CONF_GAP,
     CONF_LED_PROFILE,
+    CONF_MASK,
     CONF_SEGMENTED,
     CONF_SHOW_LEAD_MS,
     CONF_SKU,
@@ -34,6 +35,7 @@ from .const import (
     TYPE_TWINKLY,
     TYPE_WLED,
 )
+from .mask import clean_mask
 from .hosts import is_lan_ipv4, parse_sources, valid_ipv4
 from .protocol import async_scan
 from .twinkly import async_discover, async_gestalt
@@ -394,6 +396,11 @@ class C9OptionsFlow(OptionsFlow):
             except Exception:  # noqa: BLE001  unreachable now: can't check
                 pass
             errors = _too_long(user_input, leds)
+        if user_input is not None and not player:
+            try:  # (a cleared field is not sent: that is "no bulbs")
+                user_input = {**user_input, CONF_MASK: clean_mask(user_input.get(CONF_MASK), user_input.get(CONF_BULBS))}
+            except ValueError:
+                errors[CONF_MASK] = "invalid_mask"
         if user_input is not None and not errors:
             # the app manages the speakers and transition: keep them
             return self.async_create_entry(data={**self.config_entry.options, **user_input} if player else user_input)
@@ -401,5 +408,7 @@ class C9OptionsFlow(OptionsFlow):
         twinkly = self.config_entry.data.get(CONF_TYPE) in (TYPE_TWINKLY, TYPE_WLED)
         schema = _player_schema(cur) if player else _light_schema(cur, False, twinkly, wled=wled).extend({
             vol.Optional(CONF_DEFAULT_TRANSITION, default=cur.get(CONF_DEFAULT_TRANSITION, 0.7)):
-                vol.All(vol.Coerce(float), vol.Range(min=0, max=30))})
+                vol.All(vol.Coerce(float), vol.Range(min=0, max=30)),
+            # a suggested value, not a default: emptying the field must clear the mask
+            vol.Optional(CONF_MASK, description={"suggested_value": cur.get(CONF_MASK, "")}): str})
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

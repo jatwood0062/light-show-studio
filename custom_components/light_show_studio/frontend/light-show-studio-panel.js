@@ -6386,7 +6386,7 @@ class LightShowStudioPanel extends HTMLElement {
       start: { type: "sunset", time: "18:00", offset_min: 0 },
       end: { type: "time", time: "23:00", offset_min: 0, minutes: 240 },
       season: false, date_from: "11-25", date_to: "01-06", fade_in_s: 2, fade_out_s: 2,
-      areas: [], lights: [],
+      areas: [], lights: [], off_lights: [],
       looks: [{ pattern: this._patternLists()[0].includes("Classic Multicolor") ? "Classic Multicolor" : this._patternLists()[0][0], effect: "Steady", speed: 50, brightness: 100 }],
       cur: 0, rotate: "night", rotate_min: 60, holiday_looks: false, random_offset_min: 0, only_when: "any",
     };
@@ -6406,6 +6406,7 @@ class LightShowStudioPanel extends HTMLElement {
         return a ? a.id : String(r);
       }),
       lights: [...(s.targets?.lights || [])],
+      off_lights: [...(s.off_lights || [])],
       looks: (s.looks?.length ? s.looks : [s.look]).map((l) => ({ pattern: l.pattern, effect: l.effect, speed: l.speed ?? 50, brightness: l.brightness ?? 100 })),
       cur: 0, rotate: s.rotate?.type === "interval" ? "interval" : "night", rotate_min: s.rotate?.minutes || 60,
       holiday_looks: !!s.holiday_looks, random_offset_min: Number(s.random_offset_min) || 0, only_when: ["home", "away"].includes(s.only_when) ? s.only_when : "any",
@@ -6421,6 +6422,7 @@ class LightShowStudioPanel extends HTMLElement {
     this._lsDraft = s ? this._lsFrom(s) : this._lsNew();
     this._lsError = "";
     this._lsLightsOpen = false;
+    this._lsOffOpen = false;
     if (!this._map) this._loadMap();
     this._openSheet("lsched", s ? "Edit schedule" : "Add schedule");
     this._renderLightEditor();
@@ -6591,6 +6593,37 @@ class LightShowStudioPanel extends HTMLElement {
             d.lights = d.lights.filter((x) => x !== l.id);
             if (cb.checked) d.lights.push(l.id);
             lb.lastChild.textContent = d.areas.length + d.lights.length ? `${d.areas.length + d.lights.length} selected` : "pick at least one";
+          };
+          lab.append(cb, this._el("span", "", l.title));
+          list.append(lab);
+        }
+        card.append(list);
+      }
+      // lights the schedule turns off instead (among its lights, or in its areas) while it is on
+      d.off_lights = (d.off_lights || []).filter((id) => !lights.length || lights.some((l) => l.id === id));
+      const offPick = this._el("button", "ed-pick");
+      offPick.type = "button";
+      offPick.setAttribute("aria-expanded", String(!!this._lsOffOpen));
+      const offText = () => (d.off_lights.length ? (d.off_lights.length > 1 ? `${d.off_lights.length} lights` : (lights.find((l) => l.id === d.off_lights[0])?.title || "a light")) : "none");
+      const offSum = this._el("span", "m", offText());
+      offPick.append(this._el("span", "", "Keep these lights off"), offSum);
+      offPick.onclick = () => {
+        this._lsOffOpen = !this._lsOffOpen;
+        again();
+      };
+      card.append(offPick);
+      if (this._lsOffOpen) {
+        const list = this._el("div", "ed-lights");
+        if (!lights.length) list.append(this._el("div", "muted", "No lights found"));
+        for (const l of lights) {
+          const lab = this._el("label", "chk");
+          const cb = this._el("input");
+          cb.type = "checkbox";
+          cb.checked = d.off_lights.includes(l.id);
+          cb.onchange = () => {
+            d.off_lights = d.off_lights.filter((x) => x !== l.id);
+            if (cb.checked) d.off_lights.push(l.id);
+            offSum.textContent = offText();
           };
           lab.append(cb, this._el("span", "", l.title));
           list.append(lab);
@@ -6908,6 +6941,7 @@ class LightShowStudioPanel extends HTMLElement {
       end: d.end.type === "none" ? null : d.end.type === "duration" ? { type: "duration", minutes: d.end.minutes } : edge(d.end),
       date_from: d.season ? d.date_from : null, date_to: d.season ? d.date_to : null,
       targets: { areas: d.areas, lights: d.lights },
+      off_lights: d.off_lights || [],
       fade_in_s: d.fade_in_s, fade_out_s: d.fade_out_s,
     };
     const lk = (l) => ({ pattern: l.pattern, effect: l.effect, speed: l.speed, brightness: l.brightness });

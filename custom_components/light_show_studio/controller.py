@@ -110,6 +110,10 @@ class C9Controller:
         self._base: list[Colour] = []
         self._last_raw: list[Colour] = []  # the last effect frame before the brightness setting and any fade-in/out
         self._off_handle: asyncio.TimerHandle | None = None
+        # bulbs (0-based) kept dark: `mask` under everything this light shows but identify and a camera scan (the
+        # integration sets it from the `mask` option); `look_mask` only while the pattern it was set with runs
+        self.mask: frozenset[int] = frozenset()
+        self.look_mask: frozenset[int] = frozenset()
 
     # --- hardware hooks (a subclass for another brand overrides these) ----
     def _make_link(self, host: str) -> GoveeLan | None:
@@ -235,6 +239,8 @@ class C9Controller:
         if scaled and self.brightness != 255:
             f = self.brightness / 255
             frame = [(int(r * f), int(g * f), int(b * f)) for r, g, b in frame]
+        if scaled and (self.mask or self.look_mask):  # (a scan frame is not scaled, and must show every bulb)
+            frame = self._masked(frame, fx)
         now = time.monotonic()
         wire = self._wire
         if wire is not None and now - wire[1] < RESEND_AFTER and wire[0] == frame:
@@ -243,6 +249,29 @@ class C9Controller:
         self._hw_frame(frame)
         self._set_frame(frame)
         self._wire, self._wire_raw = (frame, now), raw
+
+    def _masked(self, frame: list[Colour], fx: bool) -> list[Colour]:
+        """The frame with the masked bulbs black (the pattern's own mask only under this light's pattern)."""
+        dark = self.mask | self.look_mask if fx and self.effect == PATTERN else self.mask
+        if not dark:
+            return frame
+        return [(0, 0, 0) if i in dark else c for i, c in enumerate(frame)]
+
+    @callback
+    def set_mask(self, mask: frozenset[int] | None = None, look_mask: frozenset[int] | None = None) -> None:
+        """Change the bulbs kept dark (None = leave that mask as it is) and show the picture again without them."""
+        if mask is not None:
+            self.mask = frozenset(mask)
+        if look_mask is not None:
+            self.look_mask = frozenset(look_mask)
+        self._wire = self._wire_raw = None  # the same frame must go out again, masked anew
+        if not self.is_on or self._scanning or self._identifying:
+            pass
+        elif self._zones:
+            self._resend_zone()
+        elif not self.show_mode and (self._task is None or self._task.done()):
+            self._render()  # (a running animation, or the next sequencer frame, picks it up by itself)
+        self._notify()
 
     def _fade_frame(self, frame: list[Colour]) -> list[Colour]:
         now = self._now()
@@ -421,7 +450,8 @@ class C9Controller:
 
     # --- whole-string commands ------------------------------------------
     async def async_turn_on(self, brightness: int | None = None, colour: Colour | None = None,
-                            effect: str | None = None, transition: float | None = None) -> None:
+                            effect: str | None = None, transition: float | None = None,
+                            off_bulbs: frozenset[int] | None = None) -> None:
         """Turn on / change the look. `transition` (seconds, None = the default_transition option, 0 = instant):
         turning on fades in, and a new colour or effect cross-fades from the old picture."""
         dur = self.default_transition if transition is None else fade.clean_seconds(transition)
@@ -460,6 +490,8 @@ class C9Controller:
             self.show_mode = False
         if brightness is not None:
             self.brightness = brightness
+        if colour is not None or effect is not None:
+            self.look_mask = off_bulbs or frozenset()  # a new look: the last pattern's dark bulbs go with it
         if colour is not None:
             self.colour, self.effect, self.custom, self.show_mode = colour, None, False, False
         if effect == SHOW:
@@ -483,9 +515,10 @@ class C9Controller:
 
     async def async_set_pattern(self, pattern: str | None = None, effect: str | None = None,
                                 speed: int | None = None, brightness: int | None = None,
-                                transition: float | None = None) -> None:
+                                transition: float | None = None, off_bulbs: frozenset[int] | None = None) -> None:
         """Pick a pattern (a built-in or one of yours) and/or how it moves (turning the light on to show it),
-        and/or the speed. Speed alone just changes the speed of whatever effect is running.
+        and/or the speed. Speed alone just changes the speed of whatever effect is running. `off_bulbs` (0-based)
+        stay dark while this pattern shows on this light; the next look chosen clears them.
 
         A map effect (Sweep, Ripple ...) needs positions, so on one light it becomes its nearest string effect."""
         if pattern is not None:
@@ -495,9 +528,12 @@ class C9Controller:
         if speed is not None:
             self.speed = max(1, min(100, int(speed)))
         if pattern is None and effect is None:
+            if off_bulbs is not None and self.effect == PATTERN:
+                self.set_mask(look_mask=off_bulbs)  # the running pattern, with other bulbs dark
+                return
             self._notify()  # the running animation picks the new speed up on its next frame
             return
-        await self.async_turn_on(brightness=brightness, effect=PATTERN, transition=transition)
+        await self.async_turn_on(brightness=brightness, effect=PATTERN, transition=transition, off_bulbs=off_bulbs)
 
     async def async_turn_off(self, transition: float | None = None) -> None:
         """Turn off. With a transition (None = the default_transition option) the light fades to black first and

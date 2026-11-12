@@ -123,11 +123,13 @@
           "fpp_remotes": "...only to these controller IPs (optional, comma separated; empty = every remote on the network)",
           "allowed_sources": "Only accept xLights / sequencer data from these IPs (optional, comma separated; empty = any device on your home network)",
           "device_offset": "WLED: first LED on the controller (0 = the start; use when other LEDs come first)",
-          "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)"
+          "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)",
+          "mask": "Bulbs to keep off, e.g. 3, 7-12 (1 = the bulb at the plug; empty = none)"
         }
       }
     },
     "error": {
+      "invalid_mask": "Enter bulb numbers and ranges separated by commas, like 3, 7-12.",
       "invalid_sources": "Enter private IPv4 addresses or networks separated by commas, like 192.168.1.20, 10.0.0.0/24.",
       "exceeds_leds": "Number of LEDs plus the first LED is more than the LEDs the controller reports."
     }
@@ -177,6 +179,16 @@
       "name": "Stop sequence",
       "description": "Stop the playing sequence and turn the bulbs dark."
     },
+    "set_mask": {
+      "name": "Keep bulbs off",
+      "description": "Choose bulbs that stay dark under everything this light shows (effects, patterns, zones and shows), such as one in front of a window. Identify and the camera scan still light them.",
+      "fields": {
+        "bulbs": {
+          "name": "Bulbs",
+          "description": "Bulb numbers and ranges, counted from the plug, like 3, 7-12. Empty turns them all back on."
+        }
+      }
+    },
     "set_pattern": {
       "name": "Set pattern",
       "description": "Pick the bulbs' colour pattern, how it moves, and the speed. Speed on its own changes the speed of whatever effect is running.",
@@ -192,6 +204,10 @@
         "speed": {
           "name": "Speed",
           "description": "1 (slow) to 100 (fast); 50 is normal."
+        },
+        "off_bulbs": {
+          "name": "Bulbs to keep off",
+          "description": "Bulb numbers and ranges, counted from the plug, like 3, 7-12, that stay dark while this pattern shows. Picking another colour, effect or pattern clears them."
         }
       }
     },
