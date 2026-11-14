@@ -163,7 +163,7 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
             host = valid_ipv4(host)
         except ValueError:
             return self.async_abort(reason="invalid_host")
-        await self.async_set_unique_id(host)
+        await self.async_set_unique_id(self._light_id(host))
         self._abort_if_unique_id_configured()
         model = _model(sku)
         sku, device = str(sku)[:64], str(device)[:64]
@@ -337,6 +337,18 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
                                     description_placeholders={"host": self._light[CONF_HOST],
                                                               "sku": self._light[CONF_SKU],
                                                               "leds": str(self._wled_leds or "?")})
+
+    def _light_id(self, host: str) -> str:
+        """A Govee light's id is the address it was added at, and its entities' ids are built from it, so a
+        light that has since moved keeps it. If such a light holds this address's id, a new light here
+        gets the address with a suffix instead of being refused as already set up."""
+        uid, n = host, 1
+        while (entry := self.hass.config_entries.async_entry_for_domain_unique_id(self.handler, uid)) is not None:
+            if entry.data.get(CONF_HOST) == host:
+                return uid  # really this light: abort as already set up
+            n += 1
+            uid = f"{host}-{n}"
+        return uid
 
     async def _abort_or_follow(self, host: str, probe) -> None:
         """Abort when this device (unique id) is already set up. Its stored host is only replaced when the
