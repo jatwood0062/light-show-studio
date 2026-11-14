@@ -163,7 +163,11 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
             host = valid_ipv4(host)
         except ValueError:
             return self.async_abort(reason="invalid_host")
-        await self.async_set_unique_id(self._light_id(host))
+        if not device:  # typed IP: ask the network which Govee device answers there
+            device = ((await async_scan() or {}).get(host) or {}).get("device", "")
+        if (uid := self._light_id(host, str(device)[:64])) is None:
+            return self.async_abort(reason="already_configured")
+        await self.async_set_unique_id(uid)
         self._abort_if_unique_id_configured()
         model = _model(sku)
         sku, device = str(sku)[:64], str(device)[:64]
@@ -338,14 +342,18 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
                                                               "sku": self._light[CONF_SKU],
                                                               "leds": str(self._wled_leds or "?")})
 
-    def _light_id(self, host: str) -> str:
-        """A Govee light's id is the address it was added at, and its entities' ids are built from it, so a
-        light that has since moved keeps it. If such a light holds this address's id, a new light here
-        gets the address with a suffix instead of being refused as already set up."""
+    def _light_id(self, host: str, device: str) -> str | None:
+        """The new light's unique id: its Govee device id, which stays the same when its IP changes.
+        None when it is already set up (same device id, or a light already lives at this IP). Without a
+        device id (the scan didn't hear it) the IP is the fallback, suffixed if a light that has since
+        moved still holds that IP as its id."""
+        for e in self._async_current_entries():
+            if e.data.get(CONF_HOST) == host or (device and e.data.get(CONF_DEVICE_ID) == device):
+                return None
+        if device:
+            return device
         uid, n = host, 1
-        while (entry := self.hass.config_entries.async_entry_for_domain_unique_id(self.handler, uid)) is not None:
-            if entry.data.get(CONF_HOST) == host:
-                return uid  # really this light: abort as already set up
+        while self.hass.config_entries.async_entry_for_domain_unique_id(self.handler, uid) is not None:
             n += 1
             uid = f"{host}-{n}"
         return uid
