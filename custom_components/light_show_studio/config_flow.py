@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from typing import Any
 
 import voluptuous as vol
@@ -345,18 +347,11 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
     def _light_id(self, host: str, device: str) -> str | None:
         """The new light's unique id: its Govee device id, which stays the same when its IP changes.
         None when it is already set up (same device id, or a light already lives at this IP). Without a
-        device id (the scan didn't hear it) the IP is the fallback, suffixed if a light that has since
-        moved still holds that IP as its id."""
+        device id (the scan didn't hear it) it gets a random id, never the IP."""
         for e in self._async_current_entries():
             if e.data.get(CONF_HOST) == host or (device and e.data.get(CONF_DEVICE_ID) == device):
                 return None
-        if device:
-            return device
-        uid, n = host, 1
-        while self.hass.config_entries.async_entry_for_domain_unique_id(self.handler, uid) is not None:
-            n += 1
-            uid = f"{host}-{n}"
-        return uid
+        return device or uuid.uuid4().hex  # never the IP: it can change
 
     async def _abort_or_follow(self, host: str, probe) -> None:
         """Abort when this device (unique id) is already set up. Its stored host is only replaced when the
