@@ -223,7 +223,14 @@ class PixelReceiver:
             iface = socket.inet_aton(await self._lan_interface())
             for u in range(1, UNIVERSES + 1):  # sACN is usually multicast to 239.255.<hi>.<lo>
                 group = socket.inet_aton(f"239.255.{u >> 8}.{u & 255}")
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, group + iface)
+                try:
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, group + iface)
+                except OSError as err:
+                    if u == 1:
+                        raise
+                    # the kernel caps groups per socket (Linux: 20 by default): later universes are unicast only
+                    _LOGGER.info("E1.31 multicast joined for universes 1-%d only (unicast for the rest): %s", u - 1, err)
+                    break
         except OSError as err:  # keep the socket: unicast E1.31 still works
             _LOGGER.warning("E1.31 multicast not joined, unicast only: %s", err)
         try:

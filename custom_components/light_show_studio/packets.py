@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import struct
 
-MAX_PIXELS = 2040  # 12 E1.31 universes
+MAX_PIXELS = 8160  # 48 E1.31 universes: the whole show (each light is still at most 1020 bulbs)
 UNIVERSE_SIZE = 510
 UNIVERSES = MAX_PIXELS * 3 // UNIVERSE_SIZE
 BUF_SIZE = MAX_PIXELS * 3

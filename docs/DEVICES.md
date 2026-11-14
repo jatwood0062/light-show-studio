@@ -22,6 +22,20 @@ Option `show_lead_ms` (-500 to 500, on every light type) sends a light the .fseq
 value for a light whose network delivers late. It is clamped to the first and last frame and affects only that light
 (play_sequence and the show player); frames received from xLights / E1.31 are not shifted.
 
+## Christmas String Lights 2 (H70C4 / H70C5 / H70C7): the "pixels" protocol
+
+Razer frames reach only about the first 20 bulbs of an H70C5 (300 bulbs), and 100+ sections leave it dark
+(owner-tested). These lights take per-bulb colour as a **picture** instead: the Govee app's finger-sketch upload,
+sent as LAN command `ptReal` (base64 20-byte BLE-style packets, see `protocol.py`), confirmed on all 300 bulbs.
+No realtime arming. Option `protocol` ("razer" / "pixels", Configure) picks it; it is chosen by itself for these
+SKUs (also for lights set up before 2.9.0) and can be set by hand for a light added by IP. Limits: at most 24
+colours a picture (more are rounded to 16 levels a channel, then mapped to the 24 most used), 12 packets a message,
+messages 40 ms apart, at most 4 pictures a second (newest wins, so 25 fps effects and shows look like 4 fps), an
+unchanged picture re-sent every 5 s for 30 s. H70C4 (200) / H70C7 (500) bulb counts assume the H70C5's density and
+are untested. Colour: green looks too strong on these strings (the C9's orange 255,80,0 shows yellow; 255,35,0
+matches), so each picture's green goes through a gamma of 1.7 (`green_gamma` on the model entry; 80 -> 36).
+Reference: gdeboos/ha-liday-show PR #84.
+
 ## Key findings
 
 - **Real SKU of the Govee C9 string lights: H6860** (50 bulbs, 49 ft) and H6861 (100 bulbs, 98 ft),
@@ -159,6 +173,9 @@ LAN column: yes = listed in openHAB Govee LAN-API binding (which follows Govee's
 | H70BC | 400 LED Curtain Lights | curtain | yes | unknown | unknown |
 | H70C1 | RGBIC String Light 10M (Christmas String Lights) | string | yes | unknown | unknown |
 | H70C2 | RGBIC String Light 20M (Christmas String Lights) | string | yes | unknown | unknown |
+| H70C4 | Christmas String Lights 2 66ft | string | yes | no (pixels) | 200 (assumed) |
+| H70C5 | Christmas String Lights 2 | string | yes | no (pixels) | 300 |
+| H70C7 | Christmas String Lights 2 164ft | string | yes | no (pixels) | 500 (assumed) |
 | H6860 | C9 Christmas String Lights 50 bulbs (49ft) | c9_string | ? | yes | 50 |
 | H6861 | C9 Christmas String Lights 100 bulbs (98ft) | c9_string | ? | unknown | unknown |
 | H805A | Permanent Outdoor Lights Elite 30M | permanent_outdoor | yes | unknown | unknown |

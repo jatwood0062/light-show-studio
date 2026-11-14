@@ -86,8 +86,8 @@ async def test_a_failed_arm_is_tried_again_on_the_next_frame():
 
 @aio
 async def test_a_still_picture_is_resent_for_a_while(monkeypatch):
-    monkeypatch.setattr(controller, "KEEPALIVE", 0.02)
-    monkeypatch.setattr(controller, "KEEP_FOR", 0.1)
+    monkeypatch.setattr(controller.C9Controller, "KEEPALIVE", 0.02)
+    monkeypatch.setattr(controller.C9Controller, "KEEP_FOR", 0.1)
     lan = Lan()
     ctl = Light(FakeHass(), lan)
     ctl._hw_frame(RED)
@@ -102,7 +102,7 @@ async def test_a_still_picture_is_resent_for_a_while(monkeypatch):
 
 @aio
 async def test_no_keepalive_once_the_light_is_off(monkeypatch):
-    monkeypatch.setattr(controller, "KEEPALIVE", 0.02)
+    monkeypatch.setattr(controller.C9Controller, "KEEPALIVE", 0.02)
     lan = Lan()
     ctl = Light(FakeHass(), lan)
     ctl._hw_frame(RED)
@@ -129,7 +129,7 @@ async def test_a_sequencer_frame_that_comes_too_soon_is_delayed_not_dropped():
 
 @aio
 async def test_keepalive_never_puts_back_the_picture_from_before_an_off(monkeypatch):
-    monkeypatch.setattr(controller, "KEEPALIVE", 0.02)
+    monkeypatch.setattr(controller.C9Controller, "KEEPALIVE", 0.02)
     lan = Lan()
     ctl = Light(FakeHass(), lan)
     ctl._hw_frame(RED)

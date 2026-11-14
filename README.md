@@ -264,8 +264,8 @@ every configuration change need an administrator account. Uploads accept only `.
 Home Assistant listens for pixel data on **DDP (UDP 4048)** and **E1.31/sACN (UDP 5568,
 510 channels per universe from universe 1)**, and looks like one pixel controller to xLights.
 Each string takes its own slice, set by **First pixel** (Configure on the integration):
-the first string is pixels 1–50, a second one defaults to 51–100, and so on. Up to 2040 pixels
-in total (12 E1.31 universes).
+the first string is pixels 1–50, a second one defaults to 51–100, and so on. Up to 8160 pixels
+in total (48 E1.31 universes; multicast may be joined for fewer, unicast reaches all).
 
 1. In xLights → **Controllers** → **Add Ethernet**:
    - Protocol **DDP**, IP address = your Home Assistant IP

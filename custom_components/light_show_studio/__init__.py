@@ -42,13 +42,16 @@ from .const import (
     MAP_KEY,
     MUSIC_KEY,
     PREVIEW_KEY,
+    PROTOCOL_PIXELS,
+    RAZER_MAX_BULBS,
     SEQUENCER_KEY,
     USER_PATTERNS_KEY,
     TYPE_PLAYER,
     TYPE_TWINKLY,
     TYPE_WLED,
 )
-from .controller import C9Controller, enable_shows
+from .controller import C9Controller, PictureController, enable_shows
+from .models import green_gamma_for, protocol_for
 from .follow import play_with_speaker
 from .fseq import FseqError, FseqFile, load
 from .health import HealthMonitor
@@ -395,7 +398,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: C9ConfigEntry) -> bool:
                                                   bool(info.get("leds", {}).get("rgbw")), offset)
         ctl.mark_seen()
     else:
-        ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], bulbs, _opt(entry, CONF_SEGMENTED, True))
+        segmented = _opt(entry, CONF_SEGMENTED, True)
+        if protocol_for({**entry.data, **entry.options}) == PROTOCOL_PIXELS and segmented:
+            ctl = entry.runtime_data = PictureController(hass, entry.data[CONF_HOST], bulbs,
+                                                         green_gamma_for({**entry.data, **entry.options}))
+        else:
+            if segmented and bulbs > RAZER_MAX_BULBS:  # a razer frame counts its bulbs in one byte
+                _LOGGER.warning("%s: razer frames reach at most %d bulbs, not %d (pick the pixels protocol for "
+                                "longer strings)", entry.title, RAZER_MAX_BULBS, bulbs)
+                bulbs = RAZER_MAX_BULBS
+            ctl = entry.runtime_data = C9Controller(hass, entry.data[CONF_HOST], bulbs, segmented)
     await output.async_attach(hass, ctl)  # its frames go out on the output thread
     ctl.entry_id = entry.entry_id  # painted patterns find their pixels by it
     ctl.default_transition = fade.clean_seconds(_opt(entry, CONF_DEFAULT_TRANSITION, fade.DEFAULT_TRANSITION))

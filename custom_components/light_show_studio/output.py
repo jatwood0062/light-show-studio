@@ -4,7 +4,9 @@ Producers on the loop build the packets (colours -> protocol bytes) and hand the
 thread only owns the sockets and the ports' queues, never hass or controller state. Per port the queue is in
 submission order: `control()` packets (turn on/off, brightness, realtime arm) always go out in order, and a
 `submit()`ted frame replaces the frame before it when that one has not left yet (newest wins, counted as
-coalesced), but never jumps over a control packet. A port that fails (OSError) counts the failure and moves on;
+coalesced), but never jumps over a control packet. A frame submitted with a `gap` leaves one packet at a time,
+`gap` seconds apart (a Govee picture is several messages); once its first packet is out the rest can no longer be
+replaced, so a light never gets half of one picture and half of the next. A port that fails (OSError) counts the failure and moves on;
 no port waits for another. `OUTPUT_THREAD = False` leaves every light on its direct sends.
 
 A second daemon thread, the `RenderDriver`, renders steady effects: each light's `RenderJob` is ticked on the shared
@@ -137,24 +139,24 @@ class OutputPort:
         self._sock: socket.socket | None = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setblocking(False)
         self._lock = threading.Lock()
-        self._queue: deque[tuple[list[bytes], float, bool]] = deque()  # (packets, due, is_frame)
+        self._queue: deque[tuple[list[bytes], float, bool, float]] = deque()  # (packets, due, is_frame, gap)
         self.sent = 0  # packet lists put on the wire (by the thread)
         self.failed = 0  # ...and those the socket refused
         self.coalesced = 0  # frames replaced by a newer one before they left
         if stats is not None:
             stats.port = self  # the light's LinkStats adds these counts to its own
 
-    def submit(self, packets: list[bytes], due: float | None = None) -> bool:
+    def submit(self, packets: list[bytes], due: float | None = None, gap: float = 0.0) -> bool:
         """A frame, to leave at `due` (time.perf_counter(); None = now). Replaces a frame still waiting at the
-        end of the queue. False when the port is closed."""
-        return self._put(packets, due, True)
+        end of the queue. `gap` > 0: its packets leave that many seconds apart. False when the port is closed."""
+        return self._put(packets, due, True, gap)
 
     def control(self, packets: list[bytes]) -> bool:
         """Packets that must leave in order with the frames around them (none is ever replaced)."""
         return self._put(packets, None, False)
 
-    def _put(self, packets: list[bytes], due: float | None, frame: bool) -> bool:
-        item = (list(packets), 0.0 if due is None else due, frame)
+    def _put(self, packets: list[bytes], due: float | None, frame: bool, gap: float = 0.0) -> bool:
+        item = (list(packets), 0.0 if due is None else due, frame, gap)
         with self._lock:
             if self._sock is None:
                 return False
@@ -181,15 +183,25 @@ class OutputPort:
                 return False, None
             if self._queue[0][1] > now:
                 return False, self._queue[0][1]
-            packets = self._queue.popleft()[0]
+            packets, _due, _frame, gap = self._queue.popleft()
+            if gap > 0 and len(packets) > 1:  # one now, the rest `gap` later; no longer replaceable (False)
+                self._queue.appendleft((packets[1:], time.perf_counter() + gap, False, gap))
+                packets, done = packets[:1], False
+            else:
+                done = True
             sock = self._sock
         for pkt in packets:
             try:
                 sock.sendto(pkt, self.addr)
             except OSError:  # (BlockingIOError included) UDP: the next frame replaces it
                 self.failed += 1
+                if not done:  # the rest of a chunked frame is useless now
+                    with self._lock:
+                        if self._queue and not self._queue[0][2] and self._queue[0][3] > 0:
+                            self._queue.popleft()  # (the remainder put back above)
                 return True, None
-        self.sent += 1
+        if done:
+            self.sent += 1
         return True, None
 
     def pending(self) -> int:

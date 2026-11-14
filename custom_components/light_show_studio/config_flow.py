@@ -26,6 +26,7 @@ from .const import (
     CONF_GAP,
     CONF_LED_PROFILE,
     CONF_MASK,
+    CONF_PROTOCOL,
     CONF_SEGMENTED,
     CONF_SHOW_LEAD_MS,
     CONF_SKU,
@@ -33,17 +34,23 @@ from .const import (
     CONF_TYPE,
     DEFAULT_BULBS,
     DOMAIN,
+    MAX_BULBS,
+    PROTOCOL_PIXELS,
+    PROTOCOL_RAZER,
+    RAZER_MAX_BULBS,
     TYPE_PLAYER,
     TYPE_TWINKLY,
     TYPE_WLED,
 )
 from .mask import clean_mask
+from .models import PROTOCOLS, protocol_for
+from .packets import MAX_PIXELS
 from .hosts import is_lan_ipv4, parse_sources, valid_ipv4
 from .protocol import async_scan
 from .twinkly import async_discover, async_gestalt
 from .wled import async_info, fits, format_mac
 
-PIXEL = vol.All(int, vol.Range(min=1, max=2040))
+PIXEL = vol.All(int, vol.Range(min=1, max=MAX_PIXELS))
 LEAD = vol.All(int, vol.Range(min=-500, max=500))
 OFFSET = vol.All(int, vol.Range(min=0, max=2039))
 MANUAL = "manual"
@@ -63,15 +70,26 @@ def _light_schema(cur: dict[str, Any], with_name: bool, twinkly: bool = False, n
     if with_name:
         fields[vol.Required(CONF_NAME, default=cur.get(CONF_NAME, name))] = vol.All(str, vol.Length(min=1, max=100))
     fields[vol.Required(CONF_BULBS, default=cur.get(CONF_BULBS, DEFAULT_BULBS))] = vol.All(
-        int, vol.Range(min=1, max=1020 if twinkly else 255))
+        int, vol.Range(min=1, max=MAX_BULBS))
     if not twinkly:
         fields[vol.Required(CONF_SEGMENTED, default=cur.get(CONF_SEGMENTED, True))] = bool
+        # razer frames (most Govee lights, up to 255 bulbs) or pictures (Christmas String Lights 2, hundreds)
+        fields[vol.Required(CONF_PROTOCOL, default=protocol_for(cur))] = selector.SelectSelector(
+            selector.SelectSelectorConfig(options=list(PROTOCOLS), translation_key=CONF_PROTOCOL))
     fields[vol.Required(CONF_BULB_ENTITIES, default=cur.get(CONF_BULB_ENTITIES, not twinkly))] = bool
     fields[vol.Required(CONF_START_PIXEL, default=cur.get(CONF_START_PIXEL, 1))] = PIXEL
     if wled:  # first LED on the controller this light writes (a dummy output or another strip before it)
         fields[vol.Required(CONF_DEVICE_OFFSET, default=cur.get(CONF_DEVICE_OFFSET, 0))] = OFFSET
     fields[vol.Required(CONF_SHOW_LEAD_MS, default=cur.get(CONF_SHOW_LEAD_MS, 0))] = LEAD
     return vol.Schema(fields)
+
+
+def _razer_too_long(user_input: dict[str, Any]) -> dict[str, str]:
+    """Error for a per-bulb Govee light on razer frames with more bulbs than a frame can count."""
+    if (user_input.get(CONF_SEGMENTED, True) and user_input.get(CONF_PROTOCOL, PROTOCOL_RAZER) != PROTOCOL_PIXELS
+            and user_input.get(CONF_BULBS, 0) > RAZER_MAX_BULBS):
+        return {CONF_BULBS: "razer_bulbs"}
+    return {}
 
 
 def _too_long(user_input: dict[str, Any], leds: int | None) -> dict[str, str]:
@@ -176,8 +194,9 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
         self._light = {CONF_HOST: host, CONF_SKU: sku}
         if device:
             self._light[CONF_DEVICE_ID] = device
-        if model:  # only models known to take per-segment frames start segmented
-            segmented = model.razer is True
+        protocol = model.protocol if model else PROTOCOL_RAZER
+        if model:  # only models known to take per-segment frames (or pictures) start segmented
+            segmented = model.razer is True or protocol == PROTOCOL_PIXELS
             bulbs = model.segments or (DEFAULT_BULBS if segmented else 1)
         elif sku:  # reported but not in the table: play safe
             segmented, bulbs = False, 1
@@ -187,16 +206,19 @@ class C9ConfigFlow(ConfigFlow, domain=DOMAIN):
             CONF_NAME: model.name if model else (sku or "Light"),
             CONF_BULBS: bulbs,
             CONF_SEGMENTED: segmented,
+            CONF_PROTOCOL: protocol,
             CONF_BULB_ENTITIES: segmented,
             CONF_START_PIXEL: self._next_pixel(),
         }
         return await self.async_step_details()
 
     async def async_step_details(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        if user_input is not None:
+        errors = _razer_too_long(user_input) if user_input is not None else {}
+        if user_input is not None and not errors:
             name = user_input.pop(CONF_NAME)
             return self.async_create_entry(title=name, data={**self._light, **user_input})
-        return self.async_show_form(step_id="details", data_schema=_light_schema(self._defaults, True),
+        cur = {**self._defaults, **(user_input or {})}
+        return self.async_show_form(step_id="details", data_schema=_light_schema(cur, True), errors=errors,
                                     description_placeholders={"host": self._light[CONF_HOST],
                                                               "sku": self._light[CONF_SKU] or "unknown"})
 
@@ -411,6 +433,9 @@ class C9OptionsFlow(OptionsFlow):
             except Exception:  # noqa: BLE001  unreachable now: can't check
                 pass
             errors = _too_long(user_input, leds)
+        if user_input is not None and not player and not wled \
+                and self.config_entry.data.get(CONF_TYPE) != TYPE_TWINKLY:
+            errors.update(_razer_too_long(user_input))
         if user_input is not None and not player:
             try:  # (a cleared field is not sent: that is "no bulbs")
                 user_input = {**user_input, CONF_MASK: clean_mask(user_input.get(CONF_MASK), user_input.get(CONF_BULBS))}

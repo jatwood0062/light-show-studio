@@ -4,6 +4,18 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-14
+
+### Added
+- Govee Christmas String Lights 2 (H70C4, H70C5, H70C7): true per-bulb colour on all bulbs (300 on an H70C5),
+  sent as Govee "pictures" (`ptReal`) instead of razer frames. New `protocol` option (razer / pixels), picked by
+  itself for these SKUs. Pictures go out at most 4 a second (newest wins), at most 24 colours each.
+  Their green is gamma-corrected (1.7) so colours match the C9 strings.
+
+### Changed
+- A Govee light may have up to 1020 bulbs (razer frames still at most 255), and the show pixel space is 8160
+  pixels (48 E1.31 universes) so several long strings fit.
+
 ## [2.8.1] - 2026-11-11
 
 ### Fixed

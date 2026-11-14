@@ -16,7 +16,8 @@ from .patterns import PATTERN
 from .hosts import valid_ipv4
 from .stats import LinkStats
 from .output import RenderJob
-from .protocol import CMD_PORT, Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, realtime_msg, turn_msg
+from .protocol import (CMD_PORT, Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, correct_green, gamma_table,
+                       picture_msgs, realtime_msg, turn_msg)
 
 SCAN_RESEND = (0.05, 0.15)  # seconds after a scan frame at which it is sent once more (UDP may lose it)
 RESEND_AFTER = 1.0  # an unchanged frame is sent again after this long (a light may have dropped it)
@@ -25,6 +26,10 @@ REARM_AFTER = 2.0  # realtime mode is switched on again when frames resume after
 KEEPALIVE = 1.0  # a still picture is sent again this often...
 KEEP_FOR = 10.0  # ...for this long after it last changed (a lost UDP packet can't leave the wrong picture up)
 SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive the string
+PICTURE_FPS = 4  # pictures a second a "pixels" Govee light is sent at most (newest wins)
+PICTURE_GAP = 0.04  # seconds between the messages of one picture
+PICTURE_KEEPALIVE = 5.0  # an unchanged picture is sent again this often...
+PICTURE_KEEP_FOR = 30.0  # ...for this long after it last changed
 
 
 BLUR_FROM = 1.5  # speed factor (about speed 65) from which fast effects get motion blur
@@ -135,6 +140,9 @@ class C9Controller:
     # --- hardware hooks (a subclass for another brand overrides these) ----
     UDP_PORT = CMD_PORT  # where this light's frames go (a subclass for another brand sets its own)
     THREADED = True  # steady effects may render on the output thread (needs _hw_push); False: always on the loop
+    RENDER_FPS = FPS  # effect frames a second (a light that takes fewer renders fewer)
+    KEEPALIVE = KEEPALIVE
+    KEEP_FOR = KEEP_FOR
 
     def _make_link(self, host: str) -> GoveeLan | None:
         return GoveeLan(host)
@@ -153,7 +161,7 @@ class C9Controller:
         """Show a per-bulb frame that is already scaled by the brightness."""
         self._hw_push(frame, time.monotonic())
         if self._keep_handle is None:
-            self._keep_handle = self.hass.loop.call_later(KEEPALIVE, self._keep_alive)
+            self._keep_handle = self.hass.loop.call_later(self.KEEPALIVE, self._keep_alive)
 
     def _hw_push(self, frame: list[Colour], now: float) -> None:
         """Put the frame on the wire. Thread-safe (the render thread calls it): no timers, no hass."""
@@ -177,12 +185,12 @@ class C9Controller:
         if not self.is_on or self._hw_last is None or self._identifying or self._scanning:
             return
         now = time.monotonic()
-        if now - self._hw_changed > KEEP_FOR:
+        if now - self._hw_changed > self.KEEP_FOR:
             return  # long enough: the light has it (and another app may take the light over)
-        if now - self._hw_sent >= KEEPALIVE - 0.05:
+        if now - self._hw_sent >= self.KEEPALIVE - 0.05:
             self._hw_frame(self._hw_last)  # schedules the next check
         else:
-            self._keep_handle = self.hass.loop.call_later(KEEPALIVE, self._keep_alive)
+            self._keep_handle = self.hass.loop.call_later(self.KEEPALIVE, self._keep_alive)
 
     def _hw_close(self) -> None:
         self.lan.close()
@@ -442,13 +450,13 @@ class C9Controller:
 
     def _start_job(self) -> None:
         self._fx_t = self._clock_start()
-        self._job = RenderJob(self._job_tick, 1 / FPS)
+        self._job = RenderJob(self._job_tick, 1 / self.RENDER_FPS)
         self._driver.add(self._job)
 
     def _job_tick(self, job: RenderJob, now: float, due: float) -> float | None:
         """One frame of the steady effect, on the render thread: no hass, no timers, no HA state writes (the loop
         starts and stops the job; it reads the look's attributes, each a single value, as the loop path did)."""
-        step = 1 / FPS
+        step = 1 / self.RENDER_FPS
         if not self._is_animated() or self._transitioning() or not self.segmented:
             self._on_loop(self._render)  # a fade or a still look: back to the loop, which owns the fade state
             return None
@@ -495,7 +503,7 @@ class C9Controller:
 
     async def _animate(self) -> None:
         t = self._clock_start()
-        step = 1 / FPS
+        step = 1 / self.RENDER_FPS
         last = time.monotonic()
         due = math.floor(last / step) * step  # every light ticks on the same beat, so their frames go out together
         while True:
@@ -515,9 +523,9 @@ class C9Controller:
                     if self._task is asyncio.current_task():
                         self._task = None
                     return
-                step = fade.tick_interval(self._fade_length(), 1 / FPS)  # a long ramp doesn't need 25 frames a second
+                step = fade.tick_interval(self._fade_length(), 1 / self.RENDER_FPS)  # a long ramp needs fewer
             else:
-                step = 1 / FPS
+                step = 1 / self.RENDER_FPS
             # frames on a fixed beat: sleep to the next due time, not a fixed gap after the work (which drifts
             # and makes the motion uneven); if we fell behind, start the beat again from now
             due += step
@@ -1081,3 +1089,99 @@ class C9Controller:
         else:
             self.lan.send(brightness_msg(100))
             self.lan.send(colour_msg(colour))
+
+
+class PictureController(C9Controller):
+    """A Govee light that takes per-bulb colour only as a "picture" (ptReal, see protocol.py): the H70C4 / H70C5 /
+    H70C7 Christmas String Lights 2, whose hundreds of bulbs razer frames don't reach. Never arms realtime mode.
+
+    A picture is a few UDP messages that must leave PICTURE_GAP apart, and the light takes at most PICTURE_FPS of
+    them a second. A frame that comes sooner is held (not even built) and the newest one held goes out when the
+    next slot comes, so a 25 fps effect or show is shown as 4 pictures a second; effects render at that rate too.
+    `_realtime` here means "the light has our last picture": whatever resets it (power on, a new show, the light
+    coming back) sends the picture again even when it is unchanged."""
+
+    RENDER_FPS = PICTURE_FPS
+    KEEPALIVE = PICTURE_KEEPALIVE
+    KEEP_FOR = PICTURE_KEEP_FOR
+
+    def __init__(self, hass: HomeAssistant, host: str, bulbs: int, green_gamma: float | None = None) -> None:
+        super().__init__(hass, host, bulbs, True)
+        self._green = gamma_table(green_gamma)  # the model's colour correction, applied as each picture is built
+        self._pic_lock = threading.Lock()  # (the render thread and the loop both push)
+        self._pic_slot = 0.0  # time.perf_counter() from which the next picture may leave
+        self._pic_frame: list[Colour] | None = None  # the frame of the last picture put on the wire
+        self._pic_next: list[Colour] | None = None  # a frame that came too soon, sent at the slot (newest wins)
+        self._pic_timer: asyncio.TimerHandle | bool | None = None  # its timer (True: being set on the loop)
+        self._pic_parts: list[asyncio.TimerHandle] = []  # direct sends: the rest of a picture, PICTURE_GAP apart
+
+    def _blurred(self, t: float, step: float, sf: float) -> list[Colour]:
+        return self._base_frame(t)  # at 4 pictures a second a blend only doubles the colours
+
+    def _hw_push(self, frame: list[Colour], now: float) -> None:
+        """Put the frame on the wire as a picture, at most PICTURE_FPS a second. Thread-safe (the render thread
+        calls it): a held frame's timer is set on the loop."""
+        if frame != self._hw_last:
+            self._hw_changed = now
+        self._hw_last = frame
+        if self._realtime and frame == self._pic_frame and now - self._hw_sent < self.KEEPALIVE - 0.1:
+            return  # the light has this picture: the keep-alive sends it again
+        t = time.perf_counter()
+        with self._pic_lock:
+            held = t < self._pic_slot - 0.005
+            if held:  # too soon: hold it for the slot
+                if self._pic_next is not None:
+                    self.stats.merge()  # the one held before is never shown
+                self._pic_next = frame
+                arm = self._pic_timer is None
+                if arm:
+                    self._pic_timer = True
+            else:
+                self._pic_slot, self._pic_next, arm = t + 1 / PICTURE_FPS, None, False
+        if arm:
+            self._on_loop(self._arm_timer)
+        if held:
+            return
+        msgs = picture_msgs(correct_green(frame, self._green))
+        if self.port is not None:
+            ok = self.port.submit(msgs, None, PICTURE_GAP)  # the port keeps the gaps, off the event loop
+        else:
+            ok = self._send_direct(msgs)
+        self.stats.frame(ok, now)
+        self._realtime = ok
+        self._pic_frame, self._hw_sent = frame, now
+
+    def _arm_timer(self) -> None:
+        if self._pic_timer is True:
+            self._pic_timer = self.hass.loop.call_later(max(0.0, self._pic_slot - time.perf_counter()), self._flush_held)
+
+    def _flush_held(self) -> None:
+        with self._pic_lock:
+            frame, self._pic_next, self._pic_timer = self._pic_next, None, None
+        if frame is not None and self.is_on:
+            self._hw_push(frame, time.monotonic())
+
+    def _send_direct(self, msgs: list[bytes]) -> bool:
+        """No output thread (so on the loop): the first message now, the rest PICTURE_GAP apart."""
+        ok = self.lan.send(msgs[0]) is not False
+        self._pic_parts = [self.hass.loop.call_later(PICTURE_GAP * i, self.lan.send, m)
+                           for i, m in enumerate(msgs[1:], 1)]
+        return ok
+
+    def _drop_held(self) -> None:
+        with self._pic_lock:
+            timer, self._pic_timer, self._pic_next = self._pic_timer, None, None
+        if isinstance(timer, asyncio.TimerHandle):
+            timer.cancel()
+        for handle in self._pic_parts:
+            handle.cancel()
+        self._pic_parts = []
+
+    def _hw_power(self, on: bool) -> None:
+        if not on:
+            self._drop_held()  # a picture still waiting must not show on a light just switched off
+        super()._hw_power(on)
+
+    def shutdown(self) -> None:
+        self._drop_held()
+        super().shutdown()

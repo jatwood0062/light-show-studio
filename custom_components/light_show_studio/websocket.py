@@ -15,17 +15,22 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_BULBS,
+    CONF_SEGMENTED,
     CONF_SKU,
     CONF_START_PIXEL,
     CONF_TYPE,
     DEFAULT_BULBS,
     DOMAIN,
+    MAX_BULBS,
+    PROTOCOL_PIXELS,
+    RAZER_MAX_BULBS,
     TYPE_PLAYER,
     TYPE_TWINKLY,
     TYPE_WLED,
 )
 from .controller import C9Controller
 from .hosts import host_taken, valid_ipv4
+from .models import protocol_for
 from .receiver import DDP_PORT, E131_PORT, MAX_PIXELS
 
 CARD_FPS = 10  # the card doesn't need every frame of a show
@@ -111,7 +116,6 @@ def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection
     send()
 
 
-MAX_BULBS = 1020
 ID = vol.All(str, vol.Length(min=1, max=64))  # config entry ids are 26 characters
 
 
@@ -221,8 +225,10 @@ def ws_strand_update(hass: HomeAssistant, connection: websocket_api.ActiveConnec
     if start + bulbs - 1 > MAX_PIXELS:
         connection.send_error(msg["id"], "invalid_format", f"Pixels run past {MAX_PIXELS}")
         return
-    if o.get(CONF_TYPE) not in (TYPE_TWINKLY, TYPE_WLED) and bulbs > 255:
-        connection.send_error(msg["id"], "invalid_format", "This kind of light takes at most 255 bulbs")
+    if (o.get(CONF_TYPE) not in (TYPE_TWINKLY, TYPE_WLED) and o.get(CONF_SEGMENTED, True)
+            and protocol_for(o) != PROTOCOL_PIXELS and bulbs > RAZER_MAX_BULBS):
+        connection.send_error(msg["id"], "invalid_format",
+                              f"Razer frames reach at most {RAZER_MAX_BULBS} bulbs: pick the pixels protocol")
         return
     data = entry.data
     if (host := msg.get("host")) is not None and host != entry.data[CONF_HOST]:

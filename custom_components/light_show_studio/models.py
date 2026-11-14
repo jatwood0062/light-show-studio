@@ -4,7 +4,14 @@ Data is sourced in docs/DEVICES.md. `segments` and `razer` are None where no sou
 `razer=True` means a source or the project owner confirmed the BB..B0 colour frame works;
 it does NOT mean every SKU in the same family does. The official LAN API list is not
 encoded here (see DEVICES.md); the table lists models seen in the openHAB Govee LAN-API
-binding (117 entries) plus H6199 and the C9 SKUs.
+binding (117 entries) plus H6199, the C9 SKUs and the H70C4/H70C5/H70C7 Christmas String Lights 2.
+
+`protocol` is how per-bulb colour reaches the light: "razer" (the BB..B0 frame, at most 255 bulbs) or "pixels"
+(the ptReal picture, any bulb count; see protocol.py). The owner confirmed "pixels" on an H70C5 (300 bulbs) where
+razer frames only reach about the first 20 bulbs. H70C4 / H70C7 are the same family; their bulb counts assume the
+H70C5's density (300 bulbs on 98 ft: 66 ft = 200, 164 ft = 500).
+`green_gamma` corrects a light's colour before it is sent: on the H70C5 the C9's orange (255, 80, 0) looked yellow and
+(255, 35, 0) matched, so that family gets a green gamma of 1.7 (80 -> 36, 0 and 255 unchanged; owner-tested).
 """
 from __future__ import annotations
 
@@ -18,7 +25,11 @@ class Model:
     kind: str
     segments: int | None
     razer: bool | None
+    protocol: str = "razer"  # "pixels": per-bulb colour as a ptReal picture, not razer frames
+    green_gamma: float | None = None  # colour correction: g' = 255 * (g / 255) ** green_gamma before sending
 
+
+PIXELS_GREEN_GAMMA = 1.7  # the Christmas String Lights 2 family (H70C5 tested against a C9)
 
 _MODELS = (
     Model('H6042', 'Govee TV Light Bar #2', 'tv_backlight', None, None),
@@ -132,6 +143,9 @@ _MODELS = (
     Model('H70BC', '400 LED Curtain Lights', 'curtain', None, None),
     Model('H70C1', 'RGBIC String Light 10M (Christmas String Lights)', 'string', None, None),
     Model('H70C2', 'RGBIC String Light 20M (Christmas String Lights)', 'string', None, None),
+    Model('H70C4', 'Christmas String Lights 2 66ft', 'string', 200, False, 'pixels', PIXELS_GREEN_GAMMA),
+    Model('H70C5', 'Christmas String Lights 2', 'string', 300, False, 'pixels', PIXELS_GREEN_GAMMA),
+    Model('H70C7', 'Christmas String Lights 2 164ft', 'string', 500, False, 'pixels', PIXELS_GREEN_GAMMA),
     Model('H6860', 'C9 Christmas String Lights 50 bulbs (49ft)', 'c9_string', 50, True),
     Model('H6861', 'C9 Christmas String Lights 100 bulbs (98ft)', 'c9_string', None, None),
     Model('R6861', 'C9 Christmas String Lights (LAN reports H6860 as R6861)', 'c9_string', 50, True),
@@ -141,6 +155,28 @@ _MODELS = (
 )
 
 MODELS: dict[str, Model] = {m.sku: m for m in _MODELS}
+
+
+PROTOCOLS = ("razer", "pixels")
+
+
+def protocol_for(options: dict) -> str:
+    """A Govee light's per-bulb protocol from its entry ({**data, **options}): the stored choice, else "pixels"
+    for a SKU of the picture family, else "razer" (every light set up before the choice existed)."""
+    chosen = options.get("protocol")
+    if chosen in PROTOCOLS:
+        return chosen
+    model = lookup(str(options.get("sku") or ""))
+    return model.protocol if model else "razer"
+
+
+def green_gamma_for(options: dict) -> float | None:
+    """The green correction for a light's entry: its model's; a light on pictures with an unknown SKU (added by IP)
+    is of the picture family, so it gets that family's."""
+    model = lookup(str(options.get("sku") or ""))
+    if model is not None and model.green_gamma:
+        return model.green_gamma
+    return PIXELS_GREEN_GAMMA if model is None and protocol_for(options) == "pixels" else None
 
 
 def lookup(sku: str) -> Model | None:

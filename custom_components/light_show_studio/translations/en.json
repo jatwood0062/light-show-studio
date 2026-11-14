@@ -60,7 +60,8 @@
           "segmented": "Per-bulb control (turn off if the light only takes one colour)",
           "bulb_entities": "Create a light for every bulb",
           "start_pixel": "First pixel in xLights / Light-O-Rama output",
-          "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)"
+          "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)",
+          "protocol": "How per-bulb colour is sent"
         }
       },
       "twinkly_details": {
@@ -105,7 +106,8 @@
       "invalid_host": "Enter the light's home-network IPv4 address, like 192.168.1.50 (public, loopback and multicast addresses aren't allowed).",
       "cannot_connect": "Can't reach a Twinkly or WLED light at that address.",
       "invalid_sources": "Enter private IPv4 addresses or networks separated by commas, like 192.168.1.20, 10.0.0.0/24.",
-      "exceeds_leds": "Number of LEDs plus the first LED is more than the LEDs the controller reports."
+      "exceeds_leds": "Number of LEDs plus the first LED is more than the LEDs the controller reports.",
+      "razer_bulbs": "Razer frames reach at most 255 bulbs: pick the pixels protocol for a longer string."
     }
   },
   "options": {
@@ -124,14 +126,16 @@
           "allowed_sources": "Only accept xLights / sequencer data from these IPs (optional, comma separated; empty = any device on your home network)",
           "device_offset": "WLED: first LED on the controller (0 = the start; use when other LEDs come first)",
           "show_lead_ms": "Show timing lead in ms (+ sends frames earlier, - later; -500 to 500)",
-          "mask": "Bulbs to keep off, e.g. 3, 7-12 (1 = the bulb at the plug; empty = none)"
+          "mask": "Bulbs to keep off, e.g. 3, 7-12 (1 = the bulb at the plug; empty = none)",
+          "protocol": "How per-bulb colour is sent"
         }
       }
     },
     "error": {
       "invalid_mask": "Enter bulb numbers and ranges separated by commas, like 3, 7-12.",
       "invalid_sources": "Enter private IPv4 addresses or networks separated by commas, like 192.168.1.20, 10.0.0.0/24.",
-      "exceeds_leds": "Number of LEDs plus the first LED is more than the LEDs the controller reports."
+      "exceeds_leds": "Number of LEDs plus the first LED is more than the LEDs the controller reports.",
+      "razer_bulbs": "Razer frames reach at most 255 bulbs: pick the pixels protocol for a longer string."
     }
   },
   "services": {
@@ -339,6 +343,14 @@
           "name": "Areas",
           "description": "Only stop music in these areas."
         }
+      }
+    }
+  },
+  "selector": {
+    "protocol": {
+      "options": {
+        "razer": "Razer frames (most Govee lights, up to 255 bulbs)",
+        "pixels": "Pictures (Christmas String Lights 2: H70C4, H70C5, H70C7)"
       }
     }
   }

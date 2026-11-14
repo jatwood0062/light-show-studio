@@ -8,6 +8,14 @@ Per-bulb colour uses the undocumented "razer" realtime command (what Govee's PC 
     B0  colours, data = <1 = crisp, 0 = blend> <bulb count> <r g b ...>
 
 A frame stays on the lights after the stream stops, so a still pattern only needs one frame.
+
+Lights with hundreds of bulbs (H70C4 / H70C5 / H70C7 Christmas String Lights 2) ignore razer frames past about 20
+bulbs. They take a "picture" instead (the app's finger sketch), as BLE-style packets in the "ptReal" command:
+
+  A3 <line> ... 20-byte lines (19 bytes + xor) carrying: 0F <speed 0> <brightness 100> <background rgb>
+  <groups, 2 LE> then per colour <bulbs, 2 LE> <r g b> <bulbs past 255, 2 LE> <index <= 255: 1 byte each>
+  <index > 255: 2 LE each>; then 33 05 0A 20 03 shows it. Bulbs are 0-based from the plug; black bulbs are left
+  out (the background is black). At most PICTURE_COLOURS colours and PICTURE_PER_MSG packets a message.
 """
 from __future__ import annotations
 
@@ -27,6 +35,11 @@ SCAN_ADDR = ("239.255.255.250", 4001)
 REPLY_PORT = 4002
 CMD_COLORS = 0xB0
 CMD_ENABLE = 0xB1
+PICTURE_COLOURS = 24  # distinct colours in one picture (more is more packets; the app never sends more)
+PICTURE_PER_MSG = 12  # packets in one ptReal message
+PICTURE_KIND = 0x03
+PICTURE_STILL = 0x0F  # the effect that holds the picture (speed 0)
+SHOW_PICTURE = (0x33, 0x05, 0x0A, 0x20, 0x03)
 
 Colour = tuple[int, int, int]
 
@@ -63,6 +76,102 @@ def colours_msg(colours: list[Colour], blend: bool = False) -> bytes:
     pkt = _frame(CMD_COLORS, bytes([0 if blend else 1, len(colours)]) + rgb)
     # the same bytes _wrap makes: base64 needs no JSON escaping, so the hot path skips json.dumps
     return b'{"msg":{"cmd":"razer","data":{"pt":"%s"}}}' % base64.b64encode(pkt)
+
+
+def _ble_packet(data: bytes | bytearray) -> bytes:
+    """19 bytes (zero padded) and their xor: one 20-byte BLE-style packet."""
+    return bytes(data).ljust(19, b"\0") + bytes([functools.reduce(operator.xor, data, 0)])
+
+
+def multi_packets(raw: bytes, kind: int) -> list[bytes]:
+    """Split a payload into A3 lines: A3 <line no> ... with the first line's header 01 <line count> <kind>; the
+    last line's number is FF."""
+    data = bytearray([0xA3, 0x00, 0x01, 0x00, kind])
+    lines, last_marker = 0, 1
+    for b in raw:
+        if len(data) % 19 == 0:
+            lines += 1
+            data.append(0xA3)
+            last_marker = len(data)
+            data.append(lines)
+        data.append(b)
+    data[last_marker] = 0xFF
+    data[3] = lines + 1
+    return [_ble_packet(data[i:i + 19]) for i in range(0, len(data), 19)]
+
+
+def _q(v: int) -> int:
+    return (v + 8) // 17 * 17  # nearest of 16 levels (0, 17 ... 255): black stays black, full stays full
+
+
+def picture_colours(frame: list[Colour], limit: int = PICTURE_COLOURS) -> list[Colour]:
+    """The frame with at most `limit` distinct colours besides black: exact when it has that few, otherwise
+    rounded to 16 levels a channel, and if still too many the most used kept and the rest mapped to the nearest
+    (or to black)."""
+    if len(set(frame) - {(0, 0, 0)}) <= limit:
+        return list(frame)
+    frame = [(_q(r), _q(g), _q(b)) for r, g, b in frame]
+    counts: dict[Colour, int] = {}
+    for c in frame:
+        if c != (0, 0, 0):
+            counts[c] = counts.get(c, 0) + 1
+    if len(counts) <= limit:
+        return frame
+    keep = sorted(counts, key=lambda c: -counts[c])[:limit]
+    cands = keep + [(0, 0, 0)]
+    near: dict[Colour, Colour] = {c: c for c in keep}
+
+    def nearest(c: Colour) -> Colour:
+        if c not in near:
+            near[c] = min(cands, key=lambda k: (k[0] - c[0]) ** 2 + (k[1] - c[1]) ** 2 + (k[2] - c[2]) ** 2)
+        return near[c]
+    return [c if c == (0, 0, 0) else nearest(c) for c in frame]
+
+
+def gamma_table(gamma: float | None) -> bytes | None:
+    """A 256-entry curve v -> round(255 * (v / 255) ** gamma) (0 and 255 stay put); None for no correction."""
+    if not gamma or gamma == 1:
+        return None
+    return bytes(round(255 * (v / 255) ** gamma) for v in range(256))
+
+
+def correct_green(frame: list[Colour], table: bytes | None) -> list[Colour]:
+    """The frame with the green channel through `table` (red and blue as they are)."""
+    if table is None:
+        return frame
+    return [(r, table[g], b) for r, g, b in frame]
+
+
+def picture_payload(frame: list[Colour], brightness: int = 100) -> bytes:
+    """The picture's bytes before they are split into lines: still effect, background black, one group per colour
+    (black bulbs left out). The frame must already have at most PICTURE_COLOURS colours."""
+    groups: dict[Colour, list[int]] = {}
+    for i, c in enumerate(frame):
+        if c != (0, 0, 0):
+            groups.setdefault(c, []).append(i)
+    out = bytearray([PICTURE_STILL, 0, max(1, min(100, brightness)), 0, 0, 0])
+    out += struct.pack("<H", len(groups))
+    for (r, g, b), idx in groups.items():
+        lo = [i for i in idx if i <= 255]
+        hi = [i for i in idx if i > 255]
+        out += struct.pack("<H", len(idx)) + bytes([r, g, b]) + struct.pack("<H", len(hi))
+        out += bytes(lo)
+        for i in hi:
+            out += struct.pack("<H", i)
+    return bytes(out)
+
+
+def picture_packets(frame: list[Colour]) -> list[bytes]:
+    """Every 20-byte packet of one picture, the "show" packet last."""
+    raw = picture_payload(picture_colours(frame))
+    return multi_packets(raw, PICTURE_KIND) + [_ble_packet(bytes(SHOW_PICTURE))]
+
+
+def picture_msgs(frame: list[Colour]) -> list[bytes]:
+    """One picture as ptReal messages of at most PICTURE_PER_MSG packets, to be sent in order a little apart."""
+    pkts = [base64.b64encode(p) for p in picture_packets(frame)]
+    return [b'{"msg":{"cmd":"ptReal","data":{"command":["%s"]}}}' % b'","'.join(pkts[i:i + PICTURE_PER_MSG])
+            for i in range(0, len(pkts), PICTURE_PER_MSG)]
 
 
 class GoveeLan:
