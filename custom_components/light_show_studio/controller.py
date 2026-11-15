@@ -911,7 +911,7 @@ class C9Controller:
             prev_show, powered = self._zone_prev_show, self._zone_powered
         else:
             prev_show, powered = self.show_mode, not was_on
-        self._scan_before = list(self.frame)
+        self._scan_before = self._snapshot()
         self._stop_animation()
         self._clear_fx()
         self.release_zone()
@@ -962,8 +962,7 @@ class C9Controller:
                 self._resend_zone()
             elif self.show_mode:  # the sequencer isn't sending: put the last picture back until it does
                 if self.segmented:
-                    self._hw_frame(before)
-                    self._set_frame(before)
+                    self._restore_frame(before)
                 self._ext_sent = 0.0
             else:
                 self._render()
@@ -1047,6 +1046,14 @@ class C9Controller:
             self.port.close()
         self._hw_close()
 
+    def _snapshot(self) -> list[Colour]:
+        """What the light shows now, as a frame _restore_frame can put back (after an identify or a scan)."""
+        return list(self.frame)
+
+    def _restore_frame(self, frame: list[Colour]) -> None:
+        self._hw_frame(frame)
+        self._set_frame(frame)
+
     # --- identify ----------------------------------------------------------
     @callback
     def start_identify(self) -> None:
@@ -1059,7 +1066,7 @@ class C9Controller:
         if self._identifying or self._scanning:
             return
         self._identifying = True
-        was_on, was_show, before = self.is_on, self.show_mode, list(self.frame)
+        was_on, was_show, before = self.is_on, self.show_mode, self._snapshot()
         try:
             self._stop_animation()
             if self._whole_handle:
@@ -1088,8 +1095,7 @@ class C9Controller:
                 self._resend_zone()
             elif was_show:
                 if self.segmented:
-                    self._hw_frame(before)
-                    self._set_frame(before)
+                    self._restore_frame(before)
                 else:
                     self._send_whole(before)
                 self._ext_sent = 0.0
@@ -1116,15 +1122,17 @@ class PictureController(C9Controller):
 
     Brightness: the setting drives the light's own dimmer (brightness_msg) and the colours go out unscaled, because
     colours scaled down on the string are too dim to see (owner-tested: at 25 % only the sparkle glints showed).
-    The dimmer is set when streaming (re)starts (on, a new show, back online, after a REARM_AFTER pause, so a level
-    another app left is overridden) and when the setting changes, at most PICTURE_LEVEL_FPS times a second; until
-    a change can go out the colours are scaled by new / old level. Fades (turn on / off, cross-fades) still scale
+    The dimmer command goes out only when the light's level must change: once when it is unknown (power on, back
+    online) and when the setting changes, at most PICTURE_LEVEL_FPS times a second; never again for the same level
+    (an H70C5 seems to fade out and back on each brightness command). Until a
+    change can go out the colours are scaled by new / old level. Fades (turn on / off, cross-fades) still scale
     the colours, as on every light, so they stay smooth. Scan and identify frames run the dimmer at 100.
     `_realtime` here means "the light has our last picture": whatever resets it (power on, a new show, the light
     coming back) sends the picture again even when it is unchanged."""
 
     KEEPALIVE = PICTURE_KEEPALIVE
     KEEP_FOR = PICTURE_KEEP_FOR
+    REARM = max(REARM_AFTER, PICTURE_KEEPALIVE + 1)  # a keep-alive is not a pause after which streaming restarts
 
     def __init__(self, hass: HomeAssistant, host: str, bulbs: int, green_gamma: float | None = None) -> None:
         super().__init__(hass, host, bulbs, True)
@@ -1133,7 +1141,11 @@ class PictureController(C9Controller):
         self._pic_slot = 0.0  # time.perf_counter() from which the next picture may leave
         self._pic_frame: list[Colour] | None = None  # the frame of the last picture put on the wire
         self._pic_scale = 1.0  # ...and the factor its colours were scaled by (a dimmer change still waiting)
-        self._pic_next: list[Colour] | None = None  # a frame that came too soon, sent at the slot (newest wins)
+        self._pic_next: tuple[int, list[Colour], bool] | None = None  # (seq, frame, force) that came too soon,
+        # sent at the slot (newest wins)
+        self._pic_seq = 0  # request order of the frames pushed (under _pic_lock)
+        self._pic_sent_seq = 0  # ...and of the last one put on the wire: an older one never follows it
+        self._closed = False
         self._pic_timer: asyncio.TimerHandle | bool | None = None  # its timer (True: being set on the loop)
         self._pic_parts: list[asyncio.TimerHandle] = []  # direct sends: the rest of a picture, PICTURE_GAP apart
         self._pic_want = 100  # the dimmer level (%) the frames being sent are meant for
@@ -1187,37 +1199,53 @@ class PictureController(C9Controller):
         super()._flash(colour)
 
     # --- pictures ----------------------------------------------------------------------------------------------
-    def _hw_push(self, frame: list[Colour], now: float) -> None:
+    def _hw_push(self, frame: list[Colour], now: float, force: bool = False, seq: int | None = None) -> None:
         """Put the frame on the wire as a picture, the dimmer first when it must change. Thread-safe (the render
-        thread calls it): timers are set on the loop."""
-        if frame != self._hw_last:
-            self._hw_changed = now
-        self._hw_last = frame
-        restart = not self._realtime or now - self._hw_sent >= REARM_AFTER
-        want = self._pic_want
-        if not restart and want == self._pic_level and frame == self._pic_frame and self._pic_scale == 1 \
-                and now - self._hw_sent < self.KEEPALIVE - 0.1:
-            return  # the light has this picture: the keep-alive sends it again
+        thread calls it): timers are set on the loop. `force`: send it even when the light has it (a scan resend:
+        UDP may have lost it), still in the rate slot. `seq` is the request order of a held frame being flushed:
+        a frame older than one already sent or held is dropped, never shown after it."""
         t = time.perf_counter()
         level = None
         with self._pic_lock:
+            if seq is None:
+                self._pic_seq += 1
+                seq = self._pic_seq
+            if seq == self._pic_seq:  # the newest frame asked for: what the keep-alive puts back
+                if frame != self._hw_last:
+                    self._hw_changed = now
+                self._hw_last = frame
+            nxt = self._pic_next
+            if seq < self._pic_sent_seq or (nxt is not None and nxt[0] > seq):
+                self.stats.merge()  # a newer one went out or waits for the slot: this one is never shown
+                return
+            restart = not self._realtime or now - self._hw_sent >= self.REARM
+            want = self._pic_want
+            if not force and not restart and want == self._pic_level and frame == self._pic_frame \
+                    and self._pic_scale == 1 and now - self._hw_sent < self.KEEPALIVE - 0.1:
+                if nxt is not None:  # the light still has this picture: a frame held since must not replace it
+                    self._pic_next = None
+                    self.stats.merge()
+                return  # the light has this picture: the keep-alive sends it again
             held = t < self._pic_slot - 0.005
             if held:  # too soon: hold it for the slot
-                if self._pic_next is not None:
+                if nxt is not None:
                     self.stats.merge()  # the one held before is never shown
-                self._pic_next = frame
+                self._pic_next = (seq, frame, force)
                 arm = self._pic_timer is None
                 if arm:
                     self._pic_timer = True
             else:
                 self._pic_next, arm = None, False
-                if want != self._pic_level or restart:
-                    if restart or t >= self._lvl_slot - 0.005:
-                        level, self._pic_level, self._lvl_slot = want, want, t + 1 / PICTURE_LEVEL_FPS
+                # the dimmer goes out only when its level must change (the H70C5 fades out and back on every
+                # brightness command): when unknown (power on, back online), else at most PICTURE_LEVEL_FPS a second
+                if want != self._pic_level and (self._pic_level is None or t >= self._lvl_slot - 0.005):
+                    level, self._pic_level, self._lvl_slot = want, want, t + 1 / PICTURE_LEVEL_FPS
                 scale = 1.0 if self._pic_level is None or want >= self._pic_level else want / self._pic_level
                 wait = self._pic_level != want
                 pkts = picture_packets(correct_green(fade.scale_frame(frame, scale), self._green))
                 self._pic_slot = t + picture_interval(len(pkts))
+                self._pic_sent_seq = seq
+                self._pic_frame, self._pic_scale, self._hw_sent = frame, scale, now
         if arm:
             self._on_loop(self._arm_timer)
         if held:
@@ -1231,7 +1259,6 @@ class PictureController(C9Controller):
             ok = self._send_direct(msgs)
         self.stats.frame(ok, now)
         self._realtime = ok
-        self._pic_frame, self._pic_scale, self._hw_sent = frame, scale, now
         if wait:  # the dimmer change had to wait: send it (and the full colours) when it may go
             with self._pic_lock:
                 arm = self._lvl_timer is None
@@ -1241,17 +1268,18 @@ class PictureController(C9Controller):
                 self._on_loop(self._arm_level)
 
     def _arm_timer(self) -> None:
-        if self._pic_timer is True:
+        if self._pic_timer is True and not self._closed:
             self._pic_timer = self.hass.loop.call_later(max(0.0, self._pic_slot - time.perf_counter()), self._flush_held)
 
     def _flush_held(self) -> None:
         with self._pic_lock:
-            frame, self._pic_next, self._pic_timer = self._pic_next, None, None
-        if frame is not None and self.is_on:
-            self._hw_push(frame, time.monotonic())
+            held, self._pic_next, self._pic_timer = self._pic_next, None, None
+        if held is not None and self.is_on and not self._closed:
+            seq, frame, force = held
+            self._hw_push(frame, time.monotonic(), force, seq)
 
     def _arm_level(self) -> None:
-        if self._lvl_timer is True:
+        if self._lvl_timer is True and not self._closed:
             at = max(self._lvl_slot, self._pic_slot)
             self._lvl_timer = self.hass.loop.call_later(max(0.0, at - time.perf_counter()), self._level_due)
 
@@ -1259,8 +1287,26 @@ class PictureController(C9Controller):
         with self._pic_lock:
             self._lvl_timer = None
             pending = self._pic_next is not None or self._pic_timer is not None  # a held frame brings it
-        if not pending and self.is_on and self._hw_last is not None and self._pic_level != self._pic_want:
+        if not pending and self.is_on and not self._closed and self._hw_last is not None \
+                and self._pic_level != self._pic_want:
             self._hw_push(self._hw_last, time.monotonic())
+
+    def _scan_resend_frame(self, frame: list[Colour]) -> None:
+        if self._scanning and self.is_on:
+            self._hw_push(frame, time.monotonic(), force=True)  # the light may have it: send it again anyway
+
+    def _snapshot(self) -> list[Colour]:
+        # the card's frame is dimmed by the level; the frame on the wire is the full colours under the dimmer
+        return list(self._hw_last) if self._hw_last is not None else list(self.frame)
+
+    def _restore_frame(self, frame: list[Colour]) -> None:
+        self._want(self._level())  # back to the brightness setting's dimmer (a flash / scan ran it at 100)
+        self._hw_frame(frame)
+        super()._set_frame(fade.scale_frame(frame, self._pic_want / 100) if self._pic_want < 100 else frame)
+
+    def _recover(self) -> None:
+        self._pic_level = None  # the light came back at an unknown level: set it once with the next picture
+        super()._recover()
 
     def _send_direct(self, msgs: list[bytes]) -> bool:
         """No output thread (so on the loop): the first message now, the rest PICTURE_GAP apart."""
@@ -1287,5 +1333,6 @@ class PictureController(C9Controller):
         super()._hw_power(on)
 
     def shutdown(self) -> None:
+        self._closed = True  # a timer armed from the render thread meanwhile must not send
+        super().shutdown()  # stops the render job first, so nothing is held after the drop
         self._drop_held()
-        super().shutdown()

@@ -4,6 +4,20 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-11-14
+
+### Fixed
+- Govee Christmas String Lights 2 ("pixels"): the brightness command is only sent when the string's level must
+  change (once after power-on or reconnect, and on brightness changes), never again on keep-alives or after a
+  pause; the H70C5 fades out and back on each one, so the columns dimmed out and came back every few seconds.
+- A picture that came back (A, then B, then A again within one slot) no longer leaves B on the string while the
+  card shows A, and the keep-alive repeats A.
+- After identify or a scan, a show frame is put back at full colour under the dimmer instead of very dim.
+- Scan resends (50 / 150 ms) go out again (they were dropped as "unchanged"), still within the picture rate.
+- A held picture can no longer go out after a newer one (render thread vs. loop race).
+- Shutdown stops the render job before dropping held pictures, and no held picture or dimmer timer sends after it.
+- Keep-alives (every 5 s) no longer count as a streaming restart.
+
 ## [2.10.0] - 2026-11-14
 
 ### Changed

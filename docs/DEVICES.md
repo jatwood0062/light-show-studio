@@ -36,7 +36,8 @@ few packets. A picture of up to 12 packets is one message; bigger ones are 12-pa
 picture may follow after max(0.04 s, 0.02 s x (packets - 2)) (newest wins): a 4-packet picture streams at 25 fps
 (owner-tested smooth at 8, 15, 25), a 24-packet one at about 2 a second (community notes: ~0.12 s + 0.018 s a
 packet; faster drops pictures). Brightness drives the string's own dimmer (`brightness` command, at most 4 changes a
-second, set again whenever streaming (re)starts so a level left by another app is overridden) and colours go out
+second, sent only when the level must change: once after power-on / reconnect and on setting changes, never again
+for the same level, since the H70C5 seems to fade out and back on each one) and colours go out
 unscaled: colours scaled to 25 % were too dim to see on the string. Fades still scale colours. H70C4 (200) / H70C7 (500) bulb counts assume the H70C5's density and
 are untested. Colour: green looks too strong on these strings (the C9's orange 255,80,0 shows yellow; 255,35,0
 matches), so each picture's green goes through a gamma of 1.7 (`green_gamma` on the model entry; 80 -> 36).

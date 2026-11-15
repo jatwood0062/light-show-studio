@@ -466,10 +466,13 @@ async def test_an_unchanged_picture_is_not_sent_again_until_the_keep_alive_unles
     light._hw_frame(BANDS[1])
     await asyncio.sleep(0.1)
     assert len(_starts(light._lan.sent)) == 1
-    light._realtime = False  # the light came back, or was switched on: it needs the picture (and dimmer) again
+    light._realtime = False  # a new show: the picture goes out again, the dimmer (unchanged) does not
     light._hw_frame(BANDS[1])
     await asyncio.sleep(0.1)
-    assert len(_starts(light._lan.sent)) == 2 and _levels(p for _, p in light._lan.sent) == [100, 100]
+    assert len(_starts(light._lan.sent)) == 2 and _levels(p for _, p in light._lan.sent) == [100]
+    light._recover()  # the light came back at an unknown level: picture and dimmer, once
+    await asyncio.sleep(0.1)
+    assert len(_starts(light._lan.sent)) == 3 and _levels(p for _, p in light._lan.sent) == [100, 100]
     assert light.KEEPALIVE == controller.PICTURE_KEEPALIVE and light._keep_handle is not None
     light.shutdown()
 
@@ -591,16 +594,16 @@ async def test_dimmer_changes_are_rate_limited_and_scale_the_colours_meanwhile()
 
 
 @aio
-async def test_the_dimmer_is_set_again_when_streaming_resumes_after_a_pause():
+async def test_the_dimmer_is_not_sent_again_when_streaming_resumes_after_a_pause():
     hass = tz.FakeHass()
     light = Light(hass, bulbs=30)
     light.brightness = 128
     light._send_frame([(0, 255, 0)] * 30)
     await asyncio.sleep(0.05)
-    light._hw_sent -= 3  # nothing for 3 s (another app may have changed the dimmer)
+    light._hw_sent -= 10  # nothing for 10 s: the same level must not go out again (the H70C5 fades on each one)
     light._send_frame([(255, 0, 0)] * 30)
     await asyncio.sleep(0.05)
-    assert _levels(p for _, p in light._lan.sent) == [50, 50]
+    assert _levels(p for _, p in light._lan.sent) == [50] and _shown(light._lan.sent, 30) == [(255, 0, 0)] * 30
     light.shutdown()
 
 
@@ -657,4 +660,143 @@ async def test_the_controller_sends_the_corrected_colour():
     await asyncio.sleep(0.05)
     shown = _shown(light._lan.sent, 30)
     assert shown == [(255, round(255 * (80 / 255) ** 1.7), 0)] * 30
+    light.shutdown()
+
+
+# --- 2.10.1 fixes ---------------------------------------------------------------------------------------------------
+@aio
+async def test_a_b_a_within_one_slot_leaves_a_on_the_string():
+    hass = tz.FakeHass()
+    light = Light(hass)
+    a, b = BANDS[0], BANDS[1]
+    light._send_frame(a)
+    light._send_frame(b)  # held for the slot
+    light._send_frame(a)  # the string still has A: the held B must not go out after it
+    await asyncio.sleep(0.5)
+    assert len(_starts(light._lan.sent)) == 1 and _shown(light._lan.sent) == a
+    assert light._hw_last == a and light._pic_next is None  # the keep-alive puts back A, not B
+    light.shutdown()
+
+
+@aio
+async def test_identify_puts_a_dimmed_show_frame_back_at_full_colour_under_the_dimmer():
+    hass = tz.FakeHass()
+    light = Light(hass, bulbs=30)
+    light.brightness = 64  # level 25
+    light.show_mode = True
+    frame = [(0, 200, 0)] * 15 + [(200, 0, 0)] * 15
+    light._send_frame(frame)
+    await asyncio.sleep(0.3)
+    await light.async_identify()
+    await asyncio.sleep(0.3)
+    sent = light._lan.sent
+    assert _levels(p for _, p in sent) == [25, 100, 25]
+    assert _shown(sent, 30) == frame  # not the card's dimmed copy, under the dimmer at 100
+    assert light.frame[0][1] < 60  # the card shows it dimmed again
+    light.shutdown()
+
+
+@aio
+async def test_a_scan_restores_a_dimmed_show_frame_at_full_colour_under_the_dimmer():
+    hass = tz.FakeHass()
+    light = Light(hass, bulbs=30)
+    light.brightness = 64
+    light.show_mode = True
+    frame = [(0, 0, 200)] * 30
+    light._send_frame(frame)
+    await asyncio.sleep(0.3)
+    await light.async_claim_scan()
+    assert light.push_scan_frame([(255, 255, 255)] * 30)
+    await asyncio.sleep(0.3)
+    light.release_scan(restore=True)
+    await asyncio.sleep(0.3)
+    sent = light._lan.sent
+    assert _levels(p for _, p in sent) == [25, 100, 25] and _shown(sent, 30) == frame
+    light.shutdown()
+
+
+@aio
+async def test_scan_resends_go_out_although_the_light_has_the_frame():
+    hass = tz.FakeHass()
+    light = Light(hass, bulbs=30)
+    light._scanning = True
+    assert light.push_scan_frame([(9, 9, 9)] * 30)
+    await asyncio.sleep(0.3)
+    assert len(_starts(light._lan.sent)) == 1 + len(controller.SCAN_RESEND)
+    assert _shown(light._lan.sent, 30) == [(9, 9, 9)] * 30
+    light.shutdown()
+
+
+@aio
+async def test_a_flushed_held_frame_never_follows_a_newer_one():
+    hass = tz.FakeHass()
+    light = Light(hass, bulbs=30)
+    a, b, c = ([colour] * 30 for colour in ((255, 0, 0), (0, 255, 0), (0, 0, 255)))
+    light._hw_push(a, time.monotonic())
+    light._hw_push(b, time.monotonic())  # held
+    with light._pic_lock:  # the loop pops B for its slot...
+        held, light._pic_next, light._pic_timer = light._pic_next, None, None
+    light._pic_slot = 0  # ...the slot opens and the render thread sends C first
+    light._hw_push(c, time.monotonic())
+    light._hw_push(held[1], time.monotonic(), held[2], held[0])  # the late flush of B
+    await asyncio.sleep(0.5)
+    assert len(_starts(light._lan.sent)) == 2 and _shown(light._lan.sent, 30) == c and light._hw_last == c
+    light.shutdown()
+
+
+@aio
+async def test_shutdown_stops_the_render_job_before_dropping_and_timers_do_nothing_after():
+    hass = tz.FakeHass()
+    light = Light(hass)
+    order = []
+    light._stop_animation = lambda: order.append("stop")
+    drop = light._drop_held
+    light._drop_held = lambda: (order.append("drop"), drop())
+    light._hw_push(BANDS[0], time.monotonic())
+    light.shutdown()
+    assert order[:2] == ["stop", "drop"]
+    light._hw_push(BANDS[1], time.monotonic())  # a push the render thread was in the middle of: held...
+    light._arm_timer()  # ...and its timer, set on the loop after the shutdown
+    light._pic_next = (99, BANDS[2], False)
+    light._flush_held()
+    await asyncio.sleep(0.5)
+    assert len(_starts(light._lan.sent)) == 1 and not isinstance(light._pic_timer, asyncio.TimerHandle)
+
+
+@aio
+async def test_keep_alives_do_not_restart_streaming():
+    hass = tz.FakeHass()
+    light = Light(hass, bulbs=30)
+    assert light.REARM == max(controller.REARM_AFTER, controller.PICTURE_KEEPALIVE + 1)
+    light._hw_frame(BANDS[1][:30])
+    light._hw_sent -= controller.PICTURE_KEEPALIVE  # the keep-alive is due
+    light._pic_level = 50  # (were a restart to force the level, it would show here)
+    light._pic_want = 50
+    light._keep_alive()
+    await asyncio.sleep(0.05)
+    assert len(_starts(light._lan.sent)) == 2 and _levels(p for _, p in light._lan.sent) == [100]
+    light.shutdown()
+
+
+@aio
+async def test_a_steady_look_at_25_percent_sends_the_dimmer_once_in_60_seconds(monkeypatch):
+    clock = [1000.0]
+    fake = type("T", (), {"monotonic": staticmethod(lambda: clock[0]), "perf_counter": staticmethod(lambda: clock[0]),
+                          "time": staticmethod(time.time)})
+    monkeypatch.setattr(controller, "time", fake)
+    hass = tz.FakeHass()
+    light = Light(hass, bulbs=30)
+    light.brightness = 64
+    rng = random.Random(7)
+    t_end = clock[0] + 60
+    while clock[0] < t_end:
+        for _ in range(20):  # a sparkle at 2 pictures a second for 10 s...
+            light._send_frame([rng.choice(((255, 0, 0), (0, 255, 0), (0, 0, 255), (0, 0, 0))) for _ in range(30)])
+            clock[0] += 0.5
+        for _ in range(2):  # ...then a still picture and its keep-alives for 10 s
+            clock[0] += controller.PICTURE_KEEPALIVE
+            light._keep_alive()
+    await asyncio.sleep(0.05)
+    sent = [p for _, p in light._lan.sent]
+    assert _levels(sent) == [25] and len(_starts(light._lan.sent)) >= 60  # 3 x (~20 pictures + 2 keep-alives)
     light.shutdown()
