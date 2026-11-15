@@ -4,6 +4,16 @@ Changes to Light Show Studio, newest first.
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-11-14
+
+### Changed
+- Govee Christmas String Lights 2 (H70C4/H70C5/H70C7, "pixels"): each picture's most common colour is sent as its
+  background, so only the other bulbs are listed (a block on a plain background is ~4 packets instead of ~24).
+- Their picture rate now follows the picture's size instead of a fixed 4 a second: small pictures stream at up to
+  25 a second (one message, no gaps), big ones as fast as the string can take them (about 2 a second at 24 packets).
+- Their brightness now sets the string's own dimmer (sent when streaming starts or resumes, and on changes, at most
+  4 a second) and colours go out at full strength, so low brightness stays visible instead of showing only glints.
+
 ## [2.9.0] - 2026-11-14
 
 ### Added

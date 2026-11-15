@@ -29,9 +29,15 @@ Razer frames reach only about the first 20 bulbs of an H70C5 (300 bulbs), and 10
 sent as LAN command `ptReal` (base64 20-byte BLE-style packets, see `protocol.py`), confirmed on all 300 bulbs.
 No realtime arming. Option `protocol` ("razer" / "pixels", Configure) picks it; it is chosen by itself for these
 SKUs (also for lights set up before 2.9.0) and can be set by hand for a light added by IP. Limits: at most 24
-colours a picture (more are rounded to 16 levels a channel, then mapped to the 24 most used), 12 packets a message,
-messages 40 ms apart, at most 4 pictures a second (newest wins, so 25 fps effects and shows look like 4 fps), an
-unchanged picture re-sent every 5 s for 30 s. H70C4 (200) / H70C7 (500) bulb counts assume the H70C5's density and
+colours a picture (more are rounded to 16 levels a channel, then mapped to the 24 most used), an unchanged picture
+re-sent every 5 s for 30 s. Since 2.10.0: the frame's most common colour is sent as the picture's **background**
+(bulbs in no group show it; owner-tested) and only the other bulbs are listed, so a block on a plain background is a
+few packets. A picture of up to 12 packets is one message; bigger ones are 12-packet messages 40 ms apart. The next
+picture may follow after max(0.04 s, 0.02 s x (packets - 2)) (newest wins): a 4-packet picture streams at 25 fps
+(owner-tested smooth at 8, 15, 25), a 24-packet one at about 2 a second (community notes: ~0.12 s + 0.018 s a
+packet; faster drops pictures). Brightness drives the string's own dimmer (`brightness` command, at most 4 changes a
+second, set again whenever streaming (re)starts so a level left by another app is overridden) and colours go out
+unscaled: colours scaled to 25 % were too dim to see on the string. Fades still scale colours. H70C4 (200) / H70C7 (500) bulb counts assume the H70C5's density and
 are untested. Colour: green looks too strong on these strings (the C9's orange 255,80,0 shows yellow; 255,35,0
 matches), so each picture's green goes through a gamma of 1.7 (`green_gamma` on the model entry; 80 -> 36).
 Reference: gdeboos/ha-liday-show PR #84.

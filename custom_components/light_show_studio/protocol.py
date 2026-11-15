@@ -14,8 +14,11 @@ bulbs. They take a "picture" instead (the app's finger sketch), as BLE-style pac
 
   A3 <line> ... 20-byte lines (19 bytes + xor) carrying: 0F <speed 0> <brightness 100> <background rgb>
   <groups, 2 LE> then per colour <bulbs, 2 LE> <r g b> <bulbs past 255, 2 LE> <index <= 255: 1 byte each>
-  <index > 255: 2 LE each>; then 33 05 0A 20 03 shows it. Bulbs are 0-based from the plug; black bulbs are left
-  out (the background is black). At most PICTURE_COLOURS colours and PICTURE_PER_MSG packets a message.
+  <index > 255: 2 LE each>; then 33 05 0A 20 03 shows it. Bulbs are 0-based from the plug; bulbs in no group show
+  the background colour (owner-tested on an H70C5: 3 red bulbs listed on a blue background = blue string with 3 red
+  bulbs), so the frame's most common colour is sent as the background and its bulbs are left out. At least one
+  group is needed. At most PICTURE_COLOURS colours and PICTURE_PER_MSG packets a message (a picture of up to
+  PICTURE_PER_MSG packets is one message).
 """
 from __future__ import annotations
 
@@ -142,14 +145,30 @@ def correct_green(frame: list[Colour], table: bytes | None) -> list[Colour]:
     return [(r, table[g], b) for r, g, b in frame]
 
 
+def picture_background(frame: list[Colour]) -> Colour:
+    """The frame's most common colour (black wins a tie, then the colour seen first): sent as the background, so
+    its bulbs need no group."""
+    counts: dict[Colour, int] = {}
+    for c in frame:
+        counts[c] = counts.get(c, 0) + 1
+    if not counts:
+        return (0, 0, 0)
+    return max(counts, key=lambda c: (counts[c], c == (0, 0, 0)))  # (max keeps the first of equals)
+
+
 def picture_payload(frame: list[Colour], brightness: int = 100) -> bytes:
-    """The picture's bytes before they are split into lines: still effect, background black, one group per colour
-    (black bulbs left out). The frame must already have at most PICTURE_COLOURS colours."""
+    """The picture's bytes before they are split into lines: still effect, the most common colour as background,
+    one group per other colour (black included when it isn't the background). A frame all of one colour lists
+    bulb 0 in that colour (a picture needs a group). The frame must already have at most PICTURE_COLOURS colours
+    besides black. Mostly-black frames come out byte for byte as before the background was used."""
+    bg = picture_background(frame)
     groups: dict[Colour, list[int]] = {}
     for i, c in enumerate(frame):
-        if c != (0, 0, 0):
+        if c != bg:
             groups.setdefault(c, []).append(i)
-    out = bytearray([PICTURE_STILL, 0, max(1, min(100, brightness)), 0, 0, 0])
+    if not groups and frame:
+        groups[bg] = [0]
+    out = bytearray([PICTURE_STILL, 0, max(1, min(100, brightness)), *bg])
     out += struct.pack("<H", len(groups))
     for (r, g, b), idx in groups.items():
         lo = [i for i in idx if i <= 255]
@@ -169,7 +188,13 @@ def picture_packets(frame: list[Colour]) -> list[bytes]:
 
 def picture_msgs(frame: list[Colour]) -> list[bytes]:
     """One picture as ptReal messages of at most PICTURE_PER_MSG packets, to be sent in order a little apart."""
-    pkts = [base64.b64encode(p) for p in picture_packets(frame)]
+    return ptreal_msgs(picture_packets(frame))
+
+
+def ptreal_msgs(packets: list[bytes]) -> list[bytes]:
+    """Packets as ptReal messages of at most PICTURE_PER_MSG each: a picture of up to PICTURE_PER_MSG packets is
+    ONE message (no gaps; owner-tested on an H70C5: 4 packets in one message chased smoothly at 25 a second)."""
+    pkts = [base64.b64encode(p) for p in packets]
     return [b'{"msg":{"cmd":"ptReal","data":{"command":["%s"]}}}' % b'","'.join(pkts[i:i + PICTURE_PER_MSG])
             for i in range(0, len(pkts), PICTURE_PER_MSG)]
 

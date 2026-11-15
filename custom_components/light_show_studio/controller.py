@@ -17,7 +17,7 @@ from .hosts import valid_ipv4
 from .stats import LinkStats
 from .output import RenderJob
 from .protocol import (CMD_PORT, Colour, GoveeLan, brightness_msg, colour_msg, colours_msg, correct_green, gamma_table,
-                       picture_msgs, realtime_msg, turn_msg)
+                       picture_packets, ptreal_msgs, realtime_msg, turn_msg)
 
 SCAN_RESEND = (0.05, 0.15)  # seconds after a scan frame at which it is sent once more (UDP may lose it)
 RESEND_AFTER = 1.0  # an unchanged frame is sent again after this long (a light may have dropped it)
@@ -26,8 +26,17 @@ REARM_AFTER = 2.0  # realtime mode is switched on again when frames resume after
 KEEPALIVE = 1.0  # a still picture is sent again this often...
 KEEP_FOR = 10.0  # ...for this long after it last changed (a lost UDP packet can't leave the wrong picture up)
 SHOW = "Light show"  # effect name: let xLights / EZPlayer / play_sequence drive the string
-PICTURE_FPS = 4  # pictures a second a "pixels" Govee light is sent at most (newest wins)
-PICTURE_GAP = 0.04  # seconds between the messages of one picture
+# How soon a "pixels" Govee light (H70C4/C5/C7) takes the next picture depends on the size of the one it was sent
+# (newest wins meanwhile): picture_interval(packets) = max(PICTURE_MIN_INTERVAL, PICTURE_PACKET_COST * (packets -
+# PICTURE_FREE_PACKETS)). Calibration: owner test on an H70C5 (300 bulbs), a 20-bulb block on a background = 4
+# packets in one message chased smoothly at 25 pictures a second (also 8 and 15) -> 4 packets: 0.04 s; community
+# notes give about 0.12 s + 0.018 s a packet for big pictures and lost pictures when sent faster -> 24 packets
+# (most bulbs lit, many colours): 0.44 s here (12 packets: 0.20 s).
+PICTURE_MIN_INTERVAL = 1 / 25
+PICTURE_PACKET_COST = 0.02
+PICTURE_FREE_PACKETS = 2
+PICTURE_GAP = 0.04  # seconds between the messages of one picture (only pictures of more than 12 packets have several)
+PICTURE_LEVEL_FPS = 4  # brightness commands a second at most (a dragged slider): meanwhile colours are scaled
 PICTURE_KEEPALIVE = 5.0  # an unchanged picture is sent again this often...
 PICTURE_KEEP_FOR = 30.0  # ...for this long after it last changed
 
@@ -38,6 +47,11 @@ STATEFUL = {"Fireworks"}  # effects that draw from random state: rendering twice
 
 
 _STATEFUL_LOCK = threading.Lock()  # Fireworks' state is shared: the render thread and the loop never draw it at once
+
+
+def picture_interval(packets: int) -> float:
+    """Seconds after a picture of `packets` packets before the light is sent the next one."""
+    return max(PICTURE_MIN_INTERVAL, PICTURE_PACKET_COST * (packets - PICTURE_FREE_PACKETS))
 
 
 def _blend(a: list[Colour], b: list[Colour]) -> list[Colour]:
@@ -1095,13 +1109,20 @@ class PictureController(C9Controller):
     """A Govee light that takes per-bulb colour only as a "picture" (ptReal, see protocol.py): the H70C4 / H70C5 /
     H70C7 Christmas String Lights 2, whose hundreds of bulbs razer frames don't reach. Never arms realtime mode.
 
-    A picture is a few UDP messages that must leave PICTURE_GAP apart, and the light takes at most PICTURE_FPS of
-    them a second. A frame that comes sooner is held (not even built) and the newest one held goes out when the
-    next slot comes, so a 25 fps effect or show is shown as 4 pictures a second; effects render at that rate too.
+    Rate: after each picture the next may leave picture_interval(its packets) later (25 a second for a small one,
+    about 2 a second for a big one). A frame that comes sooner is held (not even built) and the newest one held
+    goes out when the slot comes. A picture of up to 12 packets is one message; bigger ones are messages
+    PICTURE_GAP apart.
+
+    Brightness: the setting drives the light's own dimmer (brightness_msg) and the colours go out unscaled, because
+    colours scaled down on the string are too dim to see (owner-tested: at 25 % only the sparkle glints showed).
+    The dimmer is set when streaming (re)starts (on, a new show, back online, after a REARM_AFTER pause, so a level
+    another app left is overridden) and when the setting changes, at most PICTURE_LEVEL_FPS times a second; until
+    a change can go out the colours are scaled by new / old level. Fades (turn on / off, cross-fades) still scale
+    the colours, as on every light, so they stay smooth. Scan and identify frames run the dimmer at 100.
     `_realtime` here means "the light has our last picture": whatever resets it (power on, a new show, the light
     coming back) sends the picture again even when it is unchanged."""
 
-    RENDER_FPS = PICTURE_FPS
     KEEPALIVE = PICTURE_KEEPALIVE
     KEEP_FOR = PICTURE_KEEP_FOR
 
@@ -1111,22 +1132,74 @@ class PictureController(C9Controller):
         self._pic_lock = threading.Lock()  # (the render thread and the loop both push)
         self._pic_slot = 0.0  # time.perf_counter() from which the next picture may leave
         self._pic_frame: list[Colour] | None = None  # the frame of the last picture put on the wire
+        self._pic_scale = 1.0  # ...and the factor its colours were scaled by (a dimmer change still waiting)
         self._pic_next: list[Colour] | None = None  # a frame that came too soon, sent at the slot (newest wins)
         self._pic_timer: asyncio.TimerHandle | bool | None = None  # its timer (True: being set on the loop)
         self._pic_parts: list[asyncio.TimerHandle] = []  # direct sends: the rest of a picture, PICTURE_GAP apart
+        self._pic_want = 100  # the dimmer level (%) the frames being sent are meant for
+        self._pic_level: int | None = None  # the level last sent to the light (None: unknown, send it)
+        self._lvl_slot = 0.0  # time.perf_counter() from which the next brightness command may leave
+        self._lvl_timer: asyncio.TimerHandle | bool | None = None  # retry of a dimmer change that had to wait
+        self._in_send = False
 
     def _blurred(self, t: float, step: float, sf: float) -> list[Colour]:
-        return self._base_frame(t)  # at 4 pictures a second a blend only doubles the colours
+        return self._base_frame(t)  # a blend doubles the colours, so the packets: a smaller picture is a faster one
 
+    # --- brightness: the light's own dimmer, not scaled colours --------------------------------------------------
+    def _level(self) -> int:
+        return max(1, round(self.brightness * 100 / 255))
+
+    def _send_frame(self, frame: list[Colour], scaled: bool = True, fx: bool = False,
+                    raw: tuple[bytes, int] | None = None) -> None:
+        if not scaled:
+            self._want(100)  # a scan frame shows its exact colours (a scaled one sets the level in _shown)
+        self._in_send = True
+        try:
+            super()._send_frame(frame, scaled, fx, raw)
+        finally:
+            self._in_send = False
+
+    def _want(self, level: int) -> None:
+        if level != self._pic_want:
+            self._pic_want = level
+            self._wire = None  # the same colours at a new level must go out again
+
+    def _shown(self, frame: list[Colour], fx: bool) -> list[Colour]:
+        self._want(self._level())  # the brightness setting is the dimmer's (_hw_push), not the colours'
+        if self.mask or self.look_mask:
+            frame = self._masked(frame, fx)
+        return frame
+
+    def _job_tick(self, job: RenderJob, now: float, due: float) -> float | None:
+        step = super()._job_tick(job, now, due)
+        f = self.frame
+        if self._pic_want < 100 and f is self._hw_last:  # the card shows the bulbs as dimmed
+            self.frame = fade.scale_frame(f, self._pic_want / 100)
+        return step
+
+    def _set_frame(self, frame: list[Colour]) -> None:
+        if self._in_send and self._pic_want < 100:  # what the bulbs look like, for the card and followers
+            frame = fade.scale_frame(frame, self._pic_want / 100)
+        super()._set_frame(frame)
+
+    def _flash(self, colour: Colour) -> None:
+        self._pic_want = 100
+        super()._flash(colour)
+
+    # --- pictures ----------------------------------------------------------------------------------------------
     def _hw_push(self, frame: list[Colour], now: float) -> None:
-        """Put the frame on the wire as a picture, at most PICTURE_FPS a second. Thread-safe (the render thread
-        calls it): a held frame's timer is set on the loop."""
+        """Put the frame on the wire as a picture, the dimmer first when it must change. Thread-safe (the render
+        thread calls it): timers are set on the loop."""
         if frame != self._hw_last:
             self._hw_changed = now
         self._hw_last = frame
-        if self._realtime and frame == self._pic_frame and now - self._hw_sent < self.KEEPALIVE - 0.1:
+        restart = not self._realtime or now - self._hw_sent >= REARM_AFTER
+        want = self._pic_want
+        if not restart and want == self._pic_level and frame == self._pic_frame and self._pic_scale == 1 \
+                and now - self._hw_sent < self.KEEPALIVE - 0.1:
             return  # the light has this picture: the keep-alive sends it again
         t = time.perf_counter()
+        level = None
         with self._pic_lock:
             held = t < self._pic_slot - 0.005
             if held:  # too soon: hold it for the slot
@@ -1137,19 +1210,35 @@ class PictureController(C9Controller):
                 if arm:
                     self._pic_timer = True
             else:
-                self._pic_slot, self._pic_next, arm = t + 1 / PICTURE_FPS, None, False
+                self._pic_next, arm = None, False
+                if want != self._pic_level or restart:
+                    if restart or t >= self._lvl_slot - 0.005:
+                        level, self._pic_level, self._lvl_slot = want, want, t + 1 / PICTURE_LEVEL_FPS
+                scale = 1.0 if self._pic_level is None or want >= self._pic_level else want / self._pic_level
+                wait = self._pic_level != want
+                pkts = picture_packets(correct_green(fade.scale_frame(frame, scale), self._green))
+                self._pic_slot = t + picture_interval(len(pkts))
         if arm:
             self._on_loop(self._arm_timer)
         if held:
             return
-        msgs = picture_msgs(correct_green(frame, self._green))
+        if level is not None:
+            self.lan.send(brightness_msg(level))  # in order before the picture (through the port too)
+        msgs = ptreal_msgs(pkts)
         if self.port is not None:
             ok = self.port.submit(msgs, None, PICTURE_GAP)  # the port keeps the gaps, off the event loop
         else:
             ok = self._send_direct(msgs)
         self.stats.frame(ok, now)
         self._realtime = ok
-        self._pic_frame, self._hw_sent = frame, now
+        self._pic_frame, self._pic_scale, self._hw_sent = frame, scale, now
+        if wait:  # the dimmer change had to wait: send it (and the full colours) when it may go
+            with self._pic_lock:
+                arm = self._lvl_timer is None
+                if arm:
+                    self._lvl_timer = True
+            if arm:
+                self._on_loop(self._arm_level)
 
     def _arm_timer(self) -> None:
         if self._pic_timer is True:
@@ -1161,6 +1250,18 @@ class PictureController(C9Controller):
         if frame is not None and self.is_on:
             self._hw_push(frame, time.monotonic())
 
+    def _arm_level(self) -> None:
+        if self._lvl_timer is True:
+            at = max(self._lvl_slot, self._pic_slot)
+            self._lvl_timer = self.hass.loop.call_later(max(0.0, at - time.perf_counter()), self._level_due)
+
+    def _level_due(self) -> None:
+        with self._pic_lock:
+            self._lvl_timer = None
+            pending = self._pic_next is not None or self._pic_timer is not None  # a held frame brings it
+        if not pending and self.is_on and self._hw_last is not None and self._pic_level != self._pic_want:
+            self._hw_push(self._hw_last, time.monotonic())
+
     def _send_direct(self, msgs: list[bytes]) -> bool:
         """No output thread (so on the loop): the first message now, the rest PICTURE_GAP apart."""
         ok = self.lan.send(msgs[0]) is not False
@@ -1171,8 +1272,10 @@ class PictureController(C9Controller):
     def _drop_held(self) -> None:
         with self._pic_lock:
             timer, self._pic_timer, self._pic_next = self._pic_timer, None, None
-        if isinstance(timer, asyncio.TimerHandle):
-            timer.cancel()
+            lvl, self._lvl_timer = self._lvl_timer, None
+        for h in (timer, lvl):
+            if isinstance(h, asyncio.TimerHandle):
+                h.cancel()
         for handle in self._pic_parts:
             handle.cancel()
         self._pic_parts = []
@@ -1180,6 +1283,7 @@ class PictureController(C9Controller):
     def _hw_power(self, on: bool) -> None:
         if not on:
             self._drop_held()  # a picture still waiting must not show on a light just switched off
+        self._pic_level = None  # the light may come back at any level: set it with the first picture
         super()._hw_power(on)
 
     def shutdown(self) -> None:
